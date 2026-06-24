@@ -18,6 +18,10 @@ services:
     profiles: ["build"]
     command: colcon build --packages-select ${PACKAGE_NAME} --symlink-install
 
+  motor_test:
+    <<: *base
+    command: python3 /ros_ws/src/${PACKAGE_NAME}/${PACKAGE_NAME}/motor_test.py
+
   robot_description:
     <<: *base
     command: ros2 launch ${PACKAGE_NAME} robot_description.launch.py
