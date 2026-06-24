@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'joint_state_controller = scout.joint_state_controller:main',
+            'motor_driver = scout.motor_driver:main',
         ],
     },
 )
