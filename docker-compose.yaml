@@ -1,0 +1,40 @@
+x-service: &base
+  build: .
+  image: ${DOCKER_IMAGE}
+  network_mode: host
+  ipc: host
+  entrypoint: /ros_entrypoint.sh
+  volumes:
+    - .:/ros_ws/src/
+    - ros_ws_build:/ros_ws/build
+    - ros_ws_install:/ros_ws/install
+    - ros_ws_log:/ros_ws/log
+  privileged: true
+
+services:
+
+  build_package:
+    <<: *base
+    profiles: ["build"]
+    command: colcon build --packages-select ${PACKAGE_NAME} --symlink-install
+
+  hello_world:
+    <<: *base
+    command: "ros2 topic pub /chatter std_msgs/msg/String '{data: Hello World}'"
+
+  foxglove_bridge:
+    <<: *base
+    network_mode: bridge  # only in WSL
+    ports: ["8765:8765"]  # only in WSL
+    command: ros2 run foxglove_bridge foxglove_bridge
+
+  test:
+    <<: *base
+    command: >
+      bash -c "colcon test --packages-select ${PACKAGE_NAME} &&
+               colcon test-result --verbose"
+
+volumes:
+  ros_ws_build:
+  ros_ws_install:
+  ros_ws_log:
