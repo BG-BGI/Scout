@@ -1,1 +1,6 @@
-/my_robot_pkg/*
+*.SLDASM/*
+meshes/scripts/venv/
+meshes/scripts/backup/
+venv/
+backup/
+**/__pycache__/*

@@ -1,0 +1,592 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="scout">
+  <link
+    name="base_footprint" />
+  <joint
+    name="base_footprint_to_base"
+    type="fixed">
+    <origin
+      xyz="0 0 0.058995"
+      rpy="0 0 1.5707963267949" />
+    <parent
+      link="base_footprint" />
+    <child
+      link="base_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-4.44071793674556E-05 0.0303287182421505 -0.0179374628705869"
+        rpy="0 0 0" />
+      <mass
+        value="0.864156867595008" />
+      <inertia
+        ixx="0.00431032124064571"
+        ixy="-3.53029456457024E-07"
+        ixz="-1.07700421222418E-06"
+        iyy="0.00710449075892212"
+        iyz="0.000116062808345191"
+        izz="0.00299632589411927" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.4 0.4 0.4 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="mount_link">
+    <inertial>
+      <origin
+        xyz="-1.77292440872789E-05 0.0538886970205137 0.00798750195538396"
+        rpy="0 0 0" />
+      <mass
+        value="0.317705199243205" />
+      <inertia
+        ixx="0.000648454880810809"
+        ixy="4.05973525199438E-07"
+        ixz="1.84279755908091E-07"
+        iyy="0.00150040954683933"
+        iyz="1.32356431162014E-05"
+        izz="0.00173181647767026" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/mount_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/mount_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="mount_to_base"
+    type="fixed">
+    <origin
+      xyz="0 -0.0735 0.047625"
+      rpy="1.5707963267949 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="mount_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="camera_link">
+    <inertial>
+      <origin
+        xyz="0.000275801445357464 0.000292484892556899 -0.0135755309639161"
+        rpy="0 0 0" />
+      <mass
+        value="0.0236821589214842" />
+      <inertia
+        ixx="2.80951708447851E-06"
+        ixy="2.72720914983653E-08"
+        ixz="-1.36837494407851E-08"
+        iyy="3.23824905596586E-05"
+        iyz="-2.61327113993963E-08"
+        izz="3.45235586614437E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/camera_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/camera_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="camera_to_mount"
+    type="fixed">
+    <origin
+      xyz="0 0.0955 0.066"
+      rpy="0 0 0" />
+    <parent
+      link="mount_link" />
+    <child
+      link="camera_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lens_link">
+    <inertial>
+      <origin
+        xyz="6.51306204212236E-16 0 -0.000374999999999986"
+        rpy="0 0 0" />
+      <mass
+        value="0.00111062343059037" />
+      <inertia
+        ixx="3.04707470445964E-08"
+        ixy="5.88073716736949E-22"
+        ixz="3.21451352546695E-22"
+        iyy="1.11409811311008E-06"
+        iyz="-3.92852730800091E-24"
+        izz="1.14451303350383E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/lens_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.4 0.4 0.4 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/lens_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lens_to_camera"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="camera_link" />
+    <child
+      link="lens_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lidar2_link">
+    <inertial>
+      <origin
+        xyz="-2.23945425510688E-15 0.0121144991864106 -1.21936715904852E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.10773590450219" />
+      <inertia
+        ixx="4.26802409371355E-05"
+        ixy="-2.54316954448302E-20"
+        ixz="4.52994793513263E-21"
+        iyy="7.46209690453417E-05"
+        iyz="-1.17766288567912E-08"
+        izz="4.27190109949372E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/lidar2_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.298039215686275 0.298039215686275 0.298039215686275 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/lidar2_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lidar2_to_mount"
+    type="fixed">
+    <origin
+      xyz="0 0.11 0"
+      rpy="0 0 0" />
+    <parent
+      link="mount_link" />
+    <child
+      link="lidar2_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lidar1_link">
+    <inertial>
+      <origin
+        xyz="-6.79574933765504E-05 0.0127582411749808 -0.00287746513955325"
+        rpy="0 0 0" />
+      <mass
+        value="0.0553297198723754" />
+      <inertia
+        ixx="1.77198950595598E-05"
+        ixy="-5.03884612350031E-09"
+        ixz="3.9064271323067E-08"
+        iyy="3.29681714130268E-05"
+        iyz="-2.52552357302916E-07"
+        izz="1.80448064070794E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/lidar1_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.298039215686275 0.298039215686275 0.298039215686275 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/lidar1_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lidar1_to_lidar2"
+    type="continuous">
+    <origin
+      xyz="0 0.0199 0"
+      rpy="0 0 0" />
+    <parent
+      link="lidar2_link" />
+    <child
+      link="lidar1_link" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="battery_link">
+    <inertial>
+      <origin
+        xyz="-0.00215522422127348 -0.00032768043128724 0.00713878932943199"
+        rpy="0 0 0" />
+      <mass
+        value="0.426563659336353" />
+      <inertia
+        ixx="0.000283504609659175"
+        ixy="-6.89918097626904E-08"
+        ixz="-1.33986881704593E-05"
+        iyy="0.000525356328181379"
+        iyz="1.12577942792819E-08"
+        izz="0.000594147044852788" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/battery_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.780392156862745 0.603921568627451 0 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/battery_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="battery_to_base"
+    type="fixed">
+    <origin
+      xyz="0 0.073481 0.093912"
+      rpy="0 0.14531 -1.5708" />
+    <parent
+      link="base_link" />
+    <child
+      link="battery_link" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="wheel1_link">
+    <inertial>
+      <origin
+        xyz="0.0315846225812721 3.23275454438762E-05 -6.8859987008979E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661363334175707" />
+      <inertia
+        ixx="0.0025278923615894"
+        ixy="-1.7476472296503E-07"
+        ixz="5.12044973410444E-08"
+        iyy="0.0013738260392482"
+        iyz="7.8687536248987E-08"
+        izz="0.00137430265184139" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.149019607843137 0.149019607843137 0.149019607843137 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel1_to_base"
+    type="continuous">
+    <origin
+      xyz="0.10875 -0.102 0.02"
+      rpy="1.5708 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel1_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="wheel2_link">
+    <inertial>
+      <origin
+        xyz="0.0315846225812754 3.23275454512835E-05 -6.88599869987094E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661363334175702" />
+      <inertia
+        ixx="0.00252789236158939"
+        ixy="-1.74764722966114E-07"
+        ixz="5.12044973394248E-08"
+        iyy="0.0013738260392482"
+        iyz="7.8687536244967E-08"
+        izz="0.00137430265184137" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.149019607843137 0.149019607843137 0.149019607843137 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel2_to_base"
+    type="continuous">
+    <origin
+      xyz="-0.10875 -0.102 0.02"
+      rpy="-1.5708 0 -3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel2_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="wheel3_link">
+    <inertial>
+      <origin
+        xyz="0.0315846225812721 3.23275454441573E-05 -6.88599870088402E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661363334175702" />
+      <inertia
+        ixx="0.00252789236158939"
+        ixy="-1.74764722966179E-07"
+        ixz="5.12044973401261E-08"
+        iyy="0.0013738260392482"
+        iyz="7.86875362469148E-08"
+        izz="0.00137430265184138" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.149019607843137 0.149019607843137 0.149019607843137 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel3_to_base"
+    type="continuous">
+    <origin
+      xyz="-0.10875 0.102 0.02"
+      rpy="-1.5708 0 3.1416" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel3_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="wheel4_link">
+    <inertial>
+      <origin
+        xyz="0.031584622581272 3.23275454440879E-05 -6.88599870093953E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661363334175704" />
+      <inertia
+        ixx="0.00252789236158939"
+        ixy="-1.74764722966938E-07"
+        ixz="5.12044973411128E-08"
+        iyy="0.0013738260392482"
+        iyz="7.86875362485362E-08"
+        izz="0.00137430265184138" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.149019607843137 0.149019607843137 0.149019607843137 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="wheel4_to_base"
+    type="continuous">
+    <origin
+      xyz="0.10875 0.102 0.02"
+      rpy="1.5707963267949 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="wheel4_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+</robot>

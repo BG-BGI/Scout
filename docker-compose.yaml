@@ -18,21 +18,15 @@ services:
     profiles: ["build"]
     command: colcon build --packages-select ${PACKAGE_NAME} --symlink-install
 
-  hello_world:
+  robot_description:
     <<: *base
-    command: "ros2 topic pub /chatter std_msgs/msg/String '{data: Hello World}'"
+    command: ros2 launch ${PACKAGE_NAME} robot_description.launch.py
 
   foxglove_bridge:
     <<: *base
-    network_mode: bridge  # only in WSL
-    ports: ["8765:8765"]  # only in WSL
+    # network_mode: bridge  # only in WSL
+    # ports: ["8765:8765"]  # only in WSL
     command: ros2 run foxglove_bridge foxglove_bridge
-
-  test:
-    <<: *base
-    command: >
-      bash -c "colcon test --packages-select ${PACKAGE_NAME} &&
-               colcon test-result --verbose"
 
 volumes:
   ros_ws_build:
