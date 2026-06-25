@@ -25,4 +25,31 @@ def generate_launch_description():
             package='scout',
             executable='joystick_teleop',
         ),
+        Node(
+            package='rplidar_ros',
+            executable='rplidar_composition',
+            name='rplidar',
+            output='screen',
+            parameters=[{
+                'channel_type': 'serial',
+                'serial_port': '/dev/ttyUSB0',
+                'serial_baudrate': 256000,
+                'frame_id': 'laser',
+                'inverted': False,
+                'angle_compensate': True,
+                'scan_mode': 'Standard',
+            }],
+        ),
+        # Mount the scan's 'laser' frame onto the URDF lidar link
+        # so the scan plane is corrected without touching the model.
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='laser_tf',
+            arguments=['--frame-id', 'lidar1_link', '--child-frame-id', 'laser',
+                        '--roll', '1.5707963267949',
+                        '--pitch', '1.5707963267949',
+                        '--yaw', '0.0'
+                       ],
+        ),
     ])

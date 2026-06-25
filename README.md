@@ -6,6 +6,9 @@
 
 ## Running
 ```bash
+docker compose build
+```
+```bash
 docker compose --profile build run --rm build_package
 ```
 ```bash

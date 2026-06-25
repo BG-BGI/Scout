@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
     ros-humble-joint-state-publisher \
     ros-humble-launch-ros \
+    ros-humble-rplidar-ros \
     python3-colcon-common-extensions \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
