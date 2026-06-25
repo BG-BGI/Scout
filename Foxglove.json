@@ -1,0 +1,271 @@
+{
+  "configById": {
+    "3D!3fhnfip": {
+      "cameraState": {
+        "distance": 1.619894216347407,
+        "perspective": true,
+        "phi": 71.65859868123903,
+        "target": [
+          0,
+          0,
+          0
+        ],
+        "targetOffset": [
+          -0.006121669082304157,
+          -0.009105142895230855,
+          8.62706384293114e-19
+        ],
+        "targetOrientation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "thetaOffset": 60,
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-heading",
+      "scene": {
+        "meshUpAxis": "z_up",
+        "transforms": {
+          "visible": true,
+          "showLabel": false
+        }
+      },
+      "transforms": {
+        "frame:base_link": {
+          "visible": false
+        },
+        "frame:battery_link": {
+          "visible": false
+        },
+        "frame:mount_link": {
+          "visible": false
+        },
+        "frame:camera_link": {
+          "visible": false
+        },
+        "frame:lens_link": {
+          "visible": false
+        },
+        "frame:lidar2_link": {
+          "visible": false
+        },
+        "frame:wheel4_link": {
+          "visible": false
+        },
+        "frame:wheel3_link": {
+          "visible": false
+        },
+        "frame:wheel2_link": {
+          "visible": false
+        },
+        "frame:wheel1_link": {
+          "visible": false
+        },
+        "frame:lidar1_link": {
+          "visible": false
+        },
+        "frame:laser": {
+          "visible": false
+        },
+        "frame:camera_color_frame": {
+          "visible": false
+        },
+        "frame:camera_color_optical_frame": {
+          "visible": false
+        },
+        "frame:camera_depth_frame": {
+          "visible": false
+        },
+        "frame:camera_depth_optical_frame": {
+          "visible": false
+        },
+        "frame:d455_link": {
+          "visible": false
+        },
+        "frame:d455_color_frame": {
+          "visible": false
+        },
+        "frame:d455_color_optical_frame": {
+          "visible": false
+        },
+        "frame:d455_depth_frame": {
+          "visible": false
+        },
+        "frame:d455_depth_optical_frame": {
+          "visible": false
+        },
+        "frame:d455_accel_optical_frame": {
+          "visible": false
+        },
+        "frame:d455_accel_frame": {
+          "visible": false
+        },
+        "frame:d455_gyro_frame": {
+          "visible": false
+        },
+        "frame:d455_gyro_optical_frame": {
+          "visible": false
+        },
+        "frame:d455_imu_frame": {
+          "visible": false
+        },
+        "frame:d455_imu_optical_frame": {
+          "visible": false
+        }
+      },
+      "topics": {
+        "/robot_description": {
+          "visible": true,
+          "opacity": 1,
+          "displayMode": "auto"
+        },
+        "/scan": {
+          "visible": false,
+          "colorField": "intensity",
+          "colorMode": "flat",
+          "colorMap": "turbo"
+        },
+        "/camera/camera/color/camera_info": {
+          "visible": false,
+          "distance": 1
+        },
+        "/camera/camera/color/image_raw": {
+          "visible": true,
+          "frameLocked": true,
+          "cameraInfoTopic": "/camera/camera/color/camera_info",
+          "distance": 1,
+          "planarProjectionFactor": 0,
+          "renderMode": "default",
+          "projectionFrameId": "base_link",
+          "color": "#ffffff",
+          "rectifyImage": true,
+          "pointSize": 1.5,
+          "syncModeEnabled": false
+        },
+        "/camera/camera/depth/camera_info": {
+          "visible": false
+        },
+        "/camera/camera/depth/image_rect_raw": {
+          "visible": false,
+          "frameLocked": true,
+          "cameraInfoTopic": "/camera/camera/depth/camera_info",
+          "distance": 1,
+          "planarProjectionFactor": 0,
+          "renderMode": "default",
+          "projectionFrameId": "base_link",
+          "color": "#ffffff",
+          "rectifyImage": true,
+          "pointSize": 1.5,
+          "syncModeEnabled": false
+        },
+        "/camera/d455/color/image_raw": {
+          "visible": false,
+          "frameLocked": true,
+          "cameraInfoTopic": "/camera/d455/color/camera_info",
+          "distance": 1,
+          "planarProjectionFactor": 0,
+          "renderMode": "default",
+          "projectionFrameId": "base_link",
+          "color": "#ffffff",
+          "rectifyImage": true,
+          "pointSize": 1.5,
+          "syncModeEnabled": false
+        },
+        "/camera/d455/color/camera_info": {
+          "visible": false
+        },
+        "/camera/d455/depth/camera_info": {
+          "visible": false
+        },
+        "/camera/d455/depth/image_rect_raw": {
+          "visible": false,
+          "frameLocked": true,
+          "cameraInfoTopic": "/camera/d455/depth/camera_info",
+          "distance": 1,
+          "planarProjectionFactor": 0,
+          "renderMode": "default",
+          "projectionFrameId": "base_link",
+          "color": "#ffffff",
+          "rectifyImage": true,
+          "pointSize": 1.5,
+          "syncModeEnabled": false
+        }
+      },
+      "layers": {
+        "grid": {
+          "visible": true,
+          "drawBehind": false,
+          "instanceId": "da4fb7ef-c3ab-4a97-9804-9092b8aca308",
+          "layerId": "foxglove.Grid",
+          "size": 10,
+          "divisions": 10,
+          "lineWidth": 1,
+          "color": "#248eff",
+          "position": [
+            0,
+            0,
+            0
+          ],
+          "rotation": [
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      "publish": {
+        "type": "point",
+        "poseTopic": "/move_base_simple/goal",
+        "pointTopic": "/clicked_point",
+        "poseEstimateTopic": "/initialpose",
+        "poseEstimateXDeviation": 0.5,
+        "poseEstimateYDeviation": 0.5,
+        "poseEstimateThetaDeviation": 0.26179939
+      },
+      "synchronize": false,
+      "imageMode": {},
+      "fixedFrame": "base_footprint",
+      "followTf": "base_footprint"
+    },
+    "Teleop!2hjxow2": {
+      "topic": "/cmd_vel",
+      "publishRate": 10,
+      "autoSendStopOnRelease": true,
+      "upButton": {
+        "field": "linear-x",
+        "value": 0.33
+      },
+      "downButton": {
+        "field": "linear-x",
+        "value": -0.33
+      },
+      "leftButton": {
+        "field": "angular-z",
+        "value": 0.4
+      },
+      "rightButton": {
+        "field": "angular-z",
+        "value": -0.4
+      },
+      "stopButton": {
+        "field": "linear-x",
+        "value": 0
+      }
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": "3D!3fhnfip",
+    "second": "Teleop!2hjxow2",
+    "direction": "row",
+    "splitPercentage": 80.11647254575706
+  }
+}

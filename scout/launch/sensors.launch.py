@@ -1,7 +1,7 @@
 import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 
@@ -33,6 +33,8 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        # Mute librealsense's USB-init WARNING spam; keeps ROS warnings.
+        SetEnvironmentVariable('LRS_LOG_LEVEL', 'error'),
         realsense,
         # Bridge the RealSense frame tree (rooted at d455_link) onto the URDF
         # camera mount, correcting the SolidWorks axes to the camera convention.
@@ -43,6 +45,19 @@ def generate_launch_description():
             arguments=['--frame-id', 'camera_link', '--child-frame-id', 'd455_link',
                        '--roll', '-1.5707963267949',
                        '--pitch', '-1.5707963267949'],
+        ),
+        # Fuse the D455 accel+gyro into an orientation quaternion -> /imu/data
+        Node(
+            package='imu_filter_madgwick',
+            executable='imu_filter_madgwick_node',
+            name='imu_filter',
+            output='screen',
+            parameters=[{
+                'use_mag': False,
+                'publish_tf': False,
+                'world_frame': 'enu',
+            }],
+            remappings=[('imu/data_raw', '/camera/d455/imu')],
         ),
         Node(
             package='rplidar_ros',
