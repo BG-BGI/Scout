@@ -44,6 +44,28 @@ bluetoothctl
 ```
 
 
+## RealSense D455 IMU Calibration
+This D455 unit has no stored IMU calibration, so librealsense applies defaults (identity
+intrinsic, zero bias — `accel/imu_info` is an identity matrix). Calibration corrects the
+**accelerometer** bias, scale, and axis misalignment and writes it to the camera EEPROM so it
+persists and is applied automatically. Matters most once the IMU is fused (robot_localization
+EKF, imu_filter_madgwick, VIO/SLAM) — uncorrected accel bias drifts the estimate. Raw accel
+here already reads ~9.82 m/s², so the gain is modest until fused. Does not calibrate the gyro
+(gyro bias is handled at runtime by the fusion filter).
+
+Prereqs (NOT in the current image — needs a librealsense rebuild):
+- Build librealsense with `-DBUILD_PYTHON_BINDINGS=ON` (so `pyrealsense2` exists, built with the
+  same RSUSB backend — do NOT `pip install pyrealsense2`, the wheel is the native backend and
+  won't see the IMU).
+- Get `tools/rs-imu-calibration/rs-imu-calibration.py` from the librealsense source tree.
+
+```bash
+docker compose run --rm -w /ros_ws/src/scout/imu_calib robot_bringup python3 rs-imu-calibration.py
+```
+```bash
+docker compose run --rm -w /ros_ws/src/scout/imu_calib robot_bringup python3 rs-imu-calibration.py -i accel_d455.txt gyro_d455.txt
+```
+
 ## Parts
 - 50:1 Metal Gearmotor 37Dx70L mm 24V with 64 CPR Encoder (Helical Pinion) ($60.95 x 4 = $122)
     - https://www.pololu.com/product/4693

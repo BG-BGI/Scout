@@ -4,3 +4,5 @@ meshes/scripts/backup/
 venv/
 backup/
 **/__pycache__/*
+scout/imu_calib/*
+!scout/imu_calib/*.py
