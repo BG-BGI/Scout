@@ -21,4 +21,8 @@ def generate_launch_description():
             package='scout',
             executable='motor_driver',
         ),
+        Node(
+            package='scout',
+            executable='joystick_teleop',
+        ),
     ])
