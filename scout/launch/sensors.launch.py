@@ -90,7 +90,7 @@ def generate_launch_description():
             executable='static_transform_publisher',
             name='laser_tf',
             arguments=['--frame-id', 'lidar1_link', '--child-frame-id', 'laser',
-                        '--roll', '1.5707963267949',
+                        '--roll', '-1.5707963267949',
                         '--pitch', '1.5707963267949',
                         '--yaw', '0.0'
                        ],
