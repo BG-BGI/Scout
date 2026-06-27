@@ -46,7 +46,17 @@ def generate_launch_description():
                        '--roll', '-1.5707963267949',
                        '--pitch', '-1.5707963267949'],
         ),
-        # Fuse the D455 accel+gyro into an orientation quaternion -> /imu/data
+        # Remove residual gyro bias at boot (hold the robot still ~5s) -> /imu/data_raw
+        Node(
+            package='scout',
+            executable='gyro_calibrator',
+            name='gyro_calibrator',
+            output='screen',
+            remappings=[('imu_in', '/camera/d455/imu'),
+                        ('imu_out', '/imu/data_raw')],
+        ),
+        # Fuse the de-biased accel+gyro into an orientation quaternion -> /imu/data.
+        # Reads /imu/data_raw (from gyro_calibrator) by default.
         Node(
             package='imu_filter_madgwick',
             executable='imu_filter_madgwick_node',
@@ -57,7 +67,6 @@ def generate_launch_description():
                 'publish_tf': False,
                 'world_frame': 'enu',
             }],
-            remappings=[('imu/data_raw', '/camera/d455/imu')],
         ),
         Node(
             package='rplidar_ros',

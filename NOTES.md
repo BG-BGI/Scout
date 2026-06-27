@@ -26,6 +26,12 @@ usb_max_current_enable=1
 dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
 ```
 
+You can manually stop the lidar from spinning with a service call
+```bash
+docker compose exec robot_bringup /ros_entrypoint.sh ros2 service call /stop_motor std_srvs/srv/Empty
+```
+
+
 ## Xbox Controller
 The Xbox pad pairs but then immediately disconnects unless Bluetooth ERTM is off. The bluetooth module is loadable, so persist it via `modprobe.d`:
 ```bash
