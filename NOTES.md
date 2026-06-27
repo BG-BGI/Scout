@@ -51,8 +51,7 @@ bluetoothctl
 
 
 ## RealSense D455 IMU Calibration
-This D455 unit has no stored IMU calibration, so librealsense applies defaults. Calibration corrects the
-**accelerometer** bias, scale, and axis misalignment and writes it to the camera EEPROM so it persists and is applied automatically. Matters most once the IMU is fused. Build librealsense with `-DBUILD_PYTHON_BINDINGS=ON` so `pyrealsense2` exists, built with the same RSUSB backend
+The D455 unit has no stored IMU calibration, so librealsense applies defaults. Calibration corrects the **accelerometer** bias, scale, and axis misalignment and writes it to the camera EEPROM so it persists and is applied automatically. Matters most once the IMU is fused. A one time calibration is required on new units. Copy [rs-imu-calibration.py](https://github.com/realsenseai/librealsense/blob/master/tools/rs-imu-calibration/rs-imu-calibration.py) to `scout/imu_calib/` and run:
 
 ```bash
 docker compose run --rm -w /ros_ws/src/scout/imu_calib robot_bringup python3 rs-imu-calibration.py
