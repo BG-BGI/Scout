@@ -14,6 +14,7 @@ setup(
         ('share/' + package_name + '/urdf', ['urdf/robot.urdf']),
         ('share/' + package_name + '/meshes', glob('meshes/*.STL')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/config', glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

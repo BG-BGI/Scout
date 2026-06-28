@@ -16,19 +16,8 @@ def generate_launch_description():
         ),
         launch_arguments={
             'camera_name': 'd455',
-            'enable_color': 'true',
-            'enable_depth': 'true',
-            'rgb_camera.color_profile': '640x480x15',
-            'depth_module.depth_profile': '640x480x15',
-            # RGBD bundle (color + aligned depth) — off; flip all three on to use it
-            'enable_sync': 'false',
-            'align_depth.enable': 'false',
-            'enable_rgbd': 'false',
-            'pointcloud.enable': 'false',
-            # IMU (D455): combine accel+gyro into one /imu topic
-            'enable_gyro': 'true',
-            'enable_accel': 'true',
-            'unite_imu_method': '2',
+            'config_file': os.path.join(
+                get_package_share_directory('scout'), 'config', 'realsense.yaml'),
         }.items(),
     )
 

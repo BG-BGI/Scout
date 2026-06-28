@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-rplidar-ros \
     ros-humble-realsense2-* \
     ros-humble-imu-filter-madgwick \
+    ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport \
     python3-colcon-common-extensions \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

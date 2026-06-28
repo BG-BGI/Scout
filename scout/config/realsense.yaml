@@ -1,0 +1,22 @@
+enable_color: true
+enable_depth: true
+rgb_camera.color_profile: '640x480x15'
+depth_module.depth_profile: '640x480x15'
+
+# RGBD bundle (color + aligned depth) — off; flip all three on to use it
+enable_sync: false
+align_depth.enable: false
+enable_rgbd: false
+
+# IMU (D455): combine accel+gyro into one /imu topic
+enable_gyro: true
+enable_accel: true
+unite_imu_method: 2
+
+# Whitelist the transports per image topic so image_transport stops advertising
+# the useless ones (compressedDepth on rgb8 color, JPEG on 16-bit depth).
+d455.color.image_raw.enable_pub_plugins:      ['image_transport/raw', 'image_transport/compressed']
+d455.depth.image_rect_raw.enable_pub_plugins: ['image_transport/raw', 'image_transport/compressedDepth']
+
+# Cheaper compression (viz/teleop only): lower JPEG quality + fastest PNG level.
+.d455.color.image_raw.jpeg_quality:   30
