@@ -1,3 +1,0 @@
-fast_simplification==0.1.13
-numpy==2.5.0
-trimesh==4.12.2

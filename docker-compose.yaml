@@ -18,9 +18,14 @@ services:
     profiles: ["build"]
     command: colcon build --packages-select ${PACKAGE_NAME} --symlink-install
 
-  robot_bringup:
+  test:
     <<: *base
-    command: ros2 launch ${PACKAGE_NAME} bringup.launch.py
+    profiles: ["test"]
+    command: python3 /ros_ws/src/scout/scout/motor_test.py
+
+  # robot_bringup:
+  #   <<: *base
+  #   command: ros2 launch ${PACKAGE_NAME} bringup.launch.py
 
   foxglove_bridge:
     <<: *base
