@@ -1,0 +1,68 @@
+# Config for wimblerobotics/roboclaw_driver (roboclaw_driver_node).
+# The top-level key must match the node name ("roboclaw_driver").
+# Launch: ros2 launch roboclaw_driver roboclaw_driver.launch.py \
+#           config_file:=/ros_ws/src/scout/config/roboclaw.yaml
+roboclaw_driver:
+  ros__parameters:
+    # --- serial link (GPIO14/15 UART, RoboClaw addr 128) ---
+    device_name: "/dev/ttyAMA0"
+    baud_rate: 115200
+    device_timeout: 100
+
+    # --- publish rates (Hz) ---
+    odometry_rate: 67.0
+    joint_states_rate: 30.0
+    status_rate: 10.0
+
+    # --- drive geometry ---
+    wheel_radius: 0.0775              # m (155 mm wheel diameter)
+    # Measured geometry (wheel centers): track (L-R) 0.290 m, wheelbase (F-B) 0.179 m.
+    # Skid-steer: all 4 tires scrub sideways in a turn, so odometry over-reports rotation
+    # and turns are under-driven. Start at the true track and calibrate UP (the 0.179 m
+    # wheelbase makes turns fight harder): command an in-place 360 deg spin and increase
+    # until reported yaw matches reality.
+    wheel_separation: 0.290
+    # Pololu #4693: 64 CPR motor shaft x 50:1 = 3200 counts per wheel revolution (CLAUDE.md).
+    encoder_counts_per_revolution: 3200
+
+    base_frame: "base_link"
+    odom_frame: "odom"
+
+    # --- limits ---
+    # rad/s. In-place spin needs ~0.145*omega m/s per wheel (~953 counts/s per rad/s); the
+    # wheels can physically do ~6.9 rad/s in place. Capped at 2.5 so full-speed forward + hard
+    # turn stays under qpps (6571 + 2.5*953 = 8955 < 9240) — the driver does NOT normalize the
+    # wheel pair, so a higher cap clips the outer wheel (turn under-driven) when also driving fast.
+    max_angular_velocity: 2.5
+    max_linear_velocity: 1.2           # m/s (~7885 counts/s). Measured ground ceiling ~1.30 m/s
+                                       # (8510 counts/s, ~92% of qpps) at a full 20.4 V pack. 1.2 is
+                                       # near-max on a fresh/mid pack; it WILL clip late in discharge
+                                       # (ceiling falls to ~1.0 m/s near 16 V) — accepted trade for speed.
+    # Must exceed the cmd_vel period or the robot stops between commands. At 10 Hz that is
+    # 0.1 s, so 0.2 s gives margin (also matches the RoboClaw 0.2 s deadman).
+    max_seconds_uncommanded_travel: 0.2
+
+    # --- velocity PID + QPPS (CLAUDE.md autotune, saved to NVM at ~20.3 V full pack) ---
+    m1_p: 5.76070
+    m1_i: 0.33235
+    m1_d: 0.0
+    m1_qpps: 9240
+    m2_p: 5.96193
+    m2_i: 0.35071
+    m2_d: 0.0
+    m2_qpps: 9240
+    # accel doubles as the top-speed limiter: the driver sends MIXEDSPEEDACCELDIST with a
+    # distance cap of (commanded counts/s * max_seconds_uncommanded_travel). The move must
+    # decelerate to a stop within that window, so reachable speed ~= sqrt(2*accel*V*T).
+    # To actually hit a commanded V, need accel >= V/(2*T): at 1.2 m/s (~7885 counts/s) and
+    # T=0.2 s that is ~19700, so 20000. 3000 capped the robot near ~0.3-0.4 m/s.
+    # MIXEDSPEEDACCELDIST still ramps (not an instant sign flip). Dial down toward 12000-16000
+    # if starts feel too abrupt (but keep accel >= max_linear_counts/0.4 or top speed re-clips).
+    accel: 20000                       # counts/s^2
+
+    # --- outputs ---
+    publish_odom: true
+    publish_tf: true                   # driver publishes the odom->base_link transform
+    publish_joint_states: true
+    do_debug: false                    # set true only for verbose bring-up debugging
+    do_low_level_debug: false

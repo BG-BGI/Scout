@@ -58,6 +58,7 @@
 
 - Autotune varies ±5% run to run — normal, don't chase decimals. Channels within a few % of each other = healthy
 - QPPS scales with battery voltage: 7920 @ 18.1 V, 9240 @ 20.3 V, datasheet-consistent. **Cap commanded speed ≈ 7,000 counts/s in Pi code** so the loop never saturates as the pack sags toward 16 V
+- **Measured ground top speed ≈ 1.30 m/s (8510–8521 counts/s, ~92% of QPPS) at a full 20.4 V pack** (155 mm wheels; commanded 1.6 m/s, so it saturated below the command). No-load QPPS ceiling 9240 = 1.41 m/s; the ~8% gap is on-ground load. Expect the ceiling to fall to ~1.0 m/s as the pack sags to 16 V — a `max_linear_velocity` above ~1.0 will clip late in discharge
 - Position PID: untouched, all zeros — not used. Only tune (cascaded position autotune) if sub-crawl-speed motion is ever needed
 
 ## Operating limits & known behaviors
@@ -78,6 +79,7 @@ Motion Studio edits live in **RAM** and vanish on power cycle. After any change:
 
 - Device is the Pi 5 GPIO UART `/dev/ttyAMA0` (requires `dtparam=uart0=on` in config.txt; NOT `/dev/ttyAMA10`, which is the debug/console UART)
 - `sudo usermod -aG dialout $USER`; purge `modemmanager` if present
-- Library: BasicMicro `roboclaw_3.py` (needs pyserial). Address 0x80
-- Stream `SpeedAccelM1M2(0x80, accel, v_left, v_right)` every cycle at 20–50 Hz (send-always, not send-on-change — the 0.2 s deadman requires it). Use a real accel value (a few thousand counts/s²), never instant sign flips
-- Wrap serial I/O in try/except and reopen on failure — dropouts coast to a stop via the deadman, code should reconnect and resume
+- Deployed controller is the **`roboclaw_driver` ROS 2 node** (wimblerobotics/Sigyn, built from the `kahleeeb3` fork in the Dockerfile), run via docker-compose; params in `scout/config/roboclaw.yaml`. Address 0x80, 115200 baud. (`scout/scout/motor_test.py` is a standalone raw-UART bench test only — no ROS, open-loop duty.)
+- The node converts `/cmd_vel` → per-wheel QPPS and sends **`MIXEDSPEEDACCELDIST` (SpeedAccelDistance)** each time a *new* `cmd_vel` arrives. So the **`cmd_vel` publisher** must stream ≥5 Hz (20–50 Hz) to satisfy the 0.2 s deadman, and must publish an explicit **zero** Twist to stop — otherwise the deadman just Free-Wheels to a coast (idle mode is Free Wheeling; it does not brake). It is NOT `SpeedAccelM1M2`; there is no send-always in the driver (it only re-sends on a new cmd_vel sequence)
+- **`accel` doubles as a top-speed limiter — do NOT use "a few thousand" here.** Each command carries a distance cap = `commanded_counts/s × max_seconds_uncommanded_travel (T)` and must decelerate to a stop within it, so reachable speed ≈ `sqrt(2·accel·V·T)`. To actually reach commanded V you need **`accel ≥ V/(2·T)`** (e.g. 1.2 m/s ≈ 7885 counts/s at T=0.2 s needs accel ≥ ~19,700; current config is 20000). accel 3000 pinned the robot at ~0.3–0.4 m/s. Lowering T tightens stop/overrun distance but raises the accel floor
+- The C++ driver already wraps serial I/O in try/except with `resyncSerial()` — transient CRC errors (a few are normal at startup) are retried, not fatal; dropouts coast via the deadman and the driver reconnects and resumes

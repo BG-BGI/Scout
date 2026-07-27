@@ -23,6 +23,10 @@ services:
     profiles: ["test"]
     command: python3 /ros_ws/src/scout/scout/motor_test.py
 
+  roboclaw_driver:
+    <<: *base
+    command: ros2 launch roboclaw_driver roboclaw_driver.launch.py config_file:=/ros_ws/src/scout/config/roboclaw.yaml
+
   # robot_bringup:
   #   <<: *base
   #   command: ros2 launch ${PACKAGE_NAME} bringup.launch.py
