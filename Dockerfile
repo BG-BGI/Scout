@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     cmake \
     libboost-dev \
     python3-colcon-common-extensions \
+    python3-spidev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
