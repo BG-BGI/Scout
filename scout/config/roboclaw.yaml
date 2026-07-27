@@ -29,11 +29,13 @@ roboclaw_driver:
     odom_frame: "odom"
 
     # --- limits ---
-    # rad/s. In-place spin needs ~0.145*omega m/s per wheel (~953 counts/s per rad/s); the
-    # wheels can physically do ~6.9 rad/s in place. Capped at 2.5 so full-speed forward + hard
-    # turn stays under qpps (6571 + 2.5*953 = 8955 < 9240) — the driver does NOT normalize the
-    # wheel pair, so a higher cap clips the outer wheel (turn under-driven) when also driving fast.
-    max_angular_velocity: 2.5
+    # rad/s (commanded). Measured true in-place yaw ~= 0.71 * commanded (skid-steer scrub:
+    # 2.75 real rev vs 3.89 odom rev over 12 s @ 2.0 rad/s). Max reachable spin ~4.6 rad/s true —
+    # wheels saturate ~5600-6740 counts/s when spinning (high scrub load), well under the 8510
+    # straight-line ceiling. 4.0 -> ~2.8 rad/s true (~2.2 s/rev). NOTE: driver does NOT normalize
+    # the wheel pair, so at full 1.2 m/s forward the outer wheel is near its ceiling and hard
+    # turns clip (in-place pivots are unaffected).
+    max_angular_velocity: 4.0
     max_linear_velocity: 1.2           # m/s (~7885 counts/s). Measured ground ceiling ~1.30 m/s
                                        # (8510 counts/s, ~92% of qpps) at a full 20.4 V pack. 1.2 is
                                        # near-max on a fresh/mid pack; it WILL clip late in discharge

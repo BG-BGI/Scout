@@ -26,6 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'joystick_teleop = scout.joystick_teleop:main',
         ],
     },
 )

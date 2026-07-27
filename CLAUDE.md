@@ -59,6 +59,7 @@
 - Autotune varies ±5% run to run — normal, don't chase decimals. Channels within a few % of each other = healthy
 - QPPS scales with battery voltage: 7920 @ 18.1 V, 9240 @ 20.3 V, datasheet-consistent. **Cap commanded speed ≈ 7,000 counts/s in Pi code** so the loop never saturates as the pack sags toward 16 V
 - **Measured ground top speed ≈ 1.30 m/s (8510–8521 counts/s, ~92% of QPPS) at a full 20.4 V pack** (155 mm wheels; commanded 1.6 m/s, so it saturated below the command). No-load QPPS ceiling 9240 = 1.41 m/s; the ~8% gap is on-ground load. Expect the ceiling to fall to ~1.0 m/s as the pack sags to 16 V — a `max_linear_velocity` above ~1.0 will clip late in discharge
+- **Measured rotation (in-place spin, ~20.1 V pack):** true yaw ≈ **0.71 × commanded** (skid-steer scrub — physically 2.75 rev vs 3.89 odom rev over 12 s @ 2.0 rad/s cmd, so **odom over-reports yaw ~41%**). Spinning is high-load: wheels saturate at only ~5600–6740 counts/s spinning (vs 8510 straight-line), giving a max true spin ≈ **4.6 rad/s** (~1.4 s/rev). Config `max_angular_velocity: 4.0` → ~2.8 rad/s true. **Driver does NOT normalize the wheel pair**, so at full `max_linear_velocity` (1.2 m/s / 7885 counts/s) the outer wheel is near its ceiling and hard turns-while-driving-fast clip (in-place pivots unaffected). The 0.71 scrub factor is a starting point for `wheel_separation` calibration
 - Position PID: untouched, all zeros — not used. Only tune (cascaded position autotune) if sub-crawl-speed motion is ever needed
 
 ## Operating limits & known behaviors

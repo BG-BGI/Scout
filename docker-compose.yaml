@@ -27,9 +27,9 @@ services:
     <<: *base
     command: ros2 launch roboclaw_driver roboclaw_driver.launch.py config_file:=/ros_ws/src/scout/config/roboclaw.yaml
 
-  # robot_bringup:
-  #   <<: *base
-  #   command: ros2 launch ${PACKAGE_NAME} bringup.launch.py
+  joystick_teleop:
+    <<: *base
+    command: ros2 run scout joystick_teleop
 
   foxglove_bridge:
     <<: *base
