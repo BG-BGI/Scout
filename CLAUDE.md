@@ -19,10 +19,23 @@
 
 **LED Strip**
 - APA102 addressable strip, 131 LEDs. **SPI-driven (separate DATA + CLOCK)** — it is NOT a WS2812/NeoPixel, so the rpi_ws281x / bit-banged timing libraries do not apply
-- Wiring: DATA → GPIO10 / SPI0 MOSI (pin 19), CLOCK → GPIO11 / SPI0 SCLK (pin 23), into the strip's **DI/CI input end** (arrows point away from it)
-- Powered from its own 5V/10A buck (NOT the GPIO header). Shares ground with the Pi through the non-isolated buck; a dedicated Pi-GND→strip-GND jumper alongside DATA/CLOCK tightens the signal return
+- Wiring (into the strip's **DI/CI input end** — arrows point away from it). The strip has 6 wires at that end; use them as a **star ground split** (power return and signal reference separated at the strip):
+
+  ```
+  Green (DATA)   → GPIO10 / SPI0 MOSI (pin 19)   short pigtail
+  Yellow (CLOCK) → GPIO11 / SPI0 SCLK (pin 23)   short pigtail
+  Red + Red      → Buck Out +                    (both, for current capacity)
+  Black #1       → Buck Out −                    (power return)
+  Black #2       → Pi GPIO GND                    (signal reference, bundled with DATA/CLOCK into the header)
+  ```
+
+  - **Keep the DATA/CLOCK pigtails as short as possible** — long unshielded jumpers pick up EMI (see EMI note below).
+  - **Black #2 is a dedicated signal-ground reference**, not a power return: it carries ~no current and keeps the strip's logic ground tied tightly to the Pi's ground that the SPI logic thresholds against. Route it *bundled with* the green/yellow signal pigtails.
+  - Power +/− jumper length is not critical (low-impedance rails); it's the signal lines and the signal-ground reference whose length/routing matter
+- Powered from its own 5V/10A buck (NOT the GPIO header). Shares ground with the Pi through the non-isolated buck (Pi and LED share only the buck **output** ground; motor return flows Battery± → driver → Battery± on the input side, so motor current does not flow through the strip's ground path)
 - **3.3V GPIO drives it directly — no level shifter needed** (verified; the strip also ran off a 3.3V ESP32). Confirmed working at 1 MHz SPI
 - Current budget: 131 LEDs × ~60 mA ≈ **7.9 A at full white**. Fine at the default low brightness (8/31), but do not `set_all(255,255,255)` at brightness 31 on a buck shared with the Pi — it can brown out and reset the Pi
+- **Watch:** in the star-ground scheme above, black #1 now carries *all* the power return. Check it doesn't overheat at high brightness — power-inject at the far end or beef up the return if pushing high current
 
 **Power**
 - DEWALT 20V MAX Lithium-Ion Battery 2-Pack, 5.0 Ah — 5s li-ion: ~21.0 V full, ~18 V nominal (https://www.amazon.com/DEWALT-Lithium-Ion-Battery-Charger-DCB205-2c/dp/B0CZ9XR2Z7)
@@ -100,3 +113,21 @@ Motion Studio edits live in **RAM** and vanish on power cycle. After any change:
 - **`/dev/spidev10.0` is a trap — do NOT use it.** It is the BCM2712 SoC's internal SPI (`spi@7d004000`, alias `spi10`), present even when header SPI is disabled, and **not wired to GPIO10/11**. Opening it and calling `xfer2` succeeds silently (exit 0, no error) while nothing ever reaches pins 19/23 — a dark strip with a "passing" program. This burned an entire debugging session: the real fix was enabling `dtparam=spi=on`, not chasing a bus number
 - **Verify the mux, don't trust the device node:** after reboot `pinctrl get 10,11` must read **`a0`** (ALT0 = SPI). If it reads `none`, the pins are plain GPIO and SPI0 is not actually enabled, regardless of what `/dev/spidev*` exists
 - APA102 frame format (in `show()`): start = 4×`0x00`; per-LED = `0xE0 | brightness(0–31)`, then **BLUE, GREEN, RED**; end = `ceil(NUM_LEDS/16)` bytes of `0xFF`
+
+## LED strip EMI (resolved — motor noise → flicker/wrong colors)
+
+**Symptom:** the APA102 strip flickered and showed wrong colors *only while the motors were driving* — worst on the left side driving forward — plus glitches on motor start/stop.
+
+**Root cause — two mechanisms:**
+1. **Capacitive coupling** onto the DATA/CLOCK lines from the RoboClaw's high-`dV/dt` H-bridge switching. It's **capacitive (E-field / displacement current), not magnetic** — confirmed because twisting the motor leads did *nothing* (that only cancels magnetic/inductive `dI/dt` coupling) while a grounded foil shield *did* help (only blocks E-fields). Mechanism: Maxwell displacement current across the parasitic capacitance between the motor leads and the signal wires, driven by the drive's `dV/dt`
+2. **Ground-reference bounce** on motor start/stop — the strip's logic ground momentarily shifting relative to the Pi's during the current transient, moving the reference the SPI logic thresholds against
+
+**Fix — target the victim, not the source:**
+- **Shortened the DATA/CLOCK jumper pigtails** to the bare minimum to reach the header. The long unshielded jumpers were acting as pickup antennas; shortening them cleared the gross flicker
+- **Dedicated signal-ground reference:** used the strip's two black wires as a star-ground split — black #1 → Buck Out − (power return), **black #2 → Pi GPIO GND, bundled with the green/yellow signal pigtails into the header** (near-zero-current logic reference that keeps the strip's ground tied tightly to the Pi's). This cleared the start/stop residual. See wiring diagram under **LED Strip** above
+
+**Principles (why it worked):**
+- The coupling was **capacitive** (`dV/dt` displacement current), so the cure is shorter/shielded signal runs, not lead twisting
+- **Split signal ground from power ground at the strip (star ground):** power-return current flows through black #1 to the buck; black #2 carries ~no current, so motor/LED power-return current stays *out* of the reference the SPI logic compares against
+- **Signal-line and signal-ground length/routing are what matter**; power +/− jumper length is not critical (low-impedance rails)
+- It is **not** made worse by the shared buck ground: motor return flows Battery± → driver → Battery± on the input side; the Pi and strip share only the buck *output* ground, so motor current never flows through the strip's ground path directly

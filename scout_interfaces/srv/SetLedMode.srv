@@ -1,0 +1,30 @@
+# Set the LED strip to a mode. Animated modes are rendered by the node's
+# internal timer; this service only updates the target state and returns.
+#
+# mode: one of
+#   "off"      strip blanked
+#   "solid"    every LED = color
+#   "blink"    color toggled on/off at `speed` Hz
+#   "breathe"  color with brightness pulsing at `speed` Hz
+#   "rainbow"  hue sweep along the strip, scrolling at `speed` cycles/s
+#   "chase"    a lit segment of color running the strip at `speed` laps/s
+string mode
+
+# Hex RGB color used by solid/blink/breathe/chase. Accepts "#RRGGBB",
+# "RRGGBB", "0xRRGGBB", or the 3-digit shorthand "#RGB". Case-insensitive.
+# Ignored by off/rainbow. Empty is treated as black.
+string color
+
+# Brightness as a percentage (0-100) of the node's configured max_brightness.
+# The node may lower it further to stay within the current budget (the strip
+# shares a non-isolated buck with the Pi — full white can brown out the Pi).
+uint8 brightness
+
+# Animation rate. Meaning depends on mode (Hz for blink/breathe, cycles or
+# laps per second for rainbow/chase). Ignored by off/solid. <= 0 uses a default.
+float32 speed
+---
+# True if the mode was accepted. message explains rejections or any brightness
+# the node clamped the request down to.
+bool success
+string message

@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y \
     ros-humble-tf2 \
     ros-humble-tf2-ros \
     ros-humble-tf2-geometry-msgs \
+    ros-humble-rosidl-default-generators \
+    ros-humble-rosidl-default-runtime \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

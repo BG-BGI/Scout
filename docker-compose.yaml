@@ -16,17 +16,21 @@ services:
   build_package:
     <<: *base
     profiles: ["build"]
-    command: colcon build --packages-select ${PACKAGE_NAME} --symlink-install
+    command: colcon build --packages-up-to ${PACKAGE_NAME} --symlink-install
 
-  test:
+  motor_test:
     <<: *base
     profiles: ["test"]
     command: python3 /ros_ws/src/scout/scout/motor_test.py
 
-  led_control:
+  led_test:
     <<: *base
-    profiles: ["led"]
+    profiles: ["test"]
     command: python3 /ros_ws/src/scout/scout/led_test.py
+
+  led:
+    <<: *base
+    command: /ros_ws/install/scout/lib/scout/led_node
 
   roboclaw_driver:
     <<: *base
