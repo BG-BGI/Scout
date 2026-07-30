@@ -18,16 +18,6 @@ services:
     profiles: ["build"]
     command: colcon build --packages-up-to ${PACKAGE_NAME} --symlink-install
 
-  motor_test:
-    <<: *base
-    profiles: ["test"]
-    command: python3 /ros_ws/src/scout/scout/motor_test.py
-
-  led_test:
-    <<: *base
-    profiles: ["test"]
-    command: python3 /ros_ws/src/scout/scout/led_test.py
-
   led:
     <<: *base
     command: /ros_ws/install/scout/lib/scout/led_node
@@ -39,6 +29,29 @@ services:
   joystick_teleop:
     <<: *base
     command: ros2 run scout joystick_teleop
+
+  # D455. The IMU only works because librealsense is built with FORCE_RSUSB_BACKEND:
+  # the apt build uses the kernel backend, which needs hid-sensor-* modules the Pi
+  # kernel does not ship, and silently comes up with the Motion Module disabled.
+  # Depth/colour are off because nothing consumes them yet — turn them on when
+  # something does. unite_imu_method 2 merges gyro+accel into one /imu topic; if that
+  # topic never appears, remap gyro_calibrator to .../gyro/sample instead.
+  camera:
+    <<: *base
+    command: >
+      ros2 launch realsense2_camera rs_launch.py
+      enable_gyro:=true enable_accel:=true unite_imu_method:=2
+      gyro_fps:=200 accel_fps:=200
+      enable_depth:=false enable_color:=false
+      enable_infra1:=false enable_infra2:=false
+
+  # Subtracts gyro bias and keeps re-estimating it as the sensor warms.
+  gyro_calibrator:
+    <<: *base
+    command: >
+      ros2 run scout gyro_calibrator --ros-args
+      -r imu_in:=/camera/camera/imu
+      -r imu_out:=/imu/data
 
   foxglove_bridge:
     <<: *base

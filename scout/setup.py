@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'joystick_teleop = scout.joystick_teleop:main',
             'led_node = scout.led_node:main',
+            'gyro_calibrator = scout.gyro_calibrator:main',
         ],
     },
 )
