@@ -29,6 +29,7 @@ setup(
             'joystick_teleop = scout.joystick_teleop:main',
             'led_node = scout.led_node:main',
             'gyro_calibrator = scout.gyro_calibrator:main',
+            'battery_monitor = scout.battery_monitor:main',
         ],
     },
 )
