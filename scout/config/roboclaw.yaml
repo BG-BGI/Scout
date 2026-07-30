@@ -16,12 +16,15 @@ roboclaw_driver:
 
     # --- drive geometry ---
     wheel_radius: 0.0775              # m (155 mm wheel diameter)
-    # Measured geometry (wheel centers): track (L-R) 0.290 m, wheelbase (F-B) 0.179 m.
+    # Track (L-R) taken from the CAD in scout_description: the wheel joints sit at
+    # x = +/-0.111 on the hub face, and the wheel mesh is 0.05617 m thick, so the
+    # centerlines are 2 * (0.111 + 0.05617/2) = 0.2782 m apart. Wheelbase (F-B) is
+    # 0.179 m. This replaces an earlier 0.290 m tape measurement.
     # Skid-steer: all 4 tires scrub sideways in a turn, so odometry over-reports rotation
-    # and turns are under-driven. Start at the true track and calibrate UP (the 0.179 m
-    # wheelbase makes turns fight harder): command an in-place 360 deg spin and increase
-    # until reported yaw matches reality.
-    wheel_separation: 0.290
+    # and turns are under-driven. This is the geometric starting point; calibrate UP from
+    # it (the 0.179 m wheelbase makes turns fight harder) by commanding an in-place 360 deg
+    # spin and increasing until reported yaw matches reality.
+    wheel_separation: 0.278
     # Pololu #4693: 64 CPR motor shaft x 50:1 = 3200 counts per wheel revolution (CLAUDE.md).
     encoder_counts_per_revolution: 3200
 

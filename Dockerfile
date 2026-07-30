@@ -96,6 +96,14 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
     && build-overlay --packages-up-to realsense2_camera \
     && rm -rf "$OVERLAY/src/realsense-ros"
 
+# Robot description publishing. Deliberately after the librealsense build: adding
+# these to the apt layer at the top invalidates its cache and costs a full
+# librealsense rebuild (~13 min on a Pi 5).
+RUN apt-get update && apt-get install -y \
+    ros-humble-robot-state-publisher \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Modify the ROS entrypoint
 RUN cat > /ros_entrypoint.sh <<'EOF'
 #!/bin/bash
