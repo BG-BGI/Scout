@@ -26,9 +26,14 @@ usb_max_current_enable=1
 dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
 ```
 
-You can manually stop the lidar from spinning with a service call
+The attached scanner is **not** the C1 in the parts list below — it is an A2-family unit at
+256000 baud. See the LiDAR section of `CLAUDE.md` for the identification and the config.
+
+You can manually stop and restart the lidar spinning with a service call (the service name
+is `stop_motor`/`start_motor`, and the compose service is `lidar`):
 ```bash
-docker compose exec robot_bringup /ros_entrypoint.sh ros2 service call /stop_motor std_srvs/srv/Empty
+docker compose exec lidar /ros_entrypoint.sh ros2 service call /stop_motor std_srvs/srv/Empty
+docker compose exec lidar /ros_entrypoint.sh ros2 service call /start_motor std_srvs/srv/Empty
 ```
 
 
@@ -71,7 +76,8 @@ docker compose run --rm -w /ros_ws/src/scout/imu_calib robot_bringup python3 rs-
     - https://a.co/d/04fbQ5KM
 - Raspberry Pi 5 - 8 GB RAM ($200)
     - https://www.adafruit.com/product/5813
-- SLAMTEC RPLIDAR C1 (~$71.93)
+- ~~SLAMTEC RPLIDAR C1 (~$71.93)~~ **not what is actually installed** — the mounted unit
+  interrogates as an A2-family scanner (256000 baud, 16 m, firmware 1.32, hardware rev 6)
     - https://www.robotshop.com/products/slamtec-rplidar-c1-360-dtof-laser-scanner
 - OAK-D Lite ($169)
     - https://shop.luxonis.com/products/oak-d-lite-1

@@ -455,6 +455,39 @@
     <axis
       xyz="0 1 0" />
   </joint>
+  <!-- REP-103 scan frame: X out the front of the scanner, Y left, Z up. Same problem
+       and same fix as camera_link above — the exporter's lidar frames are CAD-style
+       (Z forward, Y up), so pointing the driver at one would tip every range reading
+       90 deg out of the floor plane. The driver's frame_id is set to this instead.
+       Rotation only; the origin stays on lidar1_link, the rotating head, as the closest
+       thing the CAD offers to the beam origin (7.3 cm ahead of base_link, 24 cm up, on
+       centreline).
+       The rpy carries TWO things. The first is the CAD-to-REP-103 correction, which on
+       its own works out to exactly zero net rotation against base_link. The second is a
+       180 deg yaw, because the scanner is physically MOUNTED BACKWARDS: measured
+       2026-07-30 against a room with a known-asymmetric layout, a feature 8.5 m away in
+       front of the robot was reported at 180 deg, and obstacles 0.35 m off the robot's
+       left were reported on the right. Fitting bearing = s*reported + offset gives
+       s = +1, offset = 180 deg, so the scan is NOT mirrored (driver stays
+       inverted: false) and this is a pure yaw. Composing that yaw is what flips both
+       signs relative to the CAD-only correction (0 -pi/2 -pi/2).
+       Check it with `tf2_echo base_link laser`: it must read RPY 0 0 +/-pi with
+       translation (0.073, 0, 0.241). Anything else means the chain is broken. -->
+  <link
+    name="laser" />
+  <joint
+    name="lidar1_to_laser"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 1.5707963267949 1.5707963267949" />
+    <parent
+      link="lidar1_link" />
+    <child
+      link="laser" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
   <link
     name="batterym_link">
     <inertial>

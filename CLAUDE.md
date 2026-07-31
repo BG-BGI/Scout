@@ -265,6 +265,50 @@ Tuned so far: velocity PID (NVM), `max_angular_velocity: 3.0`, `max_linear_veloc
 
 **Untuned:** `process_noise_covariance` and `initial_estimate_covariance` are upstream defaults. One consequence worth knowing: the reported **yaw variance grows to ~1.7 rad² in 30 s**, wildly pessimistic against a gyro drifting 0.07 deg/min, because the default yaw process noise is 0.06 rad²/s and there is no absolute yaw reference to pull it back. It does not affect the yaw *estimate* — with no yaw measurement anywhere in the filter, process noise only inflates the covariance, it cannot move the mean — but any future consumer that gates on pose uncertainty will need this tuned first.
 
+## LiDAR — streaming `/scan` (built 2026-07-30)
+
+**⚠ The attached scanner is NOT the "RPLIDAR C1" in NOTES.md's parts list.** Interrogated on the bench it identifies as an **A2-family (triangulation)** unit: **256000 baud**, 16.0 m max range, firmware **1.32**, hardware rev **6**, S/N `9A8FECF0C3E09ED4A0EA98F309574116`. A C1 is 460800 baud and 12 m and has none of the modes below. This is not cosmetic — at 460800 the lidar never answers at all.
+
+Driver is `rplidar_ros` **built from source** into `$OVERLAY` (SDK 2.1.0), config `scout/config/rplidar.yaml`, compose service `lidar`. Connected over a **CP2102 USB-UART bridge on `/dev/ttyUSB0`**; `usb_max_current_enable=1` is already set in `/boot/firmware/config.txt` for the motor.
+
+**Verified running:** `/scan` at **11.7 Hz** (motor runs slightly above the commanded 10 Hz), **1800 beams at 0.20°** over the full 360°, **96% valid returns**, range limits 0.15–16.0 m.
+
+**This unit's scan modes, all at 16.0 m** — divide the point rate by ten for points per revolution at 10 Hz:
+
+| Mode | Points/s | Per rev | Resolution |
+|---|---|---|---|
+| Standard | 4.0K | ~400 | 0.90° |
+| Express | 7.9K | ~790 | 0.45° |
+| Stability | 10.0K | ~1000 | 0.36° |
+| Boost | 15.9K | ~1590 | 0.23° |
+| **Sensitivity** (configured) | 15.9K | ~1590 | 0.23° |
+
+Sensitivity is both the highest point rate and what the lidar reports as its *typical* mode, and it reads low-reflectivity surfaces (dark furniture, black baseboards) better than Boost at the same rate. Drop to **Stability** if bright ambient light causes dropouts. **Asking for an unsupported mode name is a safe way to make the node print the whole table** — that is how the one above was obtained.
+
+**⚠ `/dev/serial/by-id/...` DOES NOT EXIST INSIDE THE CONTAINER, and the failure is deeply misleading.** Those symlinks are created by **udev on the host**; a privileged container gets its own `/dev` without them, so the "more robust" by-id path resolves to nothing. This corrects the note under **LED Strip** that privileged "bind-mounts the host `/dev`" — real device nodes like `/dev/ttyUSB0` and `/dev/bus/usb/*` are there, but udev's symlink farms (`/dev/serial`, `/dev/disk/by-*`) are not.
+- **The SDK does not report the missing path as a bind failure.** It opens nothing, then dies in `getDeviceInfo` with `Error, unexpected error, code: 80008004` (`RESULT_OPERATION_NOT_SUPPORT`), which reads like "this lidar model is unsupported" and sends you hunting the wrong problem entirely. `connect()` returns success; the node's own "cannot bind to the specified serial port" message never fires
+- Consequence: the config must use `/dev/ttyUSB0`, whose number is assigned in probe order. Unambiguous today (only USB serial device; the RoboClaw is on the GPIO UART), but if a second is added, confirm identity **from the host** with `ls -l /dev/serial/by-id/` against the S/N above
+
+**Sweep the baud before suspecting hardware.** A wrong baud gives `SL_RESULT_OPERATION_TIMEOUT`, which is indistinguishable from a dead or unpowered lidar. 115200 / 460800 / 1000000 all time out on this unit; only 256000 answers. The sweep costs 25 s and settles it — loop `ros2 run rplidar_ros rplidar_node --ros-args -p serial_baudrate:=$b` and watch for the S/N line.
+
+**`laser` is a new REP-103 frame in the URDF, and the driver is pointed at it — not at the exporter's `lidar1_link`/`lidar2_link`.** Those are CAD-style (Z forward, Y up), so using one would tip every range reading 90° out of the floor plane; same problem and same fix as `camera_link`. The joint hangs off `lidar1_link` (the rotating head, the closest thing the CAD offers to the beam origin) with `rpy="0 -1.5707963267949 -1.5707963267949"`.
+- **It is self-checking: the rotation works out to exactly zero against `base_link`.** Verified — `base_link→laser` reads translation `(0.073, 0.000, 0.241)` and RPY `0 0 0`, matching the predicted `(0.0725, 0, 0.2406)`. So `tf2_echo base_link laser` showing any nonzero rotation means the chain is broken
+
+**⚠ THE SCANNER IS MOUNTED BACKWARDS — 180° of yaw, corrected in the URDF (measured 2026-07-30).** Nothing in the CAD records how the unit is bolted to the mast, and the error announces itself nowhere: the scan looks perfectly plausible, it is just rotated, which would silently build a wrong map.
+
+Measured by parking the robot in a deliberately asymmetric spot and comparing the scan against the operator's description of the room:
+
+| Feature | Reported | Actually |
+|---|---|---|
+| 8.5 m open sight line | 180° | **in front** |
+| 0.35 m obstacle arc | −85°…−7° (right) | **on the left** |
+| 2.1 m opening | +90° (left) | on the right |
+
+- **Fitting `true = s × reported + offset` needs both features, and that is the point of using two.** A single feature cannot separate a rotation from a mirror: `s = +1, offset = 180°` puts the tight arc on the left, while `s = −1, offset = 180°` puts it on the right. The operator's "left" picks the first. So the scan is **NOT mirrored** — the driver correctly stays `inverted: false` — and it is a pure yaw
+- **Fixed in the `lidar1_to_laser` joint, NOT in the driver**, because it is a statement about how the hardware is bolted on. Composing 180° of yaw onto the CAD correction flips both signs, `0 -pi/2 -pi/2` → `0 pi/2 pi/2`, and `base_link→laser` now reads RPY `0 0 ±pi` instead of `0 0 0`
+- **Confirmed end to end through TF**, transforming the scan into `base_link` the way SLAM and Nav2 will: the open direction moved to 0° (8.70 m, longest sight lines at ±2.5°), the tight arc to +89°…+164° at 0.26–0.39 m, and the 2.03 m opening to −90°
+- **Reusable method**, better than the single-object test it replaces: dump a top-down ASCII map plus the bearings of the closest returns and the longest sight lines, have the operator name where two *different* features really are, then solve for `s` and `offset`. It needs no props and no robot motion
+
 ## NVM save ritual (learned the hard way)
 
 Motion Studio edits live in **RAM** and vanish on power cycle. After any change:

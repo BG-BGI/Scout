@@ -96,6 +96,20 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
     && build-overlay --packages-up-to realsense2_camera \
     && rm -rf "$OVERLAY/src/realsense-ros"
 
+# RPLIDAR driver, from source rather than the ros-humble-rplidar-ros deb. The deb would
+# most likely drive the A2-family unit currently attached; the reason for source is that
+# it ships SDK 2.1.0 and supports models the deb does not — the deb's description stops
+# at "A1/A2/A3/S1/S2/S3/T1" and it ships no rplidar_c1_launch.py, while the ros2 branch
+# does, even though BOTH call themselves 2.1.4 (the deb is just built from an older
+# commit, so the version string cannot distinguish them). That keeps the image valid if
+# the scanner is ever swapped. Trade-off: this tracks the `ros2` branch and so is NOT
+# pinned to a commit. Needs no extra apt packages (std_srvs is already present), so it
+# sits with the other source builds without disturbing the librealsense cache above.
+RUN git clone --depth 1 -b ros2 https://github.com/Slamtec/rplidar_ros.git \
+        "$OVERLAY/src/rplidar_ros" \
+    && build-overlay --packages-up-to rplidar_ros \
+    && rm -rf "$OVERLAY/src/rplidar_ros"
+
 # Robot description publishing and the odometry EKF. Deliberately after the
 # librealsense build: adding these to the apt layer at the top invalidates its cache
 # and costs a full librealsense rebuild (~13 min on a Pi 5).

@@ -56,6 +56,12 @@ services:
       -r imu_in:=/camera/camera/imu
       -r imu_out:=/imu/data
 
+  lidar:
+    <<: *base
+    command: >
+      ros2 run rplidar_ros rplidar_node --ros-args
+      --params-file /ros_ws/src/scout/config/rplidar.yaml
+
   # Fuses /wheel_odom (forward speed) with /imu/data (yaw rate) into the /odom that
   # everything else should use, and publishes odom->base_link.
   ekf:

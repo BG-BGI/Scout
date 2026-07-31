@@ -1,0 +1,74 @@
+# Slamtec RPLIDAR on a CP2102 USB-UART bridge.
+#
+# ⚠ This is NOT the "RPLIDAR C1" in NOTES.md's parts list. The attached unit was
+# interrogated on 2026-07-30 and identified itself as an A2-family (triangulation)
+# scanner: 256000 baud, 16.0 m max range, five scan modes, firmware 1.32, hardware rev 6,
+# S/N 9A8FECF0C3E09ED4A0EA98F309574116. A C1 is 460800 baud and 12 m and offers none of
+# the modes below, so the difference is not cosmetic — at 460800 the lidar simply never
+# answers.
+#
+# The top-level key must match the node name, which the executable sets to rplidar_node.
+# Launch: ros2 run rplidar_ros rplidar_node --ros-args \
+#           --params-file /ros_ws/src/scout/config/rplidar.yaml
+rplidar_node:
+  ros__parameters:
+    channel_type: serial
+    # ⚠ Must be /dev/ttyUSB0, NOT the stabler-looking /dev/serial/by-id/... path. Those
+    # symlinks are made by udev on the HOST; a privileged container gets its own /dev
+    # without them, so /dev/serial does not exist in here at all. Worse, the SDK does not
+    # report the missing path as a bind failure — it opens nothing, then dies in
+    # getDeviceInfo with "unexpected error, code: 80008004" (OPERATION_NOT_SUPPORT),
+    # which reads like an unsupported lidar rather than a bad path.
+    # The cost is that ttyUSB0 is assigned in probe order. It is unambiguous today (this
+    # is the only USB serial device; the RoboClaw is on the GPIO UART), but if a second
+    # one is ever added, confirm identity from the HOST with `ls -l /dev/serial/by-id/`
+    # against the serial number above.
+    serial_port: /dev/ttyUSB0
+    # Measured, not assumed: the unit answers ONLY at 256000. Every other candidate
+    # (115200 / 460800 / 1000000) times out in getDeviceInfo, which looks identical to a
+    # dead lidar. If this ever starts timing out, sweep the baud before suspecting
+    # hardware.
+    serial_baudrate: 256000
+
+    # ⚠ This does NOT set the motor speed. The node only sends a rotation rate to S- and
+    # T-series lidars (it branches on the model major ID); for an A-series unit the motor
+    # is left alone and this value is used for exactly one thing — sizing the grid that
+    # angle_compensate resamples onto, as points_per_rev/360 + 1 bins per degree.
+    # Measured: 10.0 and 12.3 both rotate at 12.30 Hz and differ only in beam count
+    # (1800 vs 1440).
+    #
+    # The motor free-runs at 12.30 Hz because MOTOCTL sits at a DC high level (the
+    # CP2102's DTR — which is also why start_motor/stop_motor work), and the datasheet
+    # defines a high level as "rotate at the highest speed". PWM on MOTOCTL could only
+    # make it slower, so 12.30 Hz is the ceiling — and that is the end of the trade we
+    # want, since one revolution at 1 m/s already smears the scan by 8 cm.
+    #
+    # So this must be set to the MEASURED rotation rate, not the datasheet's 10 Hz
+    # typical. The 16 kHz sample rate is fixed, so 12.30 Hz yields 1292 samples/rev at
+    # 0.277° — asking for a 0.2° grid made the driver copy each return forward to fill
+    # the shortfall, and 48% of published returns were byte-identical to their neighbour
+    # against 35% here, for the same ~850 distinct returns per scan.
+    # Re-measure and update this if the lidar is ever rewired or repowered.
+    scan_frequency: 12.3
+
+    # REP-103 frame added to the URDF for this purpose — NOT the exporter's CAD-style
+    # lidar1_link/lidar2_link, whose Z points forward. See scout_description.urdf.
+    frame_id: laser
+    topic_name: scan
+
+    # Resample to uniform angular spacing. The raw stream is not evenly spaced, and
+    # consumers that assume angle_increment is constant (most of them) need this.
+    angle_compensate: true
+    inverted: false
+
+    # This unit's own modes, all at 16.0 m: Standard 4.0K points/s, Express 7.9K,
+    # Boost 15.9K, Sensitivity 15.9K, Stability 10.0K. Divide by the 12.30 Hz rotation
+    # rate for points per revolution — so Sensitivity gives 1292 (0.277 deg) against
+    # Standard's ~325 (1.1 deg). Note the datasheet's headline 0.225 deg assumes the
+    # 10 Hz typical rotation this unit does not run at; sample rate is fixed, so
+    # resolution and rate trade one for one. Sensitivity is both the highest point rate
+    # and what the lidar reports as its typical mode, and it reads low-reflectivity
+    # surfaces (dark furniture, black baseboards) better than Boost at the same rate.
+    # Drop to Stability if bright ambient light or sunlight causes dropouts.
+    # Setting an unsupported name is a safe way to make the node print the whole table.
+    scan_mode: Sensitivity
