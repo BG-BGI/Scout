@@ -1,0 +1,52 @@
+# Streams: color image, depth (for the cloud), IMU. Everything else off.
+enable_color: true
+enable_depth: true
+enable_infra: false
+enable_infra1: false
+enable_infra2: false
+
+rgb_camera.color_profile: '640x480x15'
+depth_module.depth_profile: '640x480x15'
+
+# Depth pointcloud, textured with the color stream. The filter needs depth and
+# color in the SAME frameset to map the texture on, which is what enable_sync
+# buys; without it the cloud comes out untextured.
+#
+# EVERY pointcloud param is prefixed with the name librealsense gave the filter,
+# which is the CPU path it compiled: on aarch64 that is "Pointcloud (NEON)" ->
+# pointcloud__neon_. That includes stream_filter, so the `pointcloud.*` spelling
+# rs_launch defaults to is silently ignored here and the cloud publishes as bare
+# xyz. Verified against `ros2 param list`. stream_filter 2 = RS2_STREAM_COLOR.
+#
+# The plain names below are what a non-ARM host would use; harmless here (an
+# override for an undeclared param is ignored), and rs_launch prints a yellow
+# "not supported" warning for the neon spelling, which is equally harmless — it
+# validates against its own launch-arg list, not against the node.
+pointcloud.enable: true
+pointcloud.stream_filter: 2
+pointcloud__neon_.enable: true
+pointcloud__neon_.stream_filter: 2
+enable_sync: true
+
+# IMU: gyro + accel united into one sensor_msgs/Imu on /camera/camera/imu.
+# 200 Hz is the rate measured clean on this camera (199 Hz delivered).
+#
+# ⚠ If the log shows "Hardware Notification:Motion Module force pause", the IMU
+# is dead for that whole session and so is color — depth keeps running, so the
+# node looks healthy. Seen once in three starts, on the first start after the
+# camera had sat idle since boot. The device stays wedged afterwards: even an
+# IMU-only open returns nothing until it is hardware-reset or replugged.
+# Remedy is `initial_reset: true` below, which resets the device at launch (adds
+# ~10 s and a USB re-enumeration). Left off because the fault would not
+# reproduce on demand, so it is untested against an actual force pause.
+# initial_reset: true
+enable_gyro: true
+enable_accel: true
+gyro_fps: 200
+accel_fps: 200
+unite_imu_method: 2   # 0-none, 1-copy, 2-linear_interpolation
+
+# Not needed for any of the above, and each one costs CPU on the Pi.
+enable_rgbd: false
+align_depth.enable: false
+colorizer.enable: false

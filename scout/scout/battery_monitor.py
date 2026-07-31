@@ -18,6 +18,13 @@ both encoder speeds in the same status message must have been near zero for
 `rest_seconds` before a sample counts. Between rest samples the last estimate is
 held, and `percentage` stays NaN until the first one lands.
 
+Resting samples are collected and medianed once per `estimate_period` rather
+than fed to the curve one at a time. The pack reading quantises to 0.1 V, which
+is worth ~3% of charge through the flat middle of the curve, so a single-step
+flicker between adjacent readings would otherwise dither `percentage` by more
+than the discharge moves it in several minutes. A median rejects that outright,
+where an average would only halve it.
+
 Calibrate `voltage_scale`/`voltage_offset` against a multimeter before trusting
 the percentage. The RoboClaw's voltage readback is known to be off on this board
 (its Max Main setting ratchets down through readback across sessions), and in
@@ -31,6 +38,7 @@ cleanly. Warning well before that is the point of the low/critical thresholds.
 
 import json
 import math
+import statistics
 
 import rclpy
 from rclpy.node import Node
@@ -49,9 +57,16 @@ _DEFAULT_CURVE_FRACTION = [0.0, 0.12, 0.30, 0.45, 0.60, 0.85, 1.00]
 # after startup) or the link is broken. Either way it is not a pack reading.
 _MIN_PLAUSIBLE_VOLTS = 5.0
 
-# Only announce a new resting estimate once it has actually moved, otherwise the
-# node logs on every status message for as long as the robot sits idle.
-_LOG_DELTA_FRACTION = 0.02
+# Only announce a new resting estimate once it has moved this far from the last
+# one *announced* — comparing against the last one computed instead lets a value
+# that creeps past the threshold in small steps go unreported forever.
+#
+# It has to clear the pack's own quantisation noise or it announces the noise.
+# The RoboClaw reports main battery in 0.1 V steps, and through the flat middle
+# of the curve (18-20 V) the slope is 0.25-0.30 charge per volt, so a one-step
+# flicker between adjacent readings is worth 2.5-3% of charge. That is what the
+# 2% this started at was reporting, ten times a second, while parked.
+_LOG_DELTA_FRACTION = 0.05
 
 
 class BatteryMonitor(Node):
@@ -74,6 +89,11 @@ class BatteryMonitor(Node):
         # after a load comes off, hence the delay before a sample counts.
         self.rest_speed_counts = self.declare_parameter('rest_speed_counts', 50.0).value
         self.rest_seconds = self.declare_parameter('rest_seconds', 3.0).value
+        # How often a resting estimate is recomputed, from the median of the
+        # samples gathered since the last one. The underlying value only
+        # refreshes at 2 Hz and a pack does not move meaningfully in seconds,
+        # so this is about collecting enough samples to median, not about lag.
+        self.estimate_period = self.declare_parameter('estimate_period', 5.0).value
         # 17.5 V is 3.5 V/cell (~20% left); 16.5 V is 3.3 V/cell, just above the
         # RoboClaw cutoff, and these are loaded readings so they fire early
         # under drive current — which is the useful direction to be wrong in.
@@ -90,7 +110,10 @@ class BatteryMonitor(Node):
         self._voltage = None
         self._voltage_stamp = None
         self._percentage = math.nan
+        self._logged_percentage = math.nan
         self._rest_since = None
+        self._rest_samples = []
+        self._last_estimate_at = None
 
         self._pub = self.create_publisher(BatteryState, 'battery', 10)
         self.create_subscription(String, 'roboclaw_status', self._on_status, 10)
@@ -146,19 +169,33 @@ class BatteryMonitor(Node):
 
         if speed > self.rest_speed_counts:
             self._rest_since = None
+            # Anything gathered before the robot moved was measured against a
+            # different load history, so it cannot be medianed with what comes
+            # after the pack has recovered.
+            self._rest_samples.clear()
             return
         if self._rest_since is None:
             self._rest_since = now
-        elif (now - self._rest_since).nanoseconds * 1e-9 >= self.rest_seconds:
-            self._update_estimate(self._voltage)
+            return
+        if (now - self._rest_since).nanoseconds * 1e-9 < self.rest_seconds:
+            return
+
+        self._rest_samples.append(self._voltage)
+        due = self._last_estimate_at is None or \
+            (now - self._last_estimate_at).nanoseconds * 1e-9 >= self.estimate_period
+        if due:
+            self._last_estimate_at = now
+            self._update_estimate(statistics.median(self._rest_samples))
+            self._rest_samples.clear()
 
     def _update_estimate(self, volts):
         estimate = self._fraction_at(volts)
-        moved = math.isnan(self._percentage) or \
-            abs(estimate - self._percentage) >= _LOG_DELTA_FRACTION
         self._percentage = estimate
+        moved = math.isnan(self._logged_percentage) or \
+            abs(estimate - self._logged_percentage) >= _LOG_DELTA_FRACTION
         message = 'Resting pack %.2f V -> %.0f%% charge' % (volts, 100.0 * estimate)
         if moved:
+            self._logged_percentage = estimate
             self.get_logger().info(message)
         else:
             self.get_logger().debug(message)

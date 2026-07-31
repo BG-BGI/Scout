@@ -101,6 +101,8 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
 # librealsense rebuild (~13 min on a Pi 5).
 RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
+    ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

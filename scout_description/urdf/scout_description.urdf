@@ -219,8 +219,11 @@
     <axis
       xyz="0 0 0" />
   </joint>
+  <!-- Exporter's camera frame: Z out of the lens, Y up, X to the robot's left.
+       Renamed from camera_link so the name is free for the REP-103 sensor frame
+       below, which is what realsense2_camera roots its optical frames on. -->
   <link
-    name="camera_link">
+    name="camera_body_link">
     <inertial>
       <origin
         xyz="0.000277512825265069 0.000294389543929602 -0.0135772996514738"
@@ -267,6 +270,27 @@
       rpy="1.5707963267949 0 0" />
     <parent
       link="mount_link" />
+    <child
+      link="camera_body_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <!-- REP-103 sensor frame: X out of the lens, Y left, Z up. realsense2_camera
+       roots its whole tree here (base_frame_id = <camera_name>_link) and assumes
+       a body frame, so handing it the exporter's optical-style frame aims the
+       boresight down the robot's left and rolls the image 90 deg. Rotation only;
+       the origin still sits where the CAD frame does, which is NOT the depth
+       imager realsense measures from. -->
+  <link
+    name="camera_link" />
+  <joint
+    name="camera_body_to_camera"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.5707963267949 -1.5707963267949 0" />
+    <parent
+      link="camera_body_link" />
     <child
       link="camera_link" />
     <axis
@@ -319,7 +343,7 @@
       xyz="0 0 0"
       rpy="0 0 0" />
     <parent
-      link="camera_link" />
+      link="camera_body_link" />
     <child
       link="lens_link" />
     <axis
