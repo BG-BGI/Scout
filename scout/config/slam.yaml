@@ -1,0 +1,127 @@
+# slam_toolbox: occupancy grid mapping and localization from /scan.
+#
+# Inputs are the lidar and the fused odometry: /scan for ranges, odom->base_link from
+# the EKF for motion, base_link->laser from robot_state_publisher for mounting. This
+# node adds map->odom on top and owns nothing else, so the camera, gyro_calibrator,
+# robot_description, ekf and lidar services must all be up first (the EKF rotates the
+# IMU through TF, so the camera chain is load-bearing for yaw).
+#
+# ⚠ This file deliberately holds NO map-loading keys — no map_file_name,
+# map_start_pose or map_start_at_dock, and no `mode`. Those are mode-specific and are
+# added by scout/launch/slam.launch.py, which must be able to leave them UNSET; see
+# the long comment there for why "unset" and "false" are not the same thing.
+#
+# The top-level key must match the node name, which every slam_toolbox executable
+# hardcodes to slam_toolbox in its constructor. The launch file passes name explicitly
+# so it stays that way regardless of which executable a mode selects.
+# Launch: ros2 launch scout slam.launch.py [mode:=new|localization|continue]
+slam_toolbox:
+  ros__parameters:
+
+    # --- solver -----------------------------------------------------------------------
+    # Upstream defaults. Ceres with sparse normal Cholesky is what slam_toolbox is
+    # tuned around; the alternatives (g2o, spa) are legacy.
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # --- frames and topics ------------------------------------------------------------
+    odom_frame: odom
+    map_frame: map
+    # ⚠ NOT the upstream default base_footprint, which does not exist in
+    # scout_description.urdf. base_link is already at floor level (the URDF lifts the
+    # chassis so the tires rest on z=0), so it is the correct frame here. Leaving the
+    # default would fail every TF lookup and log "Failed to compute odom pose" forever.
+    base_frame: base_link
+    scan_topic: /scan
+
+    # --- lidar limits (measured, not datasheet) ---------------------------------------
+    # This unit reports 0.15-16.0 m; the driver hardcodes range_min 0.15 and takes
+    # range_max from the scan mode. The 20.0 default would raster returns the scanner
+    # cannot actually produce.
+    #
+    # ⚠ min_laser_range: 0.15 provokes a nonsense-looking startup warning that is safe
+    # to ignore: "minimum laser range setting (0.1 m) exceeds the capabilities of the
+    # used Lidar (0.2 m)". Both numbers are this same 0.15. The parameter is a float64
+    # (0.1499999999999999944) while LaserScan.range_min is a float32 promoted to double
+    # (0.1500000059604645), so laser_utils.cpp's `min_laser_range < scan_.range_min`
+    # is true by 6e-9 — and printf's %.1f then rounds the two to opposite sides of the
+    # 0.15 boundary, which is where "0.1" and "0.2" come from. The clamp it applies is
+    # to scan_.range_min, i.e. exactly the value wanted, so the warning is cosmetic.
+    # Do NOT "fix" it by raising this to 0.2: that would discard real returns.
+    min_laser_range: 0.15
+    max_laser_range: 16.0
+
+    # --- rates ------------------------------------------------------------------------
+    # /scan arrives at ~11.7-12.3 Hz; keyframe gating below is what actually limits
+    # work, so there is no need to throttle the stream.
+    throttle_scans: 1
+    # map->odom publish rate. Cheap (it is a cached transform, not a recomputation).
+    transform_publish_period: 0.02
+    # Full grid re-raster interval. 2.0 rather than the 5.0 default so the map visibly
+    # fills in while driving; raise it if the Pi struggles, since this is the one
+    # periodic cost that scales with map area rather than with motion.
+    map_update_interval: 2.0
+    resolution: 0.05
+    minimum_time_interval: 0.5
+    transform_timeout: 0.2
+    tf_buffer_duration: 30.0
+    # Serializing a large pose graph recurses deeply through boost archives.
+    stack_size_to_use: 40000000
+
+    # Provides /slam_toolbox/save_map, which writes a nav2-style pgm+yaml. Separate
+    # from /slam_toolbox/serialize_map, which writes the .posegraph+.data pair that the
+    # localization and continue modes load. The localization node disables this itself.
+    use_map_saver: true
+
+    # The interactive markers exist so the pose graph can be dragged around in rviz.
+    # Foxglove is the viewer here and there is no rviz, so publishing them is pure cost.
+    enable_interactive_mode: false
+
+    debug_logging: false
+
+    # --- keyframe gating --------------------------------------------------------------
+    # ⚠ JUDGEMENT, NOT MEASUREMENT. Both are 0.5 upstream; tightened to 0.3 because
+    # this robot is small (0.29 m track) and pivots in place a lot, where 0.5 rad is
+    # 29 deg of rotation between keyframes. More keyframes means better loop closure in
+    # cluttered indoor space, at more CPU and a bigger graph. Relax these first if the
+    # Pi cannot keep up.
+    minimum_travel_distance: 0.3
+    minimum_travel_heading: 0.3
+
+    # --- scan matching and loop closure (upstream defaults) ---------------------------
+    use_scan_matching: true
+    use_scan_barycenter: true
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    min_pass_through: 2
+    occupancy_threshold: 0.1

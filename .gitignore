@@ -5,3 +5,11 @@ venv/
 backup/
 **/__pycache__/*
 scout/imu_calib/
+
+# Saved maps: the serialized pose graphs slam_toolbox loads, and the nav2-style grids
+# it exports. The maps/ directory itself is tracked (see maps/.gitkeep) because it must
+# exist before a save can succeed.
+maps/*.posegraph
+maps/*.data
+maps/*.pgm
+maps/*.yaml

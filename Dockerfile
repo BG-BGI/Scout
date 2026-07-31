@@ -110,12 +110,18 @@ RUN git clone --depth 1 -b ros2 https://github.com/Slamtec/rplidar_ros.git \
     && build-overlay --packages-up-to rplidar_ros \
     && rm -rf "$OVERLAY/src/rplidar_ros"
 
-# Robot description publishing and the odometry EKF. Deliberately after the
+# Robot description publishing, the odometry EKF, and SLAM. Deliberately after the
 # librealsense build: adding these to the apt layer at the top invalidates its cache
 # and costs a full librealsense rebuild (~13 min on a Pi 5).
+#
+# slam-toolbox is expensive: 304 packages and ~866 MiB, because its rviz plugin is a
+# hard `find_package(rviz_common REQUIRED)` so the whole rviz/Qt/OGRE stack comes
+# along. Building from source would need the rviz *dev* packages instead, which is
+# strictly worse, so apt is the cheaper path despite the size.
 RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
     ros-humble-robot-localization \
+    ros-humble-slam-toolbox \
     ros-humble-compressed-image-transport \
     ros-humble-compressed-depth-image-transport \
     && apt-get clean \

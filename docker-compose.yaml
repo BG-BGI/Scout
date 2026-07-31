@@ -71,6 +71,16 @@ services:
       --params-file /ros_ws/src/scout/config/ekf.yaml
       -r /odometry/filtered:=/odom
 
+  # Occupancy grid mapping from /scan, publishing /map and map->odom. Needs the whole
+  # odometry chain up first (lidar, ekf, robot_description, camera, gyro_calibrator).
+  # `up slam` starts a fresh map; the other two modes override the command, e.g.
+  #   docker compose run --rm slam ros2 launch scout slam.launch.py mode:=continue map:=house
+  slam:
+    <<: *base
+    command: ros2 launch scout slam.launch.py
+    # command: ros2 launch scout slam.launch.py mode:=continue map:=house
+    # command: ros2 launch scout slam.launch.py mode:=up map:=house
+
   robot_description:
     <<: *base
     command: ros2 launch scout description.launch.py

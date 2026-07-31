@@ -1,0 +1,6 @@
+Serialized slam_toolbox pose graphs land here (<name>.posegraph + <name>.data), plus
+any nav2-style <name>.pgm + <name>.yaml written by /slam_toolbox/save_map.
+
+This directory is tracked but its contents are not. It has to exist before saving:
+boost serialization will not create it, and /slam_toolbox/serialize_map reports the
+failure only as RESULT_FAILED_TO_WRITE_FILE.

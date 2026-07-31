@@ -37,6 +37,71 @@ docker compose exec lidar /ros_entrypoint.sh ros2 service call /start_motor std_
 ```
 
 
+## SLAM / Mapping
+
+The whole odometry chain has to be up before SLAM means anything, because slam_toolbox
+gets its motion from the fused `/odom` and its mounting from TF:
+
+```bash
+docker compose up -d robot_description camera gyro_calibrator roboclaw_driver ekf lidar
+```
+
+Then pick a mode. Plain `up` makes a **new** map; the other two override the command:
+
+```bash
+# new map (default)
+docker compose up slam
+
+# load a map and localize in it, adding nothing to it
+docker compose run --rm slam ros2 launch scout slam.launch.py mode:=localization map:=house
+
+# load a map and keep building on top of it
+docker compose run --rm slam ros2 launch scout slam.launch.py mode:=continue map:=house
+```
+
+`mode:=localization` starts you at the map origin unless told otherwise. Give it the
+real starting pose, or drop a `/initialpose` from Foxglove afterwards:
+
+```bash
+docker compose run --rm slam ros2 launch scout slam.launch.py \
+  mode:=localization map:=house map_start_pose:=1.5,-0.4,3.14159
+```
+
+Save the map **while the mapping session is still running** — it lives in RAM until you
+ask for it. The path must be absolute (the node's CWD is `/ros_ws`) and carries no
+extension; `serialize_map` appends `.posegraph` and `.data` itself:
+
+```bash
+docker compose exec slam /ros_entrypoint.sh ros2 service call \
+  /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph \
+  "{filename: /ros_ws/src/maps/house}"
+```
+
+That pair is what `mode:=localization` and `mode:=continue` load. For a Nav2-style
+`.pgm` + `.yaml` image instead (not loadable by those modes), use `save_map`:
+
+```bash
+docker compose exec slam /ros_entrypoint.sh ros2 service call \
+  /slam_toolbox/save_map slam_toolbox/srv/SaveMap "{name: {data: /ros_ws/src/maps/house}}"
+```
+
+Maps land in `./maps/` on the host.
+
+⚠ `serialize_map` does nothing in **localization** mode and still answers `result=0`
+(success) — the only evidence is `Cannot call serialize map in localization mode!` in the
+node's log and the file never appearing. Use `continue` if you want to load a map and
+still be able to re-save it.
+
+⚠ `docker compose run` creates its own container that `docker compose down` will not
+stop, and killing the shell command leaves it **running** — that is how two
+`/slam_toolbox` nodes ended up fighting over `map→odom` during bring-up. Clean up
+explicitly:
+```bash
+docker ps --filter name=slam
+docker rm -f $(docker ps -aq --filter name=scout-slam)
+```
+
+
 ## Xbox Controller
 The Xbox pad pairs but then immediately disconnects unless Bluetooth ERTM is off. The bluetooth module is loadable, so persist it via `modprobe.d`:
 ```bash
