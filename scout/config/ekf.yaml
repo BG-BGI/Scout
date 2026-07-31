@@ -1,0 +1,106 @@
+# robot_localization EKF: wheel odometry for distance, gyro for heading.
+#
+# Why: skid-steer scrub makes the wheel encoders over-report yaw badly (the chassis
+# rotates less than the wheels imply), while straight-line distance is good to ~0.5%.
+# The D455 gyro is the opposite — excellent rate, no absolute reference. So this fuses
+# the forward speed from the wheels with the yaw rate from the gyro and takes nothing
+# else from either sensor.
+#
+# The top-level key must match the node name, which `ros2 run robot_localization
+# ekf_node` sets to ekf_filter_node.
+# Launch: ros2 run robot_localization ekf_node --ros-args \
+#           --params-file /ros_ws/src/scout/config/ekf.yaml \
+#           -r /odometry/filtered:=/odom
+ekf_filter_node:
+  ros__parameters:
+    # Matches the driver's real /wheel_odom rate (~30 Hz, not the 67 its config asks
+    # for). The 200 Hz IMU is not a limit: robot_localization queues measurements and
+    # applies every one that arrived during the cycle.
+    frequency: 30.0
+    sensor_timeout: 0.1
+
+    # Ground robot: hard-zeroes z, roll, pitch and their velocities instead of letting
+    # them wander on noise. Both inputs are planar, so nothing observes them anyway.
+    two_d_mode: true
+
+    # This node now owns odom->base_link; roboclaw.yaml has publish_tf: false so the
+    # two do not fight over it.
+    publish_tf: true
+    print_diagnostics: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    # Dead reckoning only — no absolute reference (no GPS, no map), so the filter's
+    # world is odom and map_frame goes unused.
+    world_frame: odom
+
+    # --- wheel odometry: forward speed only -----------------------------------------
+    # NOT the pose: x/y were integrated by the driver using its own bad yaw, so fusing
+    # them would drag that error straight back in. NOT vyaw, which is the scrub-
+    # corrupted number this whole EKF exists to replace. vy is left out too: the
+    # driver hardcodes it to 0 with zero covariance, and lateral slip during a
+    # skid-steer turn is real, so it would be a false constraint.
+    odom0: /wheel_odom
+    #              x      y      z
+    #              roll   pitch  yaw
+    #              vx     vy     vz
+    #              vroll  vpitch vyaw
+    #              ax     ay     az
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  false, false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+    odom0_nodelay: true
+
+    # --- IMU: yaw rate only ---------------------------------------------------------
+    # /imu/data is gyro_calibrator's bias-corrected stream, not the raw camera topic;
+    # raw bias integrates to -12 deg/min. Orientation is absent (the wrapper computes
+    # none and the message advertises that with covariance[0] = -1) and linear
+    # acceleration is unfused — a MEMS accel integrated for position is worthless, and
+    # the wheels already measure forward speed well.
+    #
+    # No sign fix is needed here even though the camera's Y axis points down (ROS yaw
+    # rate = -gyro_y): the message is stamped in the camera's IMU frame and the filter
+    # rotates it into base_link through TF, so the URDF's camera mounting already
+    # encodes the flip. That does mean the camera and robot_description services must
+    # be up for IMU data to be accepted.
+    #
+    # ⚠ All THREE rotational rates are true, and "vyaw alone" is the wrong answer here
+    # — it silently fuses nothing. imu0_config names the axes of the SENSOR's frame,
+    # not the robot's: robot_localization builds a diagonal mask from these flags,
+    # rotates it by the sensor->base_link transform, and whichever rows survive decide
+    # which state variables get updated. That is invisible on a body-aligned IMU, where
+    # sensor Z is the yaw axis. This IMU reports in an OPTICAL frame with Z out of the
+    # lens, so a lone vyaw flag asks for rotation about the robot's FORWARD axis, the
+    # mask rotates onto vroll, and two_d_mode then forces that to zero. Symptom: no
+    # warning anywhere, and the vyaw variance in /odom climbing instead of settling.
+    # Marking all three costs nothing — the rotated measurement puts the true body yaw
+    # rate in the vyaw slot, and two_d_mode overwrites vroll/vpitch with zero — and it
+    # keeps the config correct no matter how the camera is mounted.
+    imu0: /imu/data
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  true,  true,  true,
+                  false, false, false]
+    # 200 Hz in, 30 Hz cycles: ~7 samples per cycle, so keep room for a scheduling hiccup.
+    imu0_queue_size: 50
+    imu0_differential: false
+    imu0_relative: false
+    imu0_nodelay: true
+    # Needs an orientation to know which way gravity points, and there isn't one.
+    # Harmless while acceleration is unfused.
+    imu0_remove_gravitational_acceleration: false
+
+    # process_noise_covariance and initial_estimate_covariance are left at the
+    # upstream defaults, which are untuned for this robot but reasonable. The knobs
+    # worth reaching for first, if the fused pose looks too sluggish or too jumpy, are
+    # the vx entry (index 6, default 0.025) against the driver's loose 0.1 velocity
+    # covariance, and vyaw (index 11, default 0.02) against the gyro's very confident
+    # 7.0e-6. With no absolute yaw measurement anywhere in the filter, the yaw entry
+    # only grows the reported uncertainty; it cannot pull the estimate.

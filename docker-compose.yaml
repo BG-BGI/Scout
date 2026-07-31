@@ -22,9 +22,17 @@ services:
     <<: *base
     command: /ros_ws/install/scout/lib/scout/led_node
 
+  # Run bare rather than through roboclaw_driver.launch.py, which adds nothing but
+  # cannot remap: its /odom is the raw wheel estimate and /odom belongs to the fused
+  # one from the EKF. The node hardcodes the topic name, so remapping is the only
+  # lever, and --params-file works the same as the launch file's `parameters=` because
+  # the node names itself roboclaw_driver, matching the key in roboclaw.yaml.
   roboclaw_driver:
     <<: *base
-    command: ros2 launch roboclaw_driver roboclaw_driver.launch.py config_file:=/ros_ws/src/scout/config/roboclaw.yaml
+    command: >
+      ros2 run roboclaw_driver roboclaw_driver_node --ros-args
+      --params-file /ros_ws/src/scout/config/roboclaw.yaml
+      -r /odom:=/wheel_odom
 
   joystick_teleop:
     <<: *base
@@ -47,6 +55,15 @@ services:
       ros2 run scout gyro_calibrator --ros-args
       -r imu_in:=/camera/camera/imu
       -r imu_out:=/imu/data
+
+  # Fuses /wheel_odom (forward speed) with /imu/data (yaw rate) into the /odom that
+  # everything else should use, and publishes odom->base_link.
+  ekf:
+    <<: *base
+    command: >
+      ros2 run robot_localization ekf_node --ros-args
+      --params-file /ros_ws/src/scout/config/ekf.yaml
+      -r /odometry/filtered:=/odom
 
   robot_description:
     <<: *base

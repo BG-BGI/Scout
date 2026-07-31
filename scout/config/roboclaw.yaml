@@ -85,8 +85,10 @@ roboclaw_driver:
     accel: 20000                       # counts/s^2
 
     # --- outputs ---
-    publish_odom: true
-    publish_tf: true                   # driver publishes the odom->base_link transform
+    publish_odom: true                 # remapped to /wheel_odom; it feeds the EKF
+    # The EKF owns odom->base_link now (see config/ekf.yaml). Two publishers of the
+    # same transform would fight, and the driver's yaw is the one being replaced.
+    publish_tf: false
     publish_joint_states: true
     do_debug: false                    # set true only for verbose bring-up debugging
     do_low_level_debug: false

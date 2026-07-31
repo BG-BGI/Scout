@@ -113,6 +113,12 @@ class GyroCalibrator(Node):
         msg.angular_velocity_covariance = [v, 0.0, 0.0,
                                            0.0, v, 0.0,
                                            0.0, 0.0, v]
+        # There is no orientation in this stream — the wrapper computes none, so the
+        # field arrives as an all-zero (invalid) quaternion. sensor_msgs/Imu says to
+        # advertise that with -1 as the first covariance entry, which makes a consumer
+        # reject it instead of reading it as identity. Without this an EKF configured
+        # to fuse yaw would quietly peg heading to zero rather than complain.
+        msg.orientation_covariance[0] = -1.0
         self._pub.publish(msg)
 
     def _refresh_bias(self):

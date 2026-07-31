@@ -96,11 +96,12 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
     && build-overlay --packages-up-to realsense2_camera \
     && rm -rf "$OVERLAY/src/realsense-ros"
 
-# Robot description publishing. Deliberately after the librealsense build: adding
-# these to the apt layer at the top invalidates its cache and costs a full
-# librealsense rebuild (~13 min on a Pi 5).
+# Robot description publishing and the odometry EKF. Deliberately after the
+# librealsense build: adding these to the apt layer at the top invalidates its cache
+# and costs a full librealsense rebuild (~13 min on a Pi 5).
 RUN apt-get update && apt-get install -y \
     ros-humble-robot-state-publisher \
+    ros-humble-robot-localization \
     ros-humble-compressed-image-transport \
     ros-humble-compressed-depth-image-transport \
     && apt-get clean \
