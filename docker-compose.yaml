@@ -77,9 +77,29 @@ services:
   #   docker compose run --rm slam ros2 launch scout slam.launch.py mode:=continue map:=house
   slam:
     <<: *base
-    command: ros2 launch scout slam.launch.py
+    # command: ros2 launch scout slam.launch.py mode:=new
+    command: ros2 launch scout slam.launch.py mode:=localization map:=house
     # command: ros2 launch scout slam.launch.py mode:=continue map:=house
-    # command: ros2 launch scout slam.launch.py mode:=up map:=house
+
+  # Path planning and following. Needs `slam` up first for /map and map->odom, which
+  # means the whole odometry chain before that. Reuses upstream's navigation_launch.py
+  # (as `camera` reuses rs_launch.py) because it owns the cmd_vel plumbing: it remaps
+  # controller_server's output to /cmd_vel_nav and velocity_smoother's back to /cmd_vel,
+  # so the driver needs no change. It also deliberately omits map_server and amcl --
+  # slam_toolbox fills both roles.
+  #
+  # ⚠ Goals come from Foxglove on /goal_pose (frame_id: map), and THERE IS NO CANCEL
+  # BUTTON. An accepted goal lives in bt_navigator, which replans at 1 Hz and keeps
+  # streaming cmd_vel until it arrives -- killing whatever sent the goal does NOT stop
+  # it. `docker compose restart nav2` is what clears one. Note that `docker stop` here
+  # leaves the last command latched for up to velocity_timeout (0.5 s) and the deadman
+  # then only coasts, so it is a way to end navigation, not a way to brake.
+  nav2:
+    <<: *base
+    command: >
+      ros2 launch nav2_bringup navigation_launch.py
+      params_file:=/ros_ws/src/scout/config/nav2.yaml
+      use_sim_time:=false
 
   robot_description:
     <<: *base

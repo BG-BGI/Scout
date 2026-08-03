@@ -1,107 +1,104 @@
 # Skid-Steer Robot
 
+## ⚠ The operator is a robotics and ROS 2 (Humble) expert. Be terse.
+
+**Assume he already knows it.** Most exchanges are questions — answer them and stop. Sometimes he delegates a goal he can't do himself; do that and report the result.
+
+Findings only. No teaching, no restating the mechanism, no recapping what was just done, no "worth noting", no closing summary. Use ROS/controls terms bare — `map→odom`, QPPS, deadman, tf buffer — and do not explain them.
+
+Report a result in a sentence or two, or bullets. If a number is the finding, give the number. Long explanations do not get read, so anything important buried in one is lost — length actively costs information.
+
+Exceptions, kept short anyway: a **root cause** that changes what to do next, and the **operator instructions** below.
+
+**The job is measurement, not advice.** Design the experiment, collect the data, analyse it, report the number. When asked what to do next, **name one test and say why in one line** — do not lay out options, alternatives, risk trade-offs, or a menu to choose from. The operator will ask for alternatives if he wants them. Say what to measure and how to measure it well; he decides whether to run it.
+
+## ⚠ When the operator has to do something, say so plainly at the end, then stop
+
+Anything that needs human hands or eyes — clicking a goal in Foxglove, clearing the floor, turning the battery on, plugging something in, checking whether all four wheels turn — goes at the **end** of the message as plain numbered instructions, and then **wait for approval before doing anything else.** No burying the ask mid-paragraph, no starting the next step "while you do that", no assuming the answer.
+
+The reason is not politeness. Most of the asks are physical, and the operator is the only one who can see the robot; acting before they confirm means acting on a guess about the real world.
+
 ## ⚠ Never command motion without explicit confirmation
 
-**Ask the operator every single time before running anything that moves the robot, and say what it will do — direction, speed, duration, and the space it needs.** Standing permission is never implied: a yes for one run does not carry to the next, and it does not carry across a change of surface or location. The operator has to know where the robot is and that the area is clear, and only they can know that.
+**Ask the operator before every single run that moves the robot, and say what it will do — direction, speed, duration, space needed.** Permission never carries over: not to the next run, and not across a change of surface or location. Only the operator knows where the robot is and whether the area is clear.
 
-**Cancelling the agent's shell command does NOT stop the robot.** Learned the hard way: interrupting `docker compose run` kills the *view* of the container, not the container, which keeps streaming `cmd_vel` and keeps driving. The 0.2 s deadman only helps once `cmd_vel` actually stops, so an orphaned publisher defeats it entirely. To really stop it:
+**Cancelling the agent's shell command does NOT stop the robot.** Interrupting `docker compose run` kills the *view* of the container, not the container — it keeps streaming `cmd_vel` and keeps driving. To actually stop it:
 
 ```bash
-docker ps --filter name=<service>          # find the generated run-container name
-docker stop <container>                    # ends cmd_vel; deadman free-wheels within 200 ms
+docker ps --filter name=<service>   # find the generated run-container name
+docker stop <container>             # ends cmd_vel; deadman free-wheels within 200 ms
 ```
 
-Note this is a *coast*, not a brake — idle mode is Free Wheeling. There is no hardware e-stop yet; S3 is still free for one (see **I/O**), and this is the argument for wiring it.
+That is a **coast, not a brake** (idle mode is Free Wheeling). There is no hardware e-stop; S3 is still free for one.
 
-## ⚠ OPEN FAULT: front-left wheel does not always drive (found 2026-07-30)
+## Known fault: front-left tire is flat (found 2026-07-30, repair deferred)
 
-**Observed:** during an in-place pivot the **front-left wheel was not spinning CCW, but all four spun CW.** This invalidates pivot/scrub calibration until fixed — a wheel that is dragged sideways instead of rolling adds enormous resistance, so the chassis rotates far less than the wheels imply.
-
-**It is quantitatively consistent with the measured asymmetry** (hard floor, 2026-07-30): scrub 0.51 CCW vs 0.77 CW, reproducible across 1.0 / 1.5 / 3.0 rad/s, with rotation surging and stalling rather than holding rate (peak yaw 48 deg/s CCW vs 57 CW against a 57.3 deg/s command). Visual count confirmed the gyro (~1.0 rev CCW vs ~1.5 CW), so **the instrument is fine — it was faithfully reporting a robot with a dragging wheel**. Probably also the original "walking / bouncing and shaking during pivots" symptom that started the whole tuning effort.
-
-**The driver cannot see this.** The two motors per side are **paralleled on one channel and only the rear encoders are wired**, so the velocity loop closes on the rear wheel while the front one is unmonitored. Paralleled DC motors share terminal voltage, not speed — one can stall while the other spins normally, and neither the PID nor odometry will notice.
-
-**It is fixed to the robot, not the floor.** With inflated tires, **CW is the better direction on carpet *and* hard floor** (carpet 0.638/0.627/0.693 CW vs 0.486/0.518/0.614 CCW at 1.0/1.5/3.0 rad/s). It only looked surface-dependent because the one run that favoured CCW was the pre-inflation carpet session — which is also when the robot was handled. Operator also reports the **other front wheel does it too, less severely**, which argues against a single broken component.
-
-**The speed trend identifies the mechanism: a fixed drag torque, NOT hub slip.** The CCW/CW split *narrows* as speed rises (27% → 19% → 12% on carpet; same trend on hard floor). A slipping set screw would do the opposite — more torque at speed means it gives up sooner. A constant drag that the motor overcomes once it has enough voltage produces exactly this: the front wheel stalls at low duty and starts turning at higher duty. So check, in this order:
-1. **High-resistance connection in the front-left motor circuit** (screw terminals at the RoboClaw and at the motor). Series resistance starves that motor worst at low duty — same speed-dependent stall signature
-2. **Excess drag in the front-left drivetrain** — a rub, tight bearing, or gearbox drag
-3. **Hub / set screw slip** — de-prioritised by the speed trend above, but a hand check for play between wheel and shaft is free
-4. **Load discrimination test:** with the wheels off the ground it should turn freely both directions if this is drag or current starvation; if it still refuses unloaded, it is electrical or gearbox
-
-**Re-confirmed 2026-07-30 by the odometry EKF**, on hard floor at 1.5 rad/s: scrub 0.476 CCW vs 0.727 CW, i.e. the fault is unchanged and still direction-specific. That reading came from fused-vs-wheel yaw with none of the original tooling involved, so it is an independent instrument agreeing with the old one (0.51 / 0.77). See "Odometry EKF".
-
-**Stable and reproducible, and NOT electrical.** Two carpet runs 35 min apart, with a motor screw-terminal check in between, agreed to 1% (mean scrub 0.596 then 0.601) with the CCW deficit unchanged. A marginal connection would have shifted when disturbed. Deprioritise wiring; the fault is mechanical or inherent to the motor.
-
-**Best guess at the real scrub, from the CW (all-wheels-driving) direction: ~0.72 on carpet** — CW settles at 0.713 / 0.720 at 1.5 / 3.0 rad/s, close to the 0.71 originally estimated by eye, and ~0.73 on hard floor. CW at 1.0 rad/s still sags to 0.64, consistent with the operator's report that the *other* front wheel misbehaves mildly: at the lowest duty both front wheels are marginal, and only the worse one keeps failing as duty rises. Do not apply these: a one-direction value is a guess until both directions agree after repair.
+- It is the entire explanation for direction-dependent pivot dragging. The old diagnostic ladder — high-resistance motor connection, bearing/gearbox drag, hub slip — is retired. No time should go into it.
+- **Mitigation: keep in-place rotations at or above ~2.5 rad/s.** Above that the motor overcomes the flat tire's fixed drag torque and scrubbing disappears. This is a wear limit, not an accuracy one.
+- **Odometry is unaffected.** `/odom` yaw comes from the gyro through the EKF, never the encoders. The tire costs wear and command fidelity only, which is why it is tolerable.
+- **The driver cannot see it, and will not see the next one either.** Two motors per side are paralleled on one channel with **only the rear encoders wired**, so the velocity loop closes on the rear wheel. Paralleled DC motors share terminal voltage, not speed — the front can stall while the rear spins normally and neither the PID nor the encoders notice. **Watch that all four wheels actually turn during a pivot** before trusting rotation behaviour.
+- **"Firm by feel" is not good enough.** Tires inflated and judged firm by hand still showed full asymmetry an hour later, so a slow leak is implied and re-inflating alone will not hold. On repair, record a **gauge reading** and the **axle-centre height to the floor under load** — the height marker re-checks without a gauge.
 
 ## Hardware
 
-**Compute**
-- Raspberry Pi 5 16 GB (https://www.adafruit.com/product/6125)
+**Compute** — Raspberry Pi 5 16 GB (https://www.adafruit.com/product/6125)
 
-**Motors**
-- Four Pololu #4693 37D gearmotors (50:1, 24V) with quadrature encoders (https://www.pololu.com/product/4693)
-- 64 CPR motor shaft → 3200 counts/wheel rev. Datasheet: 200 RPM / 100 mA no-load, 3 A stall @ 24V → ~8 Ω per motor, ~4 Ω per paralleled channel
-- Per-channel physics: ~0.2 A no-load, ~5 A hard-stall ceiling, ~10 A worst-case plugging transient. Nothing sustained above ~5 A/channel can be real
+**Motors** — Four Pololu #4693 37D gearmotors, 50:1, 24 V, quadrature encoders (https://www.pololu.com/product/4693)
+- 64 CPR motor shaft → 3200 counts/wheel rev. 200 RPM / 100 mA no-load, 3 A stall @ 24 V → ~8 Ω/motor, ~4 Ω/paralleled channel
+- Per channel: ~0.2 A no-load, ~5 A hard-stall, ~10 A worst-case plugging transient. **Nothing sustained above ~5 A/channel can be real**
 
-**Motor Controller**
-- RoboClaw 2x30A, firmware 4.4.9 (https://www.basicmicro.com/RoboClaw-2x30A-Motor-Controller_p_9.html)
-- Drives all four motors. Two motors paralleled per channel
-- BasicMicro RoboClaw Screw Terminal Adapter (V1) for the I/O header
-- Only the two rear encoders wired (weight/battery sits at the rear); front encoders left unconnected
-- Controlled from the Pi over the **GPIO UART** (packet serial, GPIO14/15 → /dev/ttyAMA0). USB not used
+**Motor controller** — RoboClaw 2x30A, firmware 4.4.9 (https://www.basicmicro.com/RoboClaw-2x30A-Motor-Controller_p_9.html)
+- Drives all four motors, two paralleled per channel. Screw Terminal Adapter (V1) on the I/O header
+- Only the two rear encoders wired (battery weight sits at the rear); front encoders unconnected
+- Controlled over the **GPIO UART** (packet serial, GPIO14/15 → `/dev/ttyAMA0`). USB not used
 
-**LED Strip**
-- APA102 addressable strip, 131 LEDs. **SPI-driven (separate DATA + CLOCK)** — it is NOT a WS2812/NeoPixel, so the rpi_ws281x / bit-banged timing libraries do not apply
-- Wiring (into the strip's **DI/CI input end** — arrows point away from it). The strip has 6 wires at that end; use them as a **star ground split** (power return and signal reference separated at the strip):
+**LiDAR** — see the LiDAR section: an **A2-family** unit (not the C1 in NOTES.md), CP2102 USB-UART on `/dev/ttyUSB0`
 
-  ```
-  Green (DATA)   → GPIO10 / SPI0 MOSI (pin 19)   short pigtail
-  Yellow (CLOCK) → GPIO11 / SPI0 SCLK (pin 23)   short pigtail
-  Red + Red      → Buck Out +                    (both, for current capacity)
-  Black #1       → Buck Out −                    (power return)
-  Black #2       → Pi GPIO GND                    (signal reference, bundled with DATA/CLOCK into the header)
-  ```
+**Camera** — Intel RealSense D455, FW 5.17.0.10, USB 3.2. Used for its IMU only so far
 
-  - **Keep the DATA/CLOCK pigtails as short as possible** — long unshielded jumpers pick up EMI (see EMI note below).
-  - **Black #2 is a dedicated signal-ground reference**, not a power return: it carries ~no current and keeps the strip's logic ground tied tightly to the Pi's ground that the SPI logic thresholds against. Route it *bundled with* the green/yellow signal pigtails.
-  - Power +/− jumper length is not critical (low-impedance rails); it's the signal lines and the signal-ground reference whose length/routing matter
-- Powered from its own 5V/10A buck (NOT the GPIO header). Shares ground with the Pi through the non-isolated buck (Pi and LED share only the buck **output** ground; motor return flows Battery± → driver → Battery± on the input side, so motor current does not flow through the strip's ground path)
-- **3.3V GPIO drives it directly — no level shifter needed** (verified; the strip also ran off a 3.3V ESP32). Confirmed working at 1 MHz SPI
-- Current budget: 131 LEDs × ~60 mA ≈ **7.9 A at full white**. Fine at the default low brightness (8/31), but do not `set_all(255,255,255)` at brightness 31 on a buck shared with the Pi — it can brown out and reset the Pi
-- **Watch:** in the star-ground scheme above, black #1 now carries *all* the power return. Check it doesn't overheat at high brightness — power-inject at the far end or beef up the return if pushing high current
+**LED strip** — APA102, 131 LEDs, **SPI-driven (separate DATA + CLOCK)**. NOT a WS2812/NeoPixel, so `rpi_ws281x` and bit-banged timing libraries do not apply.
+
+Wiring at the strip's **DI/CI input end** (arrows point away from it), using its 6 wires as a **star ground split**:
+
+```
+Green (DATA)   → GPIO10 / SPI0 MOSI (pin 19)   short pigtail
+Yellow (CLOCK) → GPIO11 / SPI0 SCLK (pin 23)   short pigtail
+Red + Red      → Buck Out +                    (both, for current capacity)
+Black #1       → Buck Out −                    (power return)
+Black #2       → Pi GPIO GND                   (signal reference, bundled with DATA/CLOCK)
+```
+
+- **Keep DATA/CLOCK pigtails as short as possible** — long unshielded jumpers pick up motor EMI (see LED EMI section)
+- **Black #2 is a signal-ground reference, not a power return.** It carries ~no current and keeps the strip's logic ground tied to the ground the Pi's SPI logic thresholds against. Route it bundled with the signal pigtails. Power +/− jumper length is not critical
+- Own 5 V/10 A buck, **not** the GPIO header. Non-isolated, so Pi and strip share the buck *output* ground; motor return flows Battery± → driver → Battery± on the input side and never through the strip's ground path
+- **3.3 V GPIO drives it directly, no level shifter** (verified). Confirmed at 1 MHz SPI
+- Budget ~7.9 A at full white (131 × 60 mA). Fine at the default brightness 8/31, but `set_all(255,255,255)` at brightness 31 can brown out the shared buck and reset the Pi
+- **Watch:** black #1 now carries all the power return in the star scheme. Check it does not overheat at high brightness
 
 **Power**
-- DEWALT 20V MAX Lithium-Ion Battery 2-Pack, 5.0 Ah — 5s li-ion: ~21.0 V full, ~18 V nominal (https://www.amazon.com/DEWALT-Lithium-Ion-Battery-Charger-DCB205-2c/dp/B0CZ9XR2Z7)
-- Power Wheel Adapter (Dewalt 20V converter kit) — bare terminals, **no BMS/low-voltage cutoff**; RoboClaw Min Main Battery is the only pack protection (https://www.amazon.com/dp/B0CDGR4Y8K)
-- Tobsun 24V→5V 10A buck powers the Pi 5 over USB-C (non-isolated — Pi ground is tied to battery negative) (https://www.amazon.com/dp/B01M03288J)
-- Dewalt terminal split: motor driver + buck converter. *Note: USB-C without PD negotiation caps Pi peripheral current to 600 mA; current limit manually disabled*
+- DEWALT 20V MAX 5.0 Ah packs — 5s li-ion, ~21.0 V full, ~18 V nominal (https://www.amazon.com/DEWALT-Lithium-Ion-Battery-Charger-DCB205-2c/dp/B0CZ9XR2Z7)
+- Power Wheel Adapter, bare terminals, **no BMS or low-voltage cutoff** — RoboClaw Min Main Battery is the only pack protection (https://www.amazon.com/dp/B0CDGR4Y8K)
+- Tobsun 24V→5V 10A buck powers the Pi over USB-C, non-isolated (Pi ground tied to battery negative) (https://www.amazon.com/dp/B01M03288J)
+- Dewalt terminal splits to motor driver + buck. USB-C without PD caps Pi peripheral current at 600 mA; the limit is manually disabled
 
-## RoboClaw Configuration (verified on board after save + power cycle)
+## RoboClaw configuration (verified on board after save + power cycle)
 
-**General / Serial**
-- Control Mode: Packet Serial. Address 128 (0x80). Baud 115200 (used — packets go over the GPIO UART)
-- Timeout **0.2 s** = deadman. Motors stop if no valid packet for 200 ms. Pi must stream commands >5 Hz (use 20–50 Hz). **Do not set 0 to "fix" dropouts**
-- Swap Encoder Channels / Multi-Unit / USB-TTL Relay: all off. RC/Analog panel: inert in Packet Serial
+**Serial** — Packet Serial, address 128 (0x80), 115200 baud over the GPIO UART. Swap Encoder Channels / Multi-Unit / USB-TTL Relay all off; the RC/Analog panel is inert.
 
-**Battery**
-- Battery Cutoff: Use User Settings. Autodetect off
-- Max Main: set 22.0 → regen clamp ~4.4 V/cell. **Displayed value ratchets down through readback scaling (21.9 → 21.7 → 21.4 across sessions) — periodically re-enter 22.0.** If MBH warnings appear on a full pack, it drifted low
-- Min Main: 16.0 (3.2 V/cell floor). Max/Min Logic: inert (no logic battery)
+**Timeout 0.2 s = deadman.** Motors stop if no valid packet for 200 ms, so the Pi must stream >5 Hz (use 20–50 Hz). **Do not set 0 to "fix" dropouts.**
 
-**Motors (both channels)**
-- Max Current 30.0 / Max Regen −30.0. Motors physically can't exceed ~10 A/channel, so limits never engage in normal operation — they only catch wiring faults, and give headroom over current-sense error (see below). 12 A / −10 A limits were the original autotune failures
-- Idle: Free Wheeling, 1.0 s delay. Default Speed 100%, Default Accel/Decel 200%/200%
+**Battery** — Cutoff: Use User Settings, autodetect off. Min Main 16.0 (3.2 V/cell). Max/Min Logic inert.
+- Max Main 22.0 (regen clamp ~4.4 V/cell). **The displayed value ratchets down through readback scaling** (21.9 → 21.7 → 21.4 across sessions) — periodically re-enter 22.0. MBH warnings on a full pack mean it drifted low
 
-**Encoders / sign convention**
-- Both Quadrature. **Encoder 1 Invert: checked. Encoder 2: unchecked. Reverse boxes: unchecked**
-- Verified in duty (PWM) mode: +duty = robot-forward rotation = counts increase, both channels. Re-verify in duty mode after touching any Reverse/Invert box — a wrong encoder sign in closed loop = instant full-speed runaway
+**Motors (both channels)** — Max Current 30.0 / Max Regen −30.0. Motors physically cannot exceed ~10 A/channel, so these never engage normally; they only catch wiring faults and give headroom over current-sense error. The original 12 A / −10 A limits were what made autotune fail. Idle Free Wheeling, 1.0 s delay. Default Speed 100%, Accel/Decel 200%.
 
-**I/O**
-- S3/S4/S5 disabled. (S3 can become a hardware e-stop later)
+**Encoders** — Both Quadrature. **Encoder 1 Invert checked, Encoder 2 unchecked, Reverse boxes unchecked.** Verified in duty mode: +duty = forward = counts increase on both channels. **Re-verify in duty mode after touching any Invert/Reverse box** — wrong encoder sign in closed loop is instant full-speed runaway.
 
-## Velocity PID (autotuned at 20.2–20.3 V full pack, saved to NVM)
+**I/O** — S3/S4/S5 disabled.
+
+**NVM save ritual.** Motion Studio edits live in RAM and vanish on power cycle: Device → Save Settings, power cycle, then re-open **both** General and Velocity Settings tabs to verify (PID is not visible in the General tab).
+
+## Velocity PID (autotuned at 20.2–20.3 V, saved to NVM)
 
 | | Motor1 | Motor2 |
 |---|---|---|
@@ -111,169 +108,129 @@ Note this is a *coast*, not a brake — idle mode is Free Wheeling. There is no 
 | QPPS | 9240 | 9240 |
 | Error Limit | 0 (disabled) | 0 (disabled) |
 
-- Autotune varies ±5% run to run — normal, don't chase decimals. Channels within a few % of each other = healthy
-- QPPS scales with battery voltage: 7920 @ 18.1 V, 9240 @ 20.3 V, datasheet-consistent. **Cap commanded speed ≈ 7,000 counts/s in Pi code** so the loop never saturates as the pack sags toward 16 V
-- **Measured ground top speed ≈ 1.30 m/s (8510–8521 counts/s, ~92% of QPPS) at a full 20.4 V pack** (155 mm wheels; commanded 1.6 m/s, so it saturated below the command). No-load QPPS ceiling 9240 = 1.41 m/s; the ~8% gap is on-ground load. Expect the ceiling to fall to ~1.0 m/s as the pack sags to 16 V — a `max_linear_velocity` above ~1.0 will clip late in discharge. Config is now **1.0** (see "Straight-line duty" below for the full duty-vs-speed curve)
-- **Measured rotation (in-place spin, ~20.1 V pack):** true yaw ≈ **0.71 × commanded** (skid-steer scrub — physically 2.75 rev vs 3.89 odom rev over 12 s @ 2.0 rad/s cmd, so **odom over-reports yaw ~41%**). Spinning is high-load: wheels saturate at only ~5600–6740 counts/s spinning (vs 8510 straight-line), giving a max true spin ≈ **4.6 rad/s** (~1.4 s/rev) — but those saturation figures were measured **on carpet** and are surface-specific (see "Pivot duty ceiling & surface dependence" below). Config `max_angular_velocity: 3.0` → ~2.1 rad/s true (~3.0 s/rev). **Driver does NOT normalize the wheel pair**, so a turn is driven only by the duty the linear speed leaves over — at `max_linear_velocity: 1.0` that is ~1.2 rad/s of true yaw, and it collapses to ~0.24 rad/s if the limit is raised to 1.2 (in-place pivots unaffected). The 0.71 scrub factor is a starting point for `wheel_separation` calibration
-- Position PID: untouched, all zeros — not used. Only tune (cascaded position autotune) if sub-crawl-speed motion is ever needed
+- Autotune varies ±5% run to run — don't chase decimals. Channels within a few % of each other is healthy
+- QPPS scales with pack voltage: 7920 @ 18.1 V, 9240 @ 20.3 V. **Cap commanded speed ≈ 7000 counts/s in Pi code** so the loop never saturates as the pack sags toward 16 V
+- Position PID is untouched (all zeros) and unused. Only tune the cascaded position autotune if sub-crawl motion is ever needed
 
-## Operating limits & known behaviors
+## Operating limits
 
 - Breakaway ≈ 7% duty (off-ground, both channels)
-- Velocity-loop floor ≈ 300–500 counts/s: at the ~300 Hz control loop the encoder delivers ~1 count/tick, so tracking below this is quantization-limited. Enforce a minimum-speed floor in Pi code; use position cascade if smooth crawl is ever required
-- **Current telemetry is unreliable below ~15–20% duty.** Verified from CSV: phantom smooth readings to ±30 A during breakaway at 5–12% duty, frozen fake plateaus (4.71 A) during no-load cruise — while battery voltage never moved. BasicMicro blanks current limiting at low duty for this reason. Judge health by speed tracking, temperature, and battery sag, not the current channel at low duty. Readings above ~20% duty / a few amps are meaningful
-- Original symptom decoded: "low-speed stall + current spike" = velocity loop running unsaved/default gains with 12 A/−10 A limits clamping the thrash (motor humming = armature limit-cycling through gear backlash). Fixed by real gains + 30 A limits
+- **Velocity-loop floor ≈ 300–500 counts/s** (~0.046–0.077 m/s): at the ~300 Hz control loop the encoder delivers ~1 count/tick, so tracking below this is quantization-limited. Enforce a minimum-speed floor in Pi code
+- **⚠ Current telemetry is unreliable below ~15–20% duty and useless during pivots.** Verified: phantom ±30 A readings during 5–12% duty breakaway, frozen 4.71 A plateaus at no-load cruise, and 0.84–0.96 A while duty swept 45%→100% — all while battery voltage never moved. BasicMicro blanks current limiting at low duty. **Judge health by speed tracking, temperature, and battery sag; judge saturation by the duty readback only.** Readings above ~20% duty are meaningful
+- Historical: "low-speed stall + current spike" was the velocity loop running default gains with the 12 A/−10 A limits clamping the thrash. Fixed by real gains + 30 A limits
 
-## Pivot duty ceiling & surface dependence
+## Straight-line performance (hard floor, 19.1 V pack)
 
-**What limits in-place rotation is duty, not the gains — and duty demand is dominated by the floor.** Measured by sweeping commanded yaw both directions and reading applied duty back with **GETPWMS (cmd 48)**. Compare surfaces using **motor volts = duty × pack voltage**, not raw duty: duty alone shifts as the pack drains, motor volts don't.
+Duty demand is almost purely back-EMF: **~15 V of motor volts per m/s**, negligible load offset.
 
-Forward-side motor volts needed to hold a commanded in-place spin (155 mm wheels, ~19.2–19.4 V pack):
+| Commanded | Achieved | Duty | Motor volts | Tracking | Ripple | Veer |
+|---|---|---|---|---|---|---|
+| 0.3 m/s | 0.300 | 25% | 4.8 V | 100% | 0.4% | ≤0.3 °/m |
+| 0.6 m/s | 0.600 | 49% | 9.4 V | 100% | 0.3% | ≤0.2 °/m |
+| 0.9 m/s | 0.899 | 72% | 13.9 V | 100% | 0.3% | ≤0.2 °/m |
+| 1.0 m/s | 1.000 | 80% | 15.3 V | 100% | 0.3% | ≤0.2 °/m |
+| 1.2 m/s | 1.179 | **96%, peaks pinned at 100%** | 18.3 V | **98%** | **1.0%** | **1.5 °/m** |
+
+- **Reachable top speed ≈ (pack V − 0.3) / 15, derated ~3%.** Reproduces the 1.30 m/s measured at a full 20.4 V pack; predicts 1.15 m/s at 18 V nominal and **1.02 at the 16 V cutoff**. So `max_linear_velocity: 1.0` — above that the robot silently drives slower than commanded late in discharge and odometry inherits the error
+- **The deciding factor was turning authority, not speed.** The driver does not normalize the wheel pair, so whatever duty the linear speed leaves over is all the outer wheel has for a turn: 20% spare at 1.0 m/s ≈ 1.2 rad/s of yaw, 4% spare at 1.2 m/s ≈ 0.24 rad/s
+- **Wheels are matched to ≤1% at every speed**, so veer is not a drivetrain asymmetry — the residual flips sign between forward and reverse, which is the chassis tracking slightly crooked
+- **Ripple tripling as duty approaches 100% is the tell for "past the hardware ceiling," not "gains are wrong."**
+- Command cadence is not a limiter here: uncapped 30 Hz, capped 30 Hz and capped 10 Hz all reached 1.18 m/s with zero dips
+
+## Pivot performance & surface dependence
+
+**What limits in-place rotation is duty, not gains.** Read applied duty back with **GETPWMS (cmd 48)** and compare surfaces using **motor volts = duty × pack voltage**, not raw duty (duty shifts as the pack drains, motor volts don't).
+
+Forward-side motor volts to hold a commanded in-place spin (155 mm wheels, ~19.2–19.4 V pack):
 
 | Commanded | Off ground | Hard floor | Carpet |
 |---|---|---|---|
 | 2.5 rad/s | — | 10.0 V | 13.4 V |
 | 3.0 rad/s | — | 11.1 V | 14.8 V |
-| 4.0 rad/s | **8.9 V** (45% duty) | 13.4 V (0% saturated) | **17.3 V (pinned at 100% duty 20% of the run)** |
+| 4.0 rad/s | **8.9 V** (45% duty) | 13.4 V (no saturation) | **17.3 V, pinned at 100% for 20% of the run** |
 
-- **Carpet adds 2.2–3.8 V of demand over a hard floor.** On a hard floor the pivot is clean at every speed up to 4.0 rad/s — 99.8–100.2% speed tracking, peak duty 92%, zero saturation, ~0 cm of walk. On carpet at 4.0 rad/s the forward-driving side hits 100% duty, falls to 96% of target with 15% of samples dipping (worst 82%), and the robot **walks ~2.5 cm per revolution**
-- **Failure mode:** the forward side saturates → cannot go faster → falls behind while the reverse side holds → the wheel-pair difference becomes both a yaw error and a translation, so the robot lurches and creeps *backward* through the pivot. Dips last ~100–450 ms and recur every 0.5–2.5 s. It reads as "won't rotate in place, arcs across the floor"
-- **The forward-driving side always costs more than the reverse-driving side**, and the deficit swaps channels with spin direction — it is NOT a weak channel. On carpet the gap is 1.9–3.2 V and CW costs more than CCW; **on a hard floor the gap collapses to 0.5–1.4 V and the two directions equalize** (7.6 vs 7.8 V @ 1.5, 11.1 vs 11.1 @ 3.0). So the direction asymmetry is the **carpet's nap**, not the robot
-- **Gains are not the cause.** Off the ground both channels hold 100.0% of target with 0.1–0.2% ripple, zero dips, and encoder totals matching to 5 counts in 46,780 (0.01%). Anything that looks like a pivot tuning problem should be checked against an off-ground run first — it takes 30 s and eliminates the entire drivetrain
-- **Current telemetry is useless here too, not just at low duty** (extends the warning above): it sat at 0.84–0.96 A while duty ranged 45%→100%, which is physically impossible. Judge saturation by the duty readback only
-- The `max_angular_velocity: 4.0` figure and the "wheels saturate ~5600–6740 counts/s spinning" note above were taken on carpet and are **surface-specific**. Config is now **3.0** as a compromise (carpet just off the stop on a fresh/mid pack, clipping late in discharge); 2.5 for clean carpet pivots at any battery state; 4.0 is fine on hard floors
-- Secondary effect: with the distance cap active, refreshing `cmd_vel` at 10 Hz instead of 30 Hz made carpet dips worse (15.7% → 24.2% of samples, walk 2.3 → 3.0 cm/rev). The cap starts braking before the next command lands, stealing margin from a channel that has none. Publish at 20–50 Hz
+- **Carpet adds 2.2–3.8 V over a hard floor.** Hard floor is clean to 4.0 rad/s (99.8–100.2% tracking, peak duty 92%, ~0 cm walk). Carpet at 4.0 rad/s saturates: 96% of target, 15% of samples dipping (worst 82%), robot **walks ~2.5 cm per revolution**
+- **Failure mode:** forward side saturates → falls behind while the reverse side holds → the wheel-pair difference becomes both yaw error and translation, so the robot lurches and creeps backward. Reads as "won't rotate in place, arcs across the floor"
+- **The forward-driving side always costs more than the reverse-driving side, and the deficit swaps channels with spin direction** — it is not a weak channel. Carpet gap 1.9–3.2 V; on hard floor it collapses to 0.5–1.4 V and directions equalize. The old conclusion that this asymmetry is carpet nap is **half right at best** — it predates the flat tire, which is a real robot-side asymmetry on every surface
+- **Gains are not the cause.** Off the ground both channels hold 100.0% of target with 0.1–0.2% ripple and encoder totals matching to 5 counts in 46,780. **Check any suspected pivot tuning problem against a 30 s off-ground run first** — it eliminates the whole drivetrain
+- `max_angular_velocity` is **3.0** as a compromise. Use 2.5 for clean carpet pivots at any battery state; 4.0 is fine on hard floors. The older 4.0 figure and the "wheels saturate at 5600–6740 counts/s" note were taken on carpet and are surface-specific
+- Refreshing `cmd_vel` at 10 Hz instead of 30 Hz made carpet dips measurably worse (15.7% → 24.2% of samples). The distance cap starts braking before the next command lands. **Publish at 20–50 Hz**
 
-## Straight-line duty & why `max_linear_velocity` is 1.0
+## Geometry (from `scout_description.urdf`, not calibration)
 
-**Straight-line demand is almost purely back-EMF: duty rises linearly at ~15 V of motor volts per m/s, with a negligible load offset.** Measured on a hard floor at a 19.1 V pack, driving forward then reverse at each speed (wheels commanded together rather than opposed):
+Tuned so far: velocity PID (NVM), `max_angular_velocity: 3.0`, `max_linear_velocity: 1.0`, `accel: 20000`.
 
-| Commanded | Achieved | Duty | Motor volts | Speed tracking | Ripple | Veer |
-|---|---|---|---|---|---|---|
-| 0.3 m/s | 0.300 | 25% | 4.8 V | 100% | 0.4% | ≤0.3 deg/m |
-| 0.6 m/s | 0.600 | 49% | 9.4 V | 100% | 0.3% | ≤0.2 deg/m |
-| 0.9 m/s | 0.899 | 72% | 13.9 V | 100% | 0.3% | ≤0.2 deg/m |
-| 1.0 m/s | 1.000 | 80% | 15.3 V | 100% | 0.3% | ≤0.2 deg/m |
-| 1.2 m/s | 1.179 | **96% (peaks pinned at 100%)** | 18.3 V | **98%** | **1.0%** | **up to 1.5 deg/m** |
+- **`wheel_radius: 0.0775` is VERIFIED on hard floor post-inflation — do not change it.** A 2 m drive measured 81 in (2.0574 m) by tape vs 2.0464 m reported (+0.54%), which implies 0.0779 but sits *inside* the ±0.5 in tape precision. Effective rolling radius ≈ the 155 mm nominal, so tires barely deflect. Note this only exercised the **rear** pair and says nothing about the front. Method: drive out and back, compare tape against **net displacement**, not path length
+- **`wheel_separation: 0.278` is the URDF geometric track and is deliberately NOT calibrated.** A skid-steer pivot scrubs by definition, so the chassis always rotates less than the wheels imply and **encoder-only yaw is untrustworthy at any value** — which is why yaw is fused from the IMU. Also: only the rear encoders are wired, so front-wheel scrub is invisible to the very sensors that would measure it; and scrub depends on speed and surface, so no single constant is correct. Calibrating it would buy **command fidelity** (a commanded ω under-produces yaw) but nothing for odometry
+- **Straight-line quality after inflation is excellent:** forward vs reverse displacement agreed to 0.02% and heading changed ≤0.1° over 2 m
+- **⚠ Two traps when reading wheel positions out of the URDF.** The wheel joints are children of `chassis_link`, and `base_link_to_chassis` carries a **90° yaw**, so chassis-frame axes are swapped relative to the robot's — the lateral offset is the `0.111` component, not `0.089606`. And a joint origin sits at the **inboard hub face**, not the tire centreline: `wheel_link.STL` spans `0 … 0.0562` along its rotation axis at radius 0.079. Skip either correction and the geometry is wrong by tens of percent
+- **Chassis envelope, from mesh bounds: 0.337 m long × 0.334 m wide** (longitudinal half-extent `0.0896 + 0.079`, lateral to the tire's outer face `0.111 + 0.0562`), circumscribed radius 0.238, inscribed 0.167. **The wheels are the widest and longest parts** — the largest body mesh, `spacer_link.STL`, is ±0.1295 × ±0.1105, and the lidar mast ±0.1075. Re-check if anything is bolted on outboard of the wheels. The same numbers confirm the 0.278 track: tire centreline at `0.111 + 0.0562/2 = 0.1391`. **Centreline is the right quantity for kinematics, outer face for collision extents** — mixing them up gives 0.22
 
-- **Reachable top speed ≈ (pack V − 0.3) / 15, derated ~3%.** That model independently reproduces the 1.30 m/s measured at a full 20.4 V pack, and predicts 1.22 m/s at 19.1 V, 1.15 at 18 V nominal, and **1.02 at the 16 V cutoff**. So 1.2 m/s only exists in the top third of the discharge; below that the robot silently drives slower than commanded, and **odometry inherits the error**
-- **The deciding factor was turning authority, not straight-line speed.** Because the driver does not normalize the wheel pair, whatever duty the linear speed leaves over is all the outer wheel has for a turn. At 1.0 m/s the spare 20% is worth ~1.2 rad/s of true yaw at full speed; at 1.2 m/s the spare 4% is worth ~0.24 rad/s, so turns taken at top speed come out wider than commanded
-- **Unlike pivots, the command cadence is not a limiter here.** Uncapped 30 Hz, capped 30 Hz, and capped 10 Hz all reached 1.18 m/s with zero dips, so `accel: 20000` clears the distance-cap threshold for straight-line motion (needs ≥ ~16,400 at 1.0 m/s). Contrast this with carpet pivots, where 10 Hz measurably hurt
-- **The wheels are extremely well matched: imbalance ≤1% at every speed**, so straight-line veer is not a drivetrain asymmetry. Veer stays under 0.2 deg/m below saturation, and the residual **flips sign between forward and reverse** — the signature of the chassis tracking slightly crooked, not of one side running fast. Only at a saturated 1.2 m/s does it grow to 1.2–1.5 deg/m, because a channel already at 100% duty has nothing left to correct with
-- The 1.2 m/s row is the same saturation signature as the carpet pivots, just milder: duty pinned, tracking short of target, ripple up 3×. **Ripple tripling while duty approaches 100% is the tell for "this speed is past the hardware ceiling," not "the gains are wrong."**
+## D455 IMU — the yaw reference
 
-## Current tuning state & next step (`wheel_separation`)
+BMI055 or BMI085 (K83122-100 vs -110/111, indistinguishable without librealsense), ±1000 deg/s at 200/400 Hz, 50 µs timestamp accuracy — **integrate on timestamps, not assumed dt**. `rs-imu-calibration` corrects gyro **bias only, not scale**. Gyros are untrustworthy for *unbounded* heading, not for bounded few-second measurements; that distinction is the whole argument.
 
-Tuned so far: velocity PID (NVM), `max_angular_velocity: 3.0`, `max_linear_velocity: 1.0`, `accel: 20000`. **`wheel_separation` is still the raw geometric track (0.290) and has NOT been calibrated.**
+**Measured (chassis-mounted, 2026-07-29, 200 Hz request delivering 199 Hz clean):**
 
-- **Tire pressure is a precondition for every geometric calibration.** It sets the **loaded rolling radius** (hence `wheel_radius` and every counts↔metres conversion), and a soft tire has a **larger, longer contact patch** — which is exactly what pivot scrub fights, so underinflation inflates the measured scrub. Unequal left/right pressure is also a real wheel-diameter mismatch, i.e. straight-line veer. **Tires were inflated 2026-07-30 (firm by feel, pressure NOT gauged — a reproducibility gap).** To close it, record a gauge reading *and* the **axle-centre height to the floor under load**, which is a durable geometric marker that needs no gauge to re-check
-- **`wheel_radius: 0.0775` is VERIFIED post-inflation on hard floor — do not change it.** A 2 m commanded drive measured **81 in (2.0574 m) by tape vs 2.0464 m reported**, i.e. +0.54%, which implies 0.0779 but is *inside* the ±0.5 in tape precision (which spans 0.0774–0.0784). Fitting to that would be fitting to noise. The real finding is that effective rolling radius ≈ the 155 mm nominal, so **the tires are barely deflecting** — independent confirmation they are properly inflated, since soft tires would read measurably short. Method (the tool has since been deleted): drive out and back under `/cmd_vel`, and compare the tape against **net displacement**, which is what a tape between two marks actually measures — not path length, which is longer whenever the robot veers
-- **Straight-line quality after inflation is excellent:** forward vs reverse displacement agreed to **0.02%** (2.0464 / 2.0459 m) and heading changed **≤0.1° over 2 m** — the veer seen pre-inflation is gone, so equal inflation evidently fixed the side-to-side match
-- **One number fixes both error paths.** Commanding uses `Δv = ω × W`, odometry uses `ω = Δv / W`, so a single constant sets both. Skid-steer scrub makes the chassis rotate less than the wheels imply, which means the robot under-turns *and* odom over-reports by the same factor. Both are corrected by `W_eff = W_config / scrub`, where `scrub = yaw_true / yaw_odom`. Calibrate UP from the geometric track, never down
-- **Raising W re-opens the pivot duty problem:** the same `ω` command then demands proportionally more wheel speed, pushing carpet pivots back toward the saturation documented above. Derate `max_angular_velocity` by the same factor in the same edit (`new_max = old_max × scrub`) — the physical motion stays identical and only the number becomes honest. `max_linear_velocity` is unaffected (W does not enter the linear path)
+| Quantity | Measured |
+|---|---|
+| Stationary bias | x −0.254, y −0.209, z −0.128 deg/s |
+| Noise (sd) | 0.11–0.15 deg/s (~0.1% of a 150 deg/s pivot) |
+| Scale error | **−0.6% over two hand turns** (−715.7 vs 720 deg) |
+| Drift after bias removal | **0.003 deg/s** ≈ 10 deg/hr, vs −12.5 deg/**min** raw |
 
-**⚠ ALL SCRUB NUMBERS BELOW ARE VOID — measured against the front-left wheel fault (see top of file), and the earlier set was also pre-inflation.** Kept only as the method's shakedown and for the qualitative patterns. Re-measure both surfaces **after the wheel is repaired**. What did survive the exercise: the measurement chain itself is validated (gyro confirmed by visual count, integration math verified exact against synthetic data in both directions), and the *mean* of the two directions was strikingly stable at 0.64 across five independent runs — but that mean is the average of a good direction and a faulty one, so it is not the robot's real scrub factor either. Gyro yaw vs the driver's own `/odom` pose yaw, both directions, integrated through the deceleration so the two streams cover the same motion:
+- **Yaw is gyro `y`, and `ROS yaw rate = −gyro_y`.** Gravity reads on accel `y` (−9.64 m/s²), so the camera's Y axis points down; by the right-hand rule, CCW-from-above is negative `gyro_y`. (`|g|` being 1.7% low is accel scale error — ignore it)
+- A 12 s pivot inherits only ~0.04 deg of drift error
 
-| Commanded | CCW scrub | CW scrub | True yaw rate |
-|---|---|---|---|
-| 1.0 rad/s | 0.517 | 0.470 | 0.52 rad/s |
-| 1.5 rad/s | 0.616 | 0.524 | 0.94 rad/s |
-| 3.0 rad/s | 0.647 | 0.622 | 1.98 rad/s |
+**⚠ librealsense must be built from source with `FORCE_RSUSB_BACKEND=ON` — the apt debs do not work here.** `ros-humble-librealsense2` exists as arm64 but its **native backend cannot read the D455 IMU on this Pi**: it wants a kernel HID-sensor path that does not exist, because the Pi kernel ships no `hid-sensor-*` modules, so the camera stays on generic `usbhid` and no IIO device appears. RSUSB reads the IMU over raw libusb instead. The Dockerfile builds **v2.57.7** from `realsenseai/librealsense`. **Do not "simplify" this to an apt install — it will build, run, and silently produce no IMU.**
 
-- **The old 0.71 figure was optimistic and is superseded** — it came from one eyeballed revolution count. Odom over-reports yaw by ~60%, not 41% (at least on soft tires). Mean scrub 0.60 would imply `wheel_separation ≈ 0.48` and `max_angular_velocity ≈ 1.8`, but see the pressure blocker
-- **Scrub is not a constant ratio, so no single W is right at all speeds.** True yaw rate against command (0.52 / 0.94 / 1.98 for 1.0 / 1.5 / 3.0) fits a roughly *fixed angular deficit* far better than a fixed fraction, which is the signature of stiction in the pivot: the loss matters relatively more the slower you turn. Spread across runs was 20%. Expect this to shrink once the contact patch is right
-- **The CCW/CW split tracks the carpet nap**, and by the same sign as the duty sweeps: 16% at 1.5 rad/s but only 4% at 3.0, with CW the more expensive direction. More slip means more wheel rotation per degree of chassis rotation, so a harder direction yields a *lower* scrub factor. Physically consistent, which is a useful check that the measurement is sane
-- **The odometry side is self-validating:** 1.5 rad/s for 12 s should be 2.87 rev and `/odom` reported 2.91, the excess being deceleration. So the driver tracks its command and the unwrapping is right; any discrepancy is real scrub, not a measurement artefact
-- **A single W cannot be correct on both carpet and hard floor** — scrub is strongly surface-dependent (see "Pivot duty ceiling"), so any chosen value is a compromise that is wrong somewhere. The permanent fix is fusing gyro yaw, and **that is now built and running** — see "Odometry EKF" below. The live `/wheel_odom` → `/odom` yaw ratio *is* the scrub factor on whatever floor you are on, which also means the calibrator described above no longer needs building: the EKF is the instrument
+**The `cmake` invocation in that RUN step is known-good — do not change it.** Every failure there so far has been a *missing apt package*, so fix those in the System Dependencies layer:
+- **`libudev-dev`** — RSUSB compiles a bundled libusb whose udev backend needs `libudev.h`. The visible error is a generic `make: *** Error 2` ~70 lines later, so **read *up* the log to the first `fatal error:`**
+- **`python3-dev`** for `BUILD_PYTHON_BINDINGS=ON` (`ros:humble-ros-core` has no `Python.h`). Also present: `libusb-1.0-0-dev`, `pkg-config`
+- **Install paths are correct as-is, verified in the container.** `/opt/ros/humble/lib/aarch64-linux-gnu` is on `LD_LIBRARY_PATH` (ROS's `local_setup` adds the triplet dir), and `pyrealsense2` lands in `/usr/lib/python3/dist-packages/`, already on `sys.path`. Do not "fix" `CMAKE_INSTALL_LIBDIR` or add `PYTHON_INSTALL_DIR`
 
-**D455 IMU as a yaw reference (VERIFIED READING on hardware — see measured numbers below):** BMI055 or BMI085 depending on part number (K83122-100 vs -110/111; indistinguishable without librealsense), ±1000 deg/s at 200/400 Hz, 50 µs timestamp accuracy — integrate on timestamps, not assumed dt (rate tolerance ±0.3%). Bias (~±1 deg/s) is the dominant term and is removable by averaging a few seconds of stillness before each run; the residual ~1–2% sensitivity error is irrelevant against a 41% effect. `rs-imu-calibration` corrects gyro **bias only, not scale** (accel gets bias + scale + misalignment). Gyros are untrustworthy for *unbounded* heading, not for bounded few-second measurements — that distinction is the whole argument. **There is no zero-install path** — the Pi kernel ships no `hid-sensor-*` modules, so the camera's HID interface stays on generic `usbhid` and no IIO device appears.
+**ROS side, verified end to end (2026-07-29).** `realsense2_camera` 4.57.7, version-matched to librealsense v2.57.7 (wrapper `4.X.Y` ↔ lib `2.X.Y` — bump both together). Motion Module starts, gyro and accel open at 200 FPS, `/camera/camera/imu` publishes at **200.07 Hz**.
+- The launch's `For the 'unite_imu_method' param update to take effect, re-enable either gyro or accel stream` warning is **benign**. If the united topic ever does fail, `/camera/camera/gyro/sample` is already a `sensor_msgs/Imu`
+- **`gyro_calibrator` end-to-end drift: −0.07 deg/min** on the corrected `/imu/data` (vs −12.1 raw, 170×). It re-estimates bias whenever the robot is stationary (MEMS bias moves as the camera warms), publishes nothing during the startup window, fills `angular_velocity_covariance` at 7.0e-6, and advertises "no orientation" per spec with `orientation_covariance[0] = -1`
 
-**librealsense must be built from source with the RSUSB backend — the apt debs do not work here.** `ros-humble-librealsense2` / `ros-humble-realsense2-camera` exist as arm64 debs (and `python3-pyrealsense2` does not), but the deb's **native backend cannot read the D455 IMU on this Pi** — it wants the kernel HID-sensor path that doesn't exist (see above). Only `FORCE_RSUSB_BACKEND=ON`, which reads the IMU over raw libusb instead, gets gyro data. So the Dockerfile builds **v2.57.7 from source** (`realsenseai/librealsense`). Do not "simplify" this back to an apt install — it will build and run and silently produce no IMU.
-
-**The `cmake` invocation in that RUN step is known-good — do not change it.** Its flags (including `CMAKE_INSTALL_LIBDIR=lib/aarch64-linux-gnu`) are deliberate and verified. Build failures in this step have so far all been *missing apt packages*, not wrong flags, so fix them in the System Dependencies layer:
-- **`libudev-dev` is required.** With RSUSB the SDK compiles a bundled libusb whose udev hotplug backend needs `libudev.h`; without it the build dies in `third-party/libusb/.../linux_udev.c`. The visible error is a generic `make: *** Error 2` ~70 lines later and a Dockerfile banner pointing at the whole RUN step, so **read *up* the log to the first `fatal error:`** instead of suspecting the cmake line
-- **`python3-dev`** for `BUILD_PYTHON_BINDINGS=ON` (`ros:humble-ros-core` has no `Python.h`)
-- Also present for this step: `libusb-1.0-0-dev`, `pkg-config`
-- **Install paths are all correct as-is, verified in the running container:** `/opt/ros/humble/lib/aarch64-linux-gnu` **is** on `LD_LIBRARY_PATH` (ROS's `local_setup` adds the triplet dir, not just `lib`), and `pyrealsense2` lands in `/usr/lib/python3/dist-packages/` which is on the default `sys.path`. `import pyrealsense2` works with no `PYTHONPATH` help. Do not "fix" `CMAKE_INSTALL_LIBDIR` or add `PYTHON_INSTALL_DIR`
-- Runtime: `privileged: true` **is sufficient** — it bind-mounts the host `/dev`, so `/dev/bus/usb/*` is already visible with no explicit device mount (same reason the LED node reaches `/dev/spidev0.0`)
-
-**Measured gyro performance (D455 chassis-mounted, 2026-07-29, RSUSB source build):** enumerates as `Intel RealSense D455` FW 5.17.0.10 on USB 3.2, Motion Module offering Accel@100/200/400 and **Gyro@200/400 Hz**. Delivered 199 Hz clean at a 200 Hz request (8965 samples / 45 s).
-
-| Quantity | Measured | Verdict |
-|---|---|---|
-| Stationary bias | x −0.254, y −0.209, z −0.128 deg/s | 4–8× *better* than the ±1 deg/s assumed above |
-| Noise (sd) | 0.11–0.15 deg/s | ~0.1% of a 150 deg/s pivot |
-| Scale error | **−0.6% over two hand turns** (−715.7 deg measured vs 720 true; individual turns −359.5 and −356.2) | Irrelevant vs the 41% scrub effect — the whole argument holds |
-| Drift after bias removal | **0.003 deg/s** (0.05 deg over 19 s stationary) ≈ 10 deg/hr | vs −12.5 deg/**min** uncorrected: bias removal buys ~80× |
-
-- **Yaw is gyro `y`, and `ROS yaw rate = −gyro_y`.** Gravity reads on accel `y` (−9.64 m/s², so `|g|` is 1.7% low — accel scale error, ignore it), meaning the camera's **Y axis points down**. By the right-hand rule about a downward axis, CCW-from-above (ROS/REP-103 positive yaw) is **negative** `gyro_y`. Confirm the sign once against a known-direction turn before trusting odometry comparisons
-- A 12 s pivot measurement inherits only ~0.04 deg of drift error, so the "gyros are fine for *bounded* measurements" argument is now measured, not assumed
-
-**Two pyrealsense2 API traps (both cost a confusing measurement):**
-- **The first ~13 frames arrive in `timestamp_domain.hardware_clock`, then the stream switches to `global_time`** (epoch ms) mid-flight. The dt across that switch is ~1.785e12 ms and will detonate any naive integrator. **Filter on `f.get_frame_timestamp_domain() == rs.timestamp_domain.global_time`** — dropping a fixed number of leading frames is not reliable, the switch happened after frame 13 in one run and frame 2 in another
-- **With gyro *and* accel both enabled, `wait_for_frames()` returns each gyro frame ~twice** (388 framesets/s for a 193 Hz stream, measured 50.2% duplication), because a frameset carries the latest sample of every stream. Dedupe on `get_frame_number()`, use per-sensor callbacks, or enable gyro alone (gyro-only measured 0% duplication)
-
-**The live ROS IMU stack is now built and verified end to end (2026-07-29).** `realsense2_camera` 4.57.7 is in the image, version-matched to librealsense v2.57.7 (wrapper `4.X.Y` ↔ lib `2.X.Y` — bump both together). Verified on hardware:
-- Motion Module **starts** (no `HID Motion Sensor Failure`), gyro and accel both open at 200 FPS, and `/camera/camera/imu` publishes at **200.07 Hz**. The launch prints `For the 'unite_imu_method' param update to take effect, re-enable either gyro or accel stream` — **that warning is benign**, the united topic works anyway. If it ever does not, `/camera/camera/gyro/sample` is already a `sensor_msgs/Imu` and can be used directly
-- Neither pyrealsense2 trap above applies through the wrapper: it handles the timestamp domain switch and the duplicate-frame issue itself
-- **`gyro_calibrator` end-to-end drift: −0.07 deg/min** on the corrected `/imu/data` (−0.034 deg over 30 s), against −12.1 deg/min raw — a 170× improvement, so a 12 s pivot inherits ~0.014 deg. It now also re-estimates bias whenever the robot is stationary (MEMS bias moves as the camera warms, so a value taken once at cold boot goes stale), publishes nothing during the startup window, and fills `angular_velocity_covariance` at 7.0e-6 (the measured noise variance)
-- **Gyro scale confirmed in situ:** it reported 1.67 rev where a counted spin was ~1.7. Combined with the −0.6% two-turn measurement above, the gyro is trustworthy for bounded measurements — which is what the whole approach rests on
-- `/odom` from the driver runs at **30 Hz**, not the 67 Hz in the config; ample for yaw unwrapping (0.1 rad between samples at 3 rad/s, against a π limit)
-
-**Docker: one shared overlay for source-built packages, and a volume-shadowing trap.** `/ros_ws/install` is a **named volume**, and a named volume only seeds from the image while it is still empty. Anything the Dockerfile installs there after the volume exists is **silently invisible**, and later image rebuilds can never reach it — the build succeeds, the files are in the layer, and the package simply is not there at runtime. Proven: the image's own `/ros_ws/install/setup.bash` was dated Jul 29 while the mounted volume's was Jul 27.
-- So image-baked source packages go to a **single shared overlay**, `$OVERLAY=/opt/overlay`. `colcon` merges into an existing install base without orphaning what is already there (verified), so each package keeps its own cached `RUN` layer. Adding the Nth package is one line: `git clone … "$OVERLAY/src/<name>" && build-overlay --packages-up-to <pkg>`. The `build-overlay` helper sources ROS plus the overlay itself, so a later package can depend on an earlier one. The entrypoint loops over the overlay list, so **it never needs editing again**
-- **Consequence to fix: the running `roboclaw_driver` is the stale Jul 27 copy from the volume**, which shadows the fresh one in the overlay (`ros2 pkg prefix roboclaw_driver` → `/ros_ws/install/...`). Bumping its git pin and rebuilding has *no runtime effect*. One-time surgical fix, which keeps the `scout` build: `docker compose run --rm --entrypoint bash build_package -c 'rm -rf /ros_ws/install/roboclaw_driver'`
-- **Put new apt packages *after* the librealsense `RUN`.** Adding them to the earlier layer invalidates its cache and costs a full librealsense rebuild — 13 min of the 13.5 min total on a Pi 5, versus 1.5 min for the wrapper alone
-
-**⚠ All bench and calibration tooling was DELETED on request (2026-07-30), along with the whole compose `test` profile.** Every measurement in this file was produced by tools that no longer exist, so treat the numbers as the record and expect to rebuild the instrument before extending them. Removed: `spin_diagnostic.py` (in-place spin *and* straight-line sweeps with duty/current/encoder/voltage logging), `tune_velocity_pid.py` (RoboClaw packet-serial client + PID autotune), `wheel_separation_calibrator.py`, `wheel_radius_calibrator.py`, `motor_test.py` (raw-UART open-loop duty + breakaway ramp), `led_test.py`. Only `gyro_calibrator.py` was kept, being a runtime node rather than a test. Three of these were untracked, so there is no git history to restore from.
-
-**The same applies to `pivot_check.py`, written and deleted on request 2026-07-30** after producing the scrub table in "Odometry EKF". The EKF has made this trivial to rewrite, so the design is worth keeping rather than the file: pivot in place at a fixed rate in both directions, and diff the **unwrapped pose yaw** of `/wheel_odom` against fused `/odom` over the same window — their ratio is the scrub factor, with none of our own integration in the comparison and no gyro handling at all. Take the pose, not the reported rate. Refuse to move unless `/odom`, `/wheel_odom` and `/imu/data` are all live (**subscribe to `/imu/data` with sensor QoS or it will read as silent**), publish `cmd_vel` at 20–50 Hz, and always send an explicit zero Twist at the end because the deadman only coasts. No `wheel_separation` parameter is needed any more — the answer is a ratio of two live streams — but converting it to an implied `wheel_separation` still requires the value the driver is running.
+**⚠ Two pyrealsense2 traps** (they do not apply through the ROS wrapper, which handles both):
+- **The first ~13 frames arrive in `timestamp_domain.hardware_clock`, then the stream switches to `global_time`** mid-flight. The dt across the switch is ~1.785e12 ms and detonates any naive integrator. **Filter on `f.get_frame_timestamp_domain() == rs.timestamp_domain.global_time`** — dropping a fixed number of leading frames is unreliable (the switch came after frame 13 in one run, frame 2 in another)
+- **With gyro *and* accel enabled, `wait_for_frames()` returns each gyro frame ~twice** (50.2% duplication measured), because a frameset carries the latest sample of every stream. Dedupe on `get_frame_number()`, use per-sensor callbacks, or enable gyro alone
 
 ## Odometry EKF — gyro yaw + encoder distance (built 2026-07-30)
 
-`robot_localization`'s `ekf_node` now fuses the two sensors along their good axes: **forward speed from the wheels, yaw rate from the gyro, and nothing else from either.** `ros-humble-robot-localization` 3.5.4 is an apt install in the Dockerfile (in the post-librealsense layer, so it does not cost a 13 min rebuild). Config is `scout/config/ekf.yaml`, compose service `ekf`.
+`robot_localization`'s `ekf_node` fuses each sensor along its good axis only: **forward speed from the wheels, yaw rate from the gyro, nothing else from either.** Apt `ros-humble-robot-localization` 3.5.4, config `scout/config/ekf.yaml`, compose service `ekf`.
 
-**Topic and TF ownership moved:**
-- The driver's raw estimate is remapped to **`/wheel_odom`**, and **`/odom` is now the fused output**. So anything reading `/odom` gets the good yaw for free, and nothing downstream needed changing
-- The `roboclaw_driver` compose service **no longer uses `roboclaw_driver.launch.py`** — it runs `ros2 run roboclaw_driver roboclaw_driver_node` directly, because the launch file cannot remap and the node hardcodes the topic name `odom`. `--params-file` behaves identically to the launch file's `parameters=`, since the node names itself `roboclaw_driver`, matching the key in `roboclaw.yaml`
-- **`publish_tf` in `roboclaw.yaml` is now `false`** — the EKF owns `odom→base_link`. Verified only two `/tf` publishers remain: `robot_state_publisher` and `ekf_filter_node`
-- The EKF depends on the **`camera` and `robot_description` services being up**, because it rotates the IMU into `base_link` through TF (the IMU is stamped `camera_imu_optical_frame`). No TF, no yaw
+**Topic and TF ownership:**
+- The driver's raw estimate is remapped to **`/wheel_odom`**; **`/odom` is the fused output**, so anything reading `/odom` gets the good yaw for free
+- The `roboclaw_driver` service runs `ros2 run roboclaw_driver roboclaw_driver_node` directly, **not** `roboclaw_driver.launch.py`, because the launch file cannot remap and the node hardcodes the topic name `odom`. `--params-file` behaves identically since the node names itself `roboclaw_driver`
+- **`publish_tf: false` in `roboclaw.yaml`** — the EKF owns `odom→base_link`
+- The EKF **depends on `camera` and `robot_description` being up**, because it rotates the IMU into `base_link` through TF (the IMU is stamped `camera_imu_optical_frame`). No TF, no yaw
 
-**⚠ THE TRAP: `imu0_config` names the SENSOR's axes, not the robot's — and "vyaw alone" silently fuses nothing here.** robot_localization builds a diagonal mask from those 15 flags, rotates it by the sensor→`base_link` transform, and whichever rows survive decide which state variables actually get updated. On a body-aligned IMU sensor-Z *is* the yaw axis, so the distinction is invisible and every tutorial's "set vyaw true" works. This IMU reports in an **optical** frame with **Z out of the lens**, so a lone `vyaw` flag asks for rotation about the robot's *forward* axis; the mask rotates onto `vroll`, and `two_d_mode` then forces that to zero.
-- **Failure signature: absolutely no warning.** Not in the node log (0 bytes), not in `/diagnostics` (which reported "functioning properly"), and the IMU showed a healthy subscription count. Every rejection path that reports itself was untouched, because nothing was *rejected* — the measurement was faithfully applied to the wrong axis
-- **How to tell fused from ignored, in one number:** watch `twist.covariance[35]` (vyaw variance) in `/odom`. Fused it sits at **6.6e-6**, essentially the gyro's own 7.0e-6 measurement variance. Ignored it **climbs without bound** (2.5 and rising when broken). Same trick for the wheels via `twist.covariance[0]`: 1.1e-2 against the driver's advertised 0.1. A stationary robot cannot show you this any other way — both sensors read ~zero, so the estimate looks perfect while being unfused
-- **Fix: mark all three rotational rates true.** It costs nothing (`two_d_mode` overwrites vroll/vpitch with zero at 1e-6 covariance) and it is mount-agnostic, so it stays correct if the camera is ever remounted
-- **The sign needs no fix, and this is now VERIFIED UNDER REAL ROTATION** (hard floor, 1.5 rad/s, 8 s each way): `+ω` raised the fused yaw and `−ω` lowered it, agreeing with the wheels in both directions. The measurement is rotated by TF, and the URDF's camera mounting already encodes `ROS yaw rate = −gyro_y` — visible in the transform, whose `base_link ← camera_imu_optical_frame` basis rows are `(0,0,1) (−1,0,0) (0,−1,0)`, so the yaw row dotted with the gyro vector is exactly `−gyro_y`
-- **A QoS mismatch will silently starve any new IMU consumer.** `gyro_calibrator` publishes `/imu/data` best-effort (`qos_profile_sensor_data`); a default *reliable* subscription receives **nothing** and only says so in a one-line `incompatible QoS` warning at discovery. The EKF gets this right on its own; hand-written tools must ask for sensor QoS explicitly
+**⚠ THE TRAP: `imu0_config` names the SENSOR's axes, not the robot's — and "vyaw alone" silently fuses nothing here.** robot_localization builds a diagonal mask from those 15 flags, **rotates it by the sensor→`base_link` transform**, and the surviving rows decide which state variables update. On a body-aligned IMU sensor-Z *is* yaw, so every tutorial's "set vyaw true" works. This IMU reports in an **optical** frame with Z out of the lens, so a lone `vyaw` flag asks for rotation about the robot's *forward* axis; the mask rotates onto `vroll`, and `two_d_mode` zeroes it.
+- **There is absolutely no warning.** Node log 0 bytes, `/diagnostics` reported "functioning properly", subscription counts healthy. Nothing was *rejected* — the measurement was faithfully applied to the wrong axis
+- **How to tell fused from ignored, in one number:** `twist.covariance[35]` (vyaw variance) in `/odom`. Fused it sits at **6.6e-6**, essentially the gyro's own 7.0e-6. Ignored it **climbs without bound** (2.5 and rising). Same trick for the wheels via `twist.covariance[0]`: 1.1e-2 vs the driver's advertised 0.1. **A stationary robot cannot show you this any other way** — both sensors read ~zero, so the estimate looks perfect while unfused
+- **Fix: mark all three rotational rates true.** Costs nothing (`two_d_mode` zeroes vroll/vpitch at 1e-6 covariance) and stays correct if the camera is remounted
+- **The sign needs no fix — VERIFIED UNDER ROTATION** (hard floor, 1.5 rad/s, 8 s each way). The URDF's camera mounting already encodes `ROS yaw rate = −gyro_y`: the `base_link ← camera_imu_optical_frame` basis rows are `(0,0,1) (−1,0,0) (0,−1,0)`
+- **⚠ QoS: `gyro_calibrator` publishes `/imu/data` best-effort** (`qos_profile_sensor_data`). A default *reliable* subscription receives **nothing** and says so only in a one-line `incompatible QoS` warning at discovery. The EKF gets this right; hand-written tools must ask for sensor QoS explicitly
 
-**Measured:** `/odom` publishes at 30.0 Hz with much tighter jitter than the driver's (±0.2 ms vs ±1.8 ms — it runs on the filter's own clock, not the serial poll). **Stationary yaw drift +0.070 deg/min over 30 s**, which is exactly `gyro_calibrator`'s own end-to-end figure, so the EKF inherits the calibrated gyro's performance and adds nothing. x/y hold at 0.00000 m stationary, and `two_d_mode` pins z.
+**Measured:** `/odom` at 30.0 Hz with tighter jitter than the driver's (±0.2 ms vs ±1.8 ms — it runs on the filter's clock, not the serial poll). **Stationary yaw drift +0.070 deg/min**, exactly `gyro_calibrator`'s own figure, so the EKF adds nothing of its own. x/y hold at 0.00000 m; `two_d_mode` pins z.
 
-**The EKF is now the scrub instrument, and its first reading independently reproduces the wheel fault.** Comparing `/wheel_odom` yaw against fused `/odom` yaw over the same pivot gives the live scrub factor directly, with no external tooling and no integration of our own — which retires the calibrator design sketched under "Current tuning state" as something to rebuild. First reading (**hard floor, 1.5 rad/s commanded, 8 s per direction, 2026-07-30**):
+**Deliberately not fused:** wheel pose (integrated by the driver using its own bad yaw), wheel `vyaw` (the scrub-corrupted number this exists to replace), wheel `vy` (hardcoded 0 with zero covariance, and lateral slip in a skid-steer turn is real), IMU orientation (none exists), IMU linear acceleration (worthless integrated; the wheels measure speed well).
 
-| Direction | Wheel odom says | Truth (fused) | Scrub |
-|---|---|---|---|
-| CCW | 1.95 rev (+701 deg) | 0.93 rev (+334 deg) | **0.476** |
-| CW | 1.95 rev (−704 deg) | 1.42 rev (−511 deg) | **0.727** |
+**Untuned:** `process_noise_covariance` and `initial_estimate_covariance` are upstream defaults. Consequence: reported **yaw variance grows to ~1.7 rad² in 30 s**, wildly pessimistic against 0.07 deg/min of drift, because default yaw process noise is 0.06 rad²/s with no absolute yaw reference to pull it back. It cannot move the *estimate* (process noise only inflates covariance), but any consumer that gates on pose uncertainty needs this tuned first.
 
-- So the **encoders over-report yaw by 110% in the bad direction and 38% in the good one** — worse than the ~60% previously believed, because that figure averaged the two.
-- **This matches the earlier gyro-tooling numbers (hard floor 0.51 CCW / 0.77 CW) to within a few percent, from a completely different measurement path.** Two independent instruments agreeing is strong evidence that the asymmetry is the robot, and that **the front-left wheel fault is still present and unchanged**. Also note true yaw of only 0.73 rad/s CCW against 1.11 CW for the same 1.5 rad/s command.
-- **Still void as calibration inputs** — one good direction and one faulty one cannot average into a real scrub factor. Re-read both after the wheel is repaired; agreement between directions is the signal that it is fixed.
-
-**What this does NOT fix: the command path.** The EKF corrects what the robot *reports*, not what it *does*. Commanding still goes through `Δv = ω × W` in the driver with the uncalibrated geometric `wheel_separation: 0.278`, so a commanded `ω` still produces less yaw than asked. `wheel_separation` therefore still wants calibrating for command fidelity — but it is no longer load-bearing for odometry, which removes the pressure and the surface-dependence problem (one W cannot suit carpet and hard floor; the gyro suits both). Note also that raising W to fix commanding re-opens the pivot duty ceiling, and that **all scrub numbers remain void until the front-left wheel fault is repaired**.
-
-**Deliberately not fused:** the wheel pose (`x`/`y`/`yaw` were integrated by the driver using its own bad yaw, so fusing them reintroduces the error), the wheel `vyaw` (the scrub-corrupted number this exists to replace), wheel `vy` (hardcoded 0 with zero covariance, and lateral slip in a skid-steer turn is real), IMU orientation (none exists — `gyro_calibrator` now advertises that per the `sensor_msgs/Imu` spec with `orientation_covariance[0] = -1`, so a future config that fuses yaw gets a complaint instead of silently pegging heading to zero), and IMU linear acceleration (worthless integrated for position, and the wheels already measure speed well).
-
-**Untuned:** `process_noise_covariance` and `initial_estimate_covariance` are upstream defaults. One consequence worth knowing: the reported **yaw variance grows to ~1.7 rad² in 30 s**, wildly pessimistic against a gyro drifting 0.07 deg/min, because the default yaw process noise is 0.06 rad²/s and there is no absolute yaw reference to pull it back. It does not affect the yaw *estimate* — with no yaw measurement anywhere in the filter, process noise only inflates the covariance, it cannot move the mean — but any future consumer that gates on pose uncertainty will need this tuned first.
+**The EKF is also the flat-tire diagnostic**: compare `/wheel_odom` yaw against fused `/odom` yaw over the same pivot, both directions. Measured on hard floor at 1.5 rad/s, the encoders over-reported yaw by roughly **twice as much one way as the other**. **The two directions agreeing is the signal that the tire is repaired.** Take the *pose* yaw, unwrapped, not the reported rate, so none of our own integration enters the comparison. Refuse to move unless `/odom`, `/wheel_odom` and `/imu/data` are all live (subscribe to `/imu/data` with **sensor QoS** or it reads as silent), publish `cmd_vel` at 20–50 Hz, and always send an explicit zero Twist at the end.
 
 ## LiDAR — streaming `/scan` (built 2026-07-30)
 
-**⚠ The attached scanner is NOT the "RPLIDAR C1" in NOTES.md's parts list.** Interrogated on the bench it identifies as an **A2-family (triangulation)** unit: **256000 baud**, 16.0 m max range, firmware **1.32**, hardware rev **6**, S/N `9A8FECF0C3E09ED4A0EA98F309574116`. A C1 is 460800 baud and 12 m and has none of the modes below. This is not cosmetic — at 460800 the lidar never answers at all.
+**⚠ The attached scanner is NOT the "RPLIDAR C1" in NOTES.md's parts list.** It is an **A2-family (triangulation)** unit: **256000 baud**, 16.0 m range, firmware 1.32, hardware rev 6, S/N `9A8FECF0C3E09ED4A0EA98F309574116`. A C1 is 460800 baud and 12 m — at 460800 this lidar never answers at all.
 
-Driver is `rplidar_ros` **built from source** into `$OVERLAY` (SDK 2.1.0), config `scout/config/rplidar.yaml`, compose service `lidar`. Connected over a **CP2102 USB-UART bridge on `/dev/ttyUSB0`**; `usb_max_current_enable=1` is already set in `/boot/firmware/config.txt` for the motor.
+`rplidar_ros` built from source into `$OVERLAY` (SDK 2.1.0), config `scout/config/rplidar.yaml`, compose service `lidar`, on a **CP2102 USB-UART bridge at `/dev/ttyUSB0`**. `usb_max_current_enable=1` is already set in `/boot/firmware/config.txt`.
 
-**Verified running:** `/scan` at **11.7 Hz** (motor runs slightly above the commanded 10 Hz), **1800 beams at 0.20°** over the full 360°, **96% valid returns**, range limits 0.15–16.0 m.
+**Verified:** `/scan` at **11.7 Hz** (motor runs slightly above the commanded 10 Hz), **1800 beams at 0.20°** over 360°, 96% valid returns, range 0.15–16.0 m.
 
-**This unit's scan modes, all at 16.0 m** — divide the point rate by ten for points per revolution at 10 Hz:
+**Scan modes, all at 16.0 m** (divide points/s by ten for points per rev at 10 Hz):
 
 | Mode | Points/s | Per rev | Resolution |
 |---|---|---|---|
@@ -283,20 +240,17 @@ Driver is `rplidar_ros` **built from source** into `$OVERLAY` (SDK 2.1.0), confi
 | Boost | 15.9K | ~1590 | 0.23° |
 | **Sensitivity** (configured) | 15.9K | ~1590 | 0.23° |
 
-Sensitivity is both the highest point rate and what the lidar reports as its *typical* mode, and it reads low-reflectivity surfaces (dark furniture, black baseboards) better than Boost at the same rate. Drop to **Stability** if bright ambient light causes dropouts. **Asking for an unsupported mode name is a safe way to make the node print the whole table** — that is how the one above was obtained.
+Sensitivity is the highest point rate, the lidar's own reported *typical* mode, and reads low-reflectivity surfaces (dark furniture, black baseboards) better than Boost. Drop to **Stability** if bright ambient light causes dropouts. **Asking for an unsupported mode name makes the node print the whole table** — that is how this one was obtained.
 
-**⚠ `/dev/serial/by-id/...` DOES NOT EXIST INSIDE THE CONTAINER, and the failure is deeply misleading.** Those symlinks are created by **udev on the host**; a privileged container gets its own `/dev` without them, so the "more robust" by-id path resolves to nothing. This corrects the note under **LED Strip** that privileged "bind-mounts the host `/dev`" — real device nodes like `/dev/ttyUSB0` and `/dev/bus/usb/*` are there, but udev's symlink farms (`/dev/serial`, `/dev/disk/by-*`) are not.
-- **The SDK does not report the missing path as a bind failure.** It opens nothing, then dies in `getDeviceInfo` with `Error, unexpected error, code: 80008004` (`RESULT_OPERATION_NOT_SUPPORT`), which reads like "this lidar model is unsupported" and sends you hunting the wrong problem entirely. `connect()` returns success; the node's own "cannot bind to the specified serial port" message never fires
-- Consequence: the config must use `/dev/ttyUSB0`, whose number is assigned in probe order. Unambiguous today (only USB serial device; the RoboClaw is on the GPIO UART), but if a second is added, confirm identity **from the host** with `ls -l /dev/serial/by-id/` against the S/N above
+**⚠ `/dev/serial/by-id/...` DOES NOT EXIST INSIDE THE CONTAINER.** Those symlinks are made by **udev on the host**; a privileged container gets its own `/dev` without them. Real device nodes (`/dev/ttyUSB0`, `/dev/bus/usb/*`, `/dev/spidev0.0`) are there, but udev's symlink farms are not.
+- **The failure is deeply misleading:** the SDK opens nothing, `connect()` returns success, and it dies in `getDeviceInfo` with `Error, unexpected error, code: 80008004` (`RESULT_OPERATION_NOT_SUPPORT`) — which reads like "unsupported lidar model". The node's own "cannot bind to the specified serial port" message never fires
+- So the config must use `/dev/ttyUSB0`, assigned in probe order. Unambiguous today (only USB serial device; the RoboClaw is on the GPIO UART). If a second is added, confirm identity **from the host** with `ls -l /dev/serial/by-id/` against the S/N above
 
-**Sweep the baud before suspecting hardware.** A wrong baud gives `SL_RESULT_OPERATION_TIMEOUT`, which is indistinguishable from a dead or unpowered lidar. 115200 / 460800 / 1000000 all time out on this unit; only 256000 answers. The sweep costs 25 s and settles it — loop `ros2 run rplidar_ros rplidar_node --ros-args -p serial_baudrate:=$b` and watch for the S/N line.
+**Sweep the baud before suspecting hardware.** A wrong baud gives `SL_RESULT_OPERATION_TIMEOUT`, indistinguishable from a dead or unpowered lidar. 115200 / 460800 / 1000000 all time out; only 256000 answers. Loop `ros2 run rplidar_ros rplidar_node --ros-args -p serial_baudrate:=$b` and watch for the S/N line — 25 s and it is settled.
 
-**`laser` is a new REP-103 frame in the URDF, and the driver is pointed at it — not at the exporter's `lidar1_link`/`lidar2_link`.** Those are CAD-style (Z forward, Y up), so using one would tip every range reading 90° out of the floor plane; same problem and same fix as `camera_link`. The joint hangs off `lidar1_link` (the rotating head, the closest thing the CAD offers to the beam origin) with `rpy="0 -1.5707963267949 -1.5707963267949"`.
-- **It is self-checking: the rotation works out to exactly zero against `base_link`.** Verified — `base_link→laser` reads translation `(0.073, 0.000, 0.241)` and RPY `0 0 0`, matching the predicted `(0.0725, 0, 0.2406)`. So `tf2_echo base_link laser` showing any nonzero rotation means the chain is broken
+**`laser` is a new REP-103 frame in the URDF and the driver points at it**, not the exporter's `lidar1_link`/`lidar2_link`, which are CAD-style (Z forward, Y up) and would tip every range reading 90° out of the floor plane. The joint hangs off `lidar1_link` (the rotating head).
 
-**⚠ THE SCANNER IS MOUNTED BACKWARDS — 180° of yaw, corrected in the URDF (measured 2026-07-30).** Nothing in the CAD records how the unit is bolted to the mast, and the error announces itself nowhere: the scan looks perfectly plausible, it is just rotated, which would silently build a wrong map.
-
-Measured by parking the robot in a deliberately asymmetric spot and comparing the scan against the operator's description of the room:
+**⚠ THE SCANNER IS MOUNTED BACKWARDS — 180° of yaw, corrected in the URDF (measured 2026-07-30).** Nothing in the CAD records how it is bolted to the mast, and the error announces itself nowhere: the scan looks perfectly plausible, just rotated, silently building a wrong map.
 
 | Feature | Reported | Actually |
 |---|---|---|
@@ -304,16 +258,16 @@ Measured by parking the robot in a deliberately asymmetric spot and comparing th
 | 0.35 m obstacle arc | −85°…−7° (right) | **on the left** |
 | 2.1 m opening | +90° (left) | on the right |
 
-- **Fitting `true = s × reported + offset` needs both features, and that is the point of using two.** A single feature cannot separate a rotation from a mirror: `s = +1, offset = 180°` puts the tight arc on the left, while `s = −1, offset = 180°` puts it on the right. The operator's "left" picks the first. So the scan is **NOT mirrored** — the driver correctly stays `inverted: false` — and it is a pure yaw
-- **Fixed in the `lidar1_to_laser` joint, NOT in the driver**, because it is a statement about how the hardware is bolted on. Composing 180° of yaw onto the CAD correction flips both signs, `0 -pi/2 -pi/2` → `0 pi/2 pi/2`, and `base_link→laser` now reads RPY `0 0 ±pi` instead of `0 0 0`
-- **Confirmed end to end through TF**, transforming the scan into `base_link` the way SLAM and Nav2 will: the open direction moved to 0° (8.70 m, longest sight lines at ±2.5°), the tight arc to +89°…+164° at 0.26–0.39 m, and the 2.03 m opening to −90°
-- **Reusable method**, better than the single-object test it replaces: dump a top-down ASCII map plus the bearings of the closest returns and the longest sight lines, have the operator name where two *different* features really are, then solve for `s` and `offset`. It needs no props and no robot motion
+- **Fitting `true = s × reported + offset` needs two features.** One cannot separate a rotation from a mirror: `s=+1, offset=180°` puts the tight arc on the left, `s=−1, offset=180°` on the right. The operator's "left" picks the first — so the scan is **not mirrored** (`inverted: false` is correct) and it is a pure yaw
+- **Fixed in the `lidar1_to_laser` joint, not the driver**, because it states how the hardware is bolted on. Composing 180° onto the CAD correction flips both signs: `0 -pi/2 -pi/2` → `0 pi/2 pi/2`
+- **Self-checking via TF:** `base_link→laser` reads translation `(0.073, 0.000, 0.241)` with RPY `0 0 ±π`. Any *other* rotation means the chain is broken. Transformed into `base_link`, the open direction sits at 0° (8.70 m), the tight arc at +89°…+164°, the opening at −90°
+- **Reusable method:** dump a top-down ASCII map plus bearings of the closest returns and longest sight lines, have the operator name where two *different* features really are, then solve for `s` and `offset`. No props, no robot motion
 
 ## SLAM — slam_toolbox mapping and localization (built 2026-07-30)
 
-`slam_toolbox` 2.6.10 (apt, in the post-librealsense layer) turns `/scan` into `/map` and owns **`map→odom`**. Config `scout/config/slam.yaml`, launch `scout/launch/slam.launch.py`, compose service `slam`. Inputs: `/scan` from the lidar, **`odom→base_link` from the EKF** for motion, `base_link→laser` from `robot_state_publisher` for mounting — so the camera and `gyro_calibrator` are load-bearing too, since the EKF's yaw comes through TF from the IMU.
+`slam_toolbox` 2.6.10 (apt) turns `/scan` into `/map` and owns **`map→odom`**. Config `scout/config/slam.yaml`, launch `scout/launch/slam.launch.py`, compose service `slam`. Inputs: `/scan`, **`odom→base_link` from the EKF**, and `base_link→laser` from `robot_state_publisher` — so the camera and `gyro_calibrator` are load-bearing, since the EKF's yaw comes through TF from the IMU.
 
-**Mapping quality rides on the *fused* `/odom`, so this is worth building before the front-left wheel is repaired.** The wheel fault corrupts what a commanded `ω` actually *does*, not what the EKF *reports*; scan matching consumes the report. Expect commanded pivots to under-rotate, not the map to be wrong.
+Mapping rides on the *fused* `/odom`, so the flat tire does not corrupt the map — expect commanded pivots to under-rotate, not the map to be wrong.
 
 **Three modes, selected by launch argument** (`mode:=new` default / `localization` / `continue`). Operating recipes are in NOTES.md.
 
@@ -323,73 +277,120 @@ Measured by parking the robot in a deliberately asymmetric spot and comparing th
 | `continue` | `async_slam_toolbox_node` | `map_file_name`, `map_start_at_dock: true` | Loads a graph, keeps extending it |
 | `localization` | `localization_slam_toolbox_node` | `map_file_name`, `map_start_pose`, `scan_buffer_size: 3` | Loads a graph, adds nothing |
 
-**⚠ THE `mode` PARAMETER IS DEAD — every upstream config and tutorial sets it and it does nothing.** `mode: mapping` / `mode: localization` appears in `mapper_params_online_async.yaml` and `mapper_params_localization.yaml`, but there is **no `declare_parameter("mode", ...)` anywhere** in `slam_toolbox_common.cpp`, `slam_mapper.cpp` or karto's `Mapper.cpp`. It is a comment with a colon in it. The real switch is **which executable runs**: `async_slam_toolbox_node` leaves `processor_type_` at `PROCESS`, while `localization_slam_toolbox_node`'s constructor sets `PROCESS_LOCALIZATION` (and additionally kills the map saver and forces `enable_interactive_mode_ = false`). Only that constructor makes a node refuse to grow the graph. So `slam.yaml` carries no `mode` key at all, and the launch file selects an executable — copying a tutorial's params file would have produced a node that silently kept mapping while called "localization".
+**⚠ THE `mode` PARAMETER IS DEAD — every upstream config and tutorial sets it and it does nothing.** There is no `declare_parameter("mode", ...)` anywhere in `slam_toolbox_common.cpp`, `slam_mapper.cpp` or karto's `Mapper.cpp`. It is a comment with a colon in it. **The real switch is which executable runs:** `async_slam_toolbox_node` leaves `processor_type_` at `PROCESS`, while `localization_slam_toolbox_node`'s constructor sets `PROCESS_LOCALIZATION` (and kills the map saver, and forces `enable_interactive_mode_ = false`). So `slam.yaml` carries no `mode` key at all — copying a tutorial's params file gives a node that silently keeps mapping while called "localization".
 
-**⚠ The map-loading params must be ABSENT, not `false`.** `SlamToolbox::shouldStartWithPoseGraph` requires `map_file_name` **and** one of `map_start_pose` / `map_start_at_dock`, and it tests them with `get_type() != PARAMETER_NOT_SET`. So `map_start_at_dock: false` in a YAML reads as *set* and takes the start-at-a-pose branch. This is the reason the mode params are built as a dict in the launch file instead of living in `slam.yaml`, where they would always exist. A bare `map_file_name` with neither companion loads **nothing**, logging only `Map starting pose not specified`.
+**⚠ The map-loading params must be ABSENT, not `false`.** `shouldStartWithPoseGraph` requires `map_file_name` **and** one of `map_start_pose` / `map_start_at_dock`, testing them with `get_type() != PARAMETER_NOT_SET`. So `map_start_at_dock: false` reads as *set*. That is why the mode params are built as a dict in the launch file rather than living in `slam.yaml`. A bare `map_file_name` with neither companion loads **nothing**, logging only `Map starting pose not specified`.
 
-**⚠ A missing map file is NOT fatal, and that is the dangerous part.** `deserializePoseGraphCallback` logs `Failed to read file` and then **`return true`** — the node comes up, publishes, and reports healthy while running on an empty graph. In localization mode that means localizing against nothing. The launch file therefore checks `<name>.posegraph` exists and raises before the node starts, listing the maps that do exist.
+**⚠ A missing map file is NOT fatal, and that is the dangerous part.** `deserializePoseGraphCallback` logs `Failed to read file` and then **`return true`** — the node comes up, publishes, and reports healthy while running on an empty graph, i.e. localizing against nothing. The launch file therefore checks `<name>.posegraph` exists and raises first, listing the maps that do exist.
 
-- **`map_start_at_dock` is unusable in localization mode.** `LocalizationSlamToolbox::loadPoseGraphByParams` warns `Starting localization at first node (dock) is correctly not supported` and localizes at the pose instead — so `localization` must be given `map_start_pose` (defaults to the origin; refine with `/initialpose`), and `continue` is the only mode that can use the dock
-- **⚠ `serialize_map` in localization mode does nothing and reports SUCCESS.** `LocalizationSlamToolbox::serializePoseGraphCallback` logs `Cannot call serialize map in localization mode!` and `return false` — but slam_toolbox's callbacks are bound into rclcpp's `void(header, req, resp)` service signature, so **the bool return is discarded** and `resp->result` goes back default-initialised at `0`, which is `RESULT_SUCCESS`. Verified: the caller printed `result=0`, the node logged the refusal, and no file appeared. So the only evidence is the node's own log and the missing file — never trust the service result here. Use `continue` to load a map and still be able to re-save it (verified: the identical call under `continue` did write both files)
-- **`map_file_name` is a basename with no extension** — `serialization::write`/`read` append `.posegraph` and `.data` themselves. Two different save services exist and only one round-trips: **`serialize_map`** writes the `.posegraph`+`.data` pair the load modes need, while **`save_map`** writes a Nav2-style `.pgm`+`.yaml` that slam_toolbox cannot load back
-- **`base_frame` must be `base_link`**, not the upstream default `base_footprint`, which this URDF does not define. `base_link` already sits at floor level. The default would fail every TF lookup and log `Failed to compute odom pose` forever
-- **Maps go in `./maps/`** (inside the `.:/ros_ws/src/` bind mount, so they reach the host). The directory must exist first — boost serialization will not create it, and the failure surfaces only as `RESULT_FAILED_TO_WRITE_FILE` — hence the tracked `maps/.gitkeep`. Paths passed to either service must be **absolute**; the node's CWD is `/ros_ws`
-- **No QoS trap here, unlike `/imu/data`.** `rplidar_node` publishes `/scan` with `rclcpp::QoS(rclcpp::KeepLast(10))`, i.e. RELIABLE, and slam_toolbox subscribes with `rmw_qos_profile_sensor_data` (BEST_EFFORT). A reliable publisher satisfies a best-effort subscriber, so the match is compatible
-- **`min_laser_range: 0.15` / `max_laser_range: 16.0`** match this unit rather than the 20 m default; `enable_interactive_mode: false` because the graph-editing markers are an rviz feature and Foxglove is the viewer here
-- **⚠ Two benign startup log lines, both of which look alarming.** Neither is a fault:
-  - `minimum laser range setting (0.1 m) exceeds the capabilities of the used Lidar (0.2 m)` — **both numbers are the same 0.15.** The parameter is a float64 (`0.1499999999999999944`) while `LaserScan.range_min` is a float32 promoted to double (`0.1500000059604645`), so `laser_utils.cpp`'s `min_laser_range < scan_.range_min` is true by 6e-9, and `%.1f` rounds the two to opposite sides of the 0.15 boundary. The clamp lands on `scan_.range_min`, which is the value wanted anyway. Do **not** raise the config to 0.2 to silence it — that would discard real returns
-  - `Message Filter dropping message: frame 'laser' ... queue is full` — fires **once**, in the ~2 s before TF is warm, and does not recur (verified: exactly one occurrence over a multi-minute run). `scan_queue_size` is 1, so a scan that cannot yet be transformed is dropped rather than queued. That is the correct behaviour; a larger queue would only deliver stale scans, and at 12.4 Hz against 0.3 m keyframes there are scans to spare
-- **`minimum_travel_distance` / `minimum_travel_heading` are 0.3, tightened from the 0.5 default — judgement, not measurement.** The robot is small and pivots in place a lot, where 0.5 rad is 29° between keyframes. These are the first knobs to relax if the Pi cannot keep up, along with `map_update_interval` (2.0 here vs 5.0 upstream), which is the one periodic cost that scales with map *area* rather than with motion
+- **⚠ `serialize_map` in localization mode does nothing and reports SUCCESS.** The callback logs `Cannot call serialize map in localization mode!` and `return false`, but slam_toolbox binds callbacks into rclcpp's `void(header, req, resp)` signature, so **the bool is discarded** and `resp->result` goes back default-initialised at `0` = `RESULT_SUCCESS`. The only evidence is the node's log and the missing file. Use **`continue`** to load a map and still be able to re-save it
+- **`map_start_at_dock` is unusable in localization mode** — it warns `Starting localization at first node (dock) is correctly not supported` and localizes at the pose instead. So `localization` needs `map_start_pose` (defaults to origin; refine with `/initialpose`), and `continue` is the only mode that can use the dock
+- **⚠ Every restart in `localization` mode therefore assumes the robot is back at the map's origin, and a wrong guess looks like a right one.** Scan matching only searches locally, so a small `map→base_link` correction means either "genuinely near the origin" or "stuck at a bad guess it could not escape" — the number cannot tell you which. **Confirm from the scan-vs-map overlay in Foxglove before trusting a plan**, since a mislocalized robot plans through walls and fails in ways that mimic tuning problems. If the stack is restarted anywhere but the starting spot, seed it with `/initialpose` (in the `map` frame — see the Nav2 goal-frame trap)
+- **`map_file_name` is a basename with no extension** — `serialization::write`/`read` append `.posegraph` and `.data`. Only **`serialize_map`** writes the pair the load modes need; **`save_map`** writes a `.pgm`+`.yaml` that slam_toolbox cannot load back
+- **`base_frame` must be `base_link`**, not the upstream default `base_footprint`, which this URDF does not define. `base_link` already sits at floor level; the default fails every TF lookup and logs `Failed to compute odom pose` forever
+- **Maps go in `./maps/`** (inside the `.:/ros_ws/src/` bind mount, so they reach the host). The directory must exist first — boost serialization will not create it and the failure surfaces only as `RESULT_FAILED_TO_WRITE_FILE`, hence the tracked `maps/.gitkeep`. Paths passed to either service must be **absolute** (the node's CWD is `/ros_ws`). Files are written root-owned, but `maps/` is user-writable so deleting them needs no `sudo`. A stationary session's `.posegraph` was already **11.8 MB** — expect tens of MB for a house, which is why `maps/` contents are gitignored
+- **No QoS trap here:** `rplidar_node` publishes `/scan` RELIABLE and slam_toolbox subscribes BEST_EFFORT, which is compatible
+- **`min_laser_range: 0.15` / `max_laser_range: 16.0`** match this unit rather than the 20 m default. `enable_interactive_mode: false` because the graph-editing markers are an rviz feature and Foxglove is the viewer
+- **`minimum_travel_distance` / `minimum_travel_heading` are 0.3**, tightened from 0.5 — judgement, not measurement (0.5 rad is 29° between keyframes on a robot that pivots a lot). These are the first knobs to relax if the Pi struggles, along with `map_update_interval` (2.0 here vs 5.0 upstream), the one periodic cost that scales with map *area* rather than motion
+- **⚠ Two benign startup lines, both alarming-looking.** `minimum laser range setting (0.1 m) exceeds the capabilities of the used Lidar (0.2 m)` — **both numbers are the same 0.15**; the parameter is float64 and `range_min` is a promoted float32, so the comparison is true by 6e-9 and `%.1f` rounds them opposite ways. The clamp lands on the value we wanted. **Do not raise the config to 0.2 to silence it** — that discards real returns. And `Message Filter dropping message: frame 'laser' ... queue is full` fires exactly **once**, in the ~2 s before TF is warm; `scan_queue_size: 1` correctly drops an untransformable scan rather than queuing a stale one
 
-**Verified end to end on hardware (2026-07-30, stationary, hard floor).** Inputs measured live: `/scan` at **12.46 Hz**, `/odom` at **30.01 Hz**, `base_link→laser` reading exactly the documented `(0.073, 0.000, 0.241)` with RPY `0 0 -π`.
-- `/map` publishes at **0.500 Hz**, i.e. precisely the configured 2.0 s `map_update_interval`, and `map→odom` appears. `/tf` publishers are exactly three: `robot_state_publisher`, `ekf_filter_node`, `slam_toolbox`
-- A stationary scan produced a **188 × 150 cell grid at 0.05 m** (9.4 × 7.5 m) — a 16 m scanner sees most of a room from one spot
-- **All three modes exercised.** `new` mapped and saved (`result=0`, files on the host); `localization` selected `localization_slam_toolbox_node`, deserialized the graph, and scan-matched the live scan back onto it with a **1 mm `map→odom` correction** (the robot had not moved, so near-identity is the right answer and is real evidence the match worked, not that nothing happened); `continue` selected `async_slam_toolbox_node`, loaded the same graph, and re-saved it successfully
-- **All three launch guards refuse to start**, verified: an unknown `mode`, a missing `.posegraph`, and a malformed `map_start_pose` each abort with a message naming the problem
-- A stationary session's `.posegraph` was already **11.8 MB** (`.data` 57 kB). Expect tens of MB for a house — which is why `maps/` contents are gitignored
-- Files are written **root-owned** (the container runs as root), but `maps/` is user-writable so deleting them from the host needs no `sudo`
+**Verified end to end (2026-07-30, stationary, hard floor):** `/map` at exactly the configured 0.500 Hz, `map→odom` appears, `/tf` publishers are exactly three (`robot_state_publisher`, `ekf_filter_node`, `slam_toolbox`). A stationary scan produced a 188 × 150 cell grid at 0.05 m. All three modes exercised — `localization` scan-matched back onto a saved graph with a **1 mm** correction on an unmoved robot. All three launch guards (unknown mode, missing `.posegraph`, malformed `map_start_pose`) refuse to start.
 
-**The deb costs 304 packages and ~866 MiB (image ~2.5 → ~3.2 GB), and there is no lighter path.** `slam_toolbox`'s `CMakeLists.txt` has a hard `find_package(rviz_common REQUIRED)` for its rviz plugin, which is not optional, so the whole rviz/Qt/OGRE stack is a dependency. Building from source would need the rviz **dev** packages instead — strictly worse. It sits in the post-librealsense apt layer so it does not invalidate the 13-minute librealsense build.
+**The deb costs 304 packages and ~866 MiB (image ~2.5 → ~3.2 GB) and there is no lighter path.** `slam_toolbox`'s `CMakeLists.txt` has a hard non-optional `find_package(rviz_common REQUIRED)` for its rviz plugin, so the whole rviz/Qt/OGRE stack comes with it. Building from source would need the rviz **dev** packages — strictly worse.
 
-## NVM save ritual (learned the hard way)
+## Nav2 — path planning and following (built 2026-08-03)
 
-Motion Studio edits live in **RAM** and vanish on power cycle. After any change:
-1. Device → Save Settings
-2. Power off / on
-3. Re-open **both** General Settings and Velocity Settings tabs and verify (PID is not visible in the General tab)
+Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `camera` reuses `rs_launch.py`). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section** — slam_toolbox fills both roles.
+
+**Topic and TF ownership:**
+- `navigation_launch.py` remaps controller_server's output to **`/cmd_vel_nav`** and velocity_smoother's `cmd_vel_smoothed` back to **`/cmd_vel`**, so `roboclaw_driver` needs no change and no launch file of our own is required
+- **Nav2 publishes no TF.** Inputs are `/scan`, `/map`, and `map→odom→base_link→laser`, so the entire chain (lidar, camera, gyro_calibrator, ekf, robot_description, slam) is load-bearing
+- Goals arrive from Foxglove on `/goal_pose`; bt_navigator forwards them to its own NavigateToPose action. **Foxglove stamps a clicked goal in whatever frame the 3D panel is *displaying*, and it must be `map`** — see the goal-frame trap below
+
+**The whole file is tuned for tight clearance (pipes barely wider than the robot), and the mechanism is to move the collision decision from "cost under the robot's centre" to "does the footprint polygon overlap an obstacle".**
+- **The real footprint polygon replaces `robot_radius: 0.22`:** `[[0.169, 0.167], [0.169, -0.167], [-0.169, -0.167], [-0.169, 0.167]]` from the mesh bounds, with `footprint_padding: 0.0` (upstream 0.01). This drops the **inscribed radius from 0.22 to 0.167**, and that is the number that decides the narrowest passable gap: `InflationLayer` marks everything within the inscribed radius as cost 253 and **NavFn treats 253 as impassable**, so the planned corridor is `pipe_width − 0.334` — exactly the physical fit and nothing more
+- `inflation_radius: 0.25` / `cost_scaling_factor: 10.0` (upstream 0.55 / 3.0), leaving ~8 cm of steeply-decaying gradient past the inscribed radius instead of 33 cm of penalty on a 33 cm robot. **These are the "do not be afraid" dials**, and they must stay in step between the two costmaps or the planner and controller disagree about the cost of hugging a wall
+- **`ObstacleFootprint` replaces upstream's `BaseObstacle` in the DWB critic list, and that single swap is the core of it.** `BaseObstacle` scores the one cell under `base_link`, so with any inflation it is really a distance-from-wall penalty — inside a pipe the centre cell is permanently inflated and the robot refuses to be where it must be. `ObstacleFootprint` rasters the oriented polygon and rejects a trajectory only when it actually covers a lethal cell, so passing 2 cm from a wall scores like passing 20 cm from it. Keep its `scale` tiny (0.02) so residual inflation stays a nudge
+- Controller is `RotationShimController` wrapping **DWB** (pivot onto the path, then follow it — a skid-steer should never arc onto a path, and in a pipe there is no room to). The primary controller's params live in the **same `FollowPath` namespace**; that is how the shim loads them
+- Local costmap is `obstacle_layer` + `inflation_layer` only, no static layer: a live 3 m rolling view at **0.025 m** cells, finer than the map because one 0.05 m cell is 15% of the robot's width. Global costmap is static + obstacle + inflation with `track_unknown_space: true` and the planner's `allow_unknown: true`, so it will commit into unmapped space
+
+**Verified end to end (2026-08-03, hard floor, ~20.x V pack):**
+- All eight nodes activated on the first try with **zero warnings or errors**. Local costmap 120 × 120 at 0.025 m; global costmap 106 × 134 at 0.05 m; published footprint is the real polygon
+- Zero-motion planning: **4 of 4** `ComputePathToPose` goals at ±1 m in x and y succeeded
+- Controller output **15.6 Hz** on `/cmd_vel_nav` pinned at the 0.35 m/s cap; velocity_smoother re-emitted at **28.5–30 Hz** on `/cmd_vel`
+- **A 0.8 m forward goal SUCCEEDED in 2.84 s.** Odom displacement 0.665 m with 0.013 m of lateral drift, final yaw −0.003 rad. It stopped **0.135 m short**, i.e. exactly inside the 0.15 m `xy_goal_tolerance` — expect that, and tighten the tolerance (not the speed) if a pipe needs the robot to arrive closer. `/cmd_vel` ended in explicit zero Twists and then went silent
+- **Zero control-loop misses and zero new driver serial errors during the drive.** Checked node by node, **none of the nav2 nodes advertises `/tf`** (only `ekf_filter_node` did, of everything discovered) — so nav2 adds no transform publisher. Note this was confirmed per node rather than by a total publisher count, for the discovery reason below
+- **Four consecutive Foxglove goals across a room SUCCEEDED back to back on a saved map: 1.14 m in 3.8 s, then 4.23 m in 24.9 s, 4.42 m in 14.2 s, 3.96 m in 17.3 s** — the first clean end-to-end runs of the real path (operator click → `map`-framed `/goal_pose` → `slam_toolbox` localization → drive), and the first that outlast the 10 s goal-frame trap below by more than double. **Arrival error was 0.13–0.14 m on every single one**, which is the `xy_goal_tolerance` showing through, not scatter — it is a systematic stop-short, so tighten the tolerance if a pipe needs a closer arrival
+- **Localization held to a 0.30 m / 2.1° `map→odom` correction over ~17 m of driving**, so slam_toolbox in `localization` mode tracks well once it starts from the right place
+- **The `Spin` recovery fired once mid-goal and the goal still succeeded** (3.2 s, `spin completed successfully`), so the recovery path works and is not automatically a lost goal
+- Not yet exercised: reverse (`min_vel_x: 0.0`), `waypoint_follower`, `smoother_server`
+
+**⚠ DO NOT RUN `docker compose run` DIAGNOSTIC CONTAINERS WHILE NAV2 IS NAVIGATING — it starves the Pi and fails the goal.** One throwaway container spawned to read TF during a 4.87 m drive **aborted it**: `Behavior Tree tick rate 100.00 was exceeded!` climbed from 5/s to 16/s over four seconds, then *every* action call missed its acknowledgement (`Timed out while waiting for action server to acknowledge goal request for compute_path_to_pose`, then `follow_path`, `wait`, `backup`, `spin`), and bt_navigator tore through the whole recovery branch in ~200 ms and aborted. Host load was 3.47 on 4 cores. **The warnings name the BT and the action servers, so it reads like a nav2 or a tuning fault, and it is neither.** Watch a live goal from **host-side `docker compose logs`**, which costs nothing, and save container-based checks (`tf2_echo`, `topic echo`) for when the robot is idle.
+
+**⚠ "Goal failed" DOES NOT STOP THE ROBOT — behaviors already dispatched keep running, and this is the second way a goal outlives the thing that reported it.** In that aborted run bt_navigator gave up at `t+12.6 s`, and behavior_server then went on to finish a 0.30 m `BackUp` (`t+14.1`), a `Wait` (`t+17.3`) and attempt a 90° `Spin` (failed at `t+22.3`) — **~10 s of unattended motion after the error line**. All three had been requested in the same 200 ms burst, so they also ran *concurrently*. **`controller_server` kept following the path through all of it and logged `Reached the goal!` at `t+31.8 s`** — the drive the BT called failed actually completed, 19 s after the error. Treat the abort as the start of the danger window, not the end of it, and note that "Goal failed" says nothing about where the robot ended up.
+
+**⚠ A GOAL STAMPED IN `odom` INSTEAD OF `map` WORKS FOR ~10 SECONDS AND THEN FAILS — set Foxglove's 3D panel display frame to `map`.** Symptom: the robot starts off correctly, then `planner_server` logs `Could not transform the start or goal pose in the costmap frame` on every replan, the BT falls through to `Spin`/`BackUp` recovery, and the goal aborts. Nothing names Foxglove or the frame.
+- **Mechanism:** bt_navigator keeps the goal's *original* header and hands the same `frame_id` + stamp to the planner on every 1 Hz replan. `Costmap2DROS::transformPoseToGlobalFrame` returns immediately when `frame_id` already equals the global frame, but otherwise does a real TF lookup **at that fixed stamp**, and the tf2 buffer only holds 10 s. So the lookup succeeds until the goal is 10 s old and fails forever after. A `map`-framed goal takes the short-circuit and cannot age out
+- **This is why short goals appeared to work while longer ones "failed"** — the 0.8 m / 2.84 s test finished inside the window. Duration, not distance, is what decides
+- **The `frame_id` is the whole diagnosis, and only the wire shows it.** Capture it with `ros2 topic echo /goal_pose geometry_msgs/msg/PoseStamped` — pass the type explicitly or `echo` exits instantly when the topic is idle, and **run it without piping into `grep`**, which block-buffers and hides the message until 4 KB accumulates (use `grep --line-buffered` or `stdbuf -oL`)
+- The same trap applies to anything else clicked in that panel, notably **`/initialpose`** for correcting localization
+
+**⚠ A GOAL IS NOT CANCELLED BY KILLING THE CLIENT — the most dangerous thing found here.** `ros2 action send_goal` hitting its timeout kills only the *client*; bt_navigator keeps the goal, replans at 1 Hz and **keeps streaming 0.35 m/s forward commands indefinitely**. It survived for minutes, visible only in the node's log, and would have driven the robot the instant the driver came up. There is no GUI cancel button in Foxglove. To actually clear it, `docker compose restart nav2` (or deactivate `bt_navigator` via its lifecycle service). This is on top of the older trap that `docker stop` on the container leaves the last command latched for up to `velocity_timeout` and then only coasts.
+
+**⚠ DDS discovery from `docker compose run` throwaway containers is unreliable on this host, and it lies in the direction of "nothing is there".** Measured, all false negatives: `/cmd_vel` read as *no publisher at all* for 16 s while it was publishing at 28.5 Hz; `ros2 node list` omitted `robot_state_publisher` and `slam_toolbox` while both were running; `ros2 lifecycle get /controller_server` said `Node not found` while that process's own child costmap was publishing; `/roboclaw_status` read fine twice then vanished. **Judge liveness from the node's own log and from data topics, never from a fresh container's discovery** — and re-check a negative after 10–20 s before believing it. Relatedly, **`ros2 topic pub --once /goal_pose` from a throwaway container is silently lost**, because it publishes and exits before discovery matches; use the action instead, which waits for the server.
+
+**Other traps and deliberate departures from upstream:**
+- **The global costmap's `resolution` is very nearly cosmetic.** `StaticLayer` resizes the master grid to whatever `/map` arrives at, logging `StaticLayer: Resizing costmap to 106 X 134 at 0.050000 m/pix`. Finer global cells for pipe work means changing `resolution` in `slam.yaml`, not `nav2.yaml`
+- **Local costmap `width`/`height` are declared `int`** — `3.0` is a type error, not a rounding
+- **The drivetrain velocity floor is enforced in DWB, not as a smoother deadband:** `min_speed_xy: 0.05` + `min_speed_theta: 0.35` (~300–500 counts/s, and 2·0.05/0.278 for a pivot). `KinematicParameters::isValidSpeed` rejects a sample only when it is below **both**, so a slow pure rotation and a straight crawl stay legal while untrackable "barely creeping and barely turning" is thrown out. A `deadband_velocity` would instead chop the smoother's own ramp and act per axis
+- **`behavior_server` publishes `/cmd_vel` DIRECTLY, bypassing the velocity smoother**, so its `cycle_frequency` *is* a cmd_vel rate — raised 10 → **20 Hz**, since 10 Hz is the cadence that measurably worsened carpet dips
+- `controller_frequency: 15.0` with `smoothing_frequency: 30.0`: the smoother interpolates its own 30 Hz output between the controller's commands, so **the smoother is what feeds the 200 ms deadman** and the controller is free to be slower than 5 Hz would allow
+- **The default recovery BT backs up 0.30 m at 0.05 m/s**, right on the drivetrain floor, so recovery may barely move. Copy the XML to `/ros_ws/src/scout/` with ~0.10 m/s if it matters
+- Pivot rates are conventional (`rotate_to_heading_angular_vel: 1.2`, `max_vel_theta: 1.2`, behavior_server `max_rotational_vel: 1.2`) and **deliberately ignore the flat tire's ~2.5 rad/s scrub floor** — revisit all three together when the tire is repaired
+- **`Rotation Shim Controller was unable to find a goal point, a rotational collision was detected, or TF failed to transform into base frame! what(): Failed to transform pose to base frame!` is INFO, not an error, and is benign** — 7 occurrences across four successful drives. The shim catches its own exception and hands the cycle to DWB, which is the intended fallback. Only worry if it repeats every cycle
+- **Two benign log lines.** `No goal checker was specified in parameter 'current_goal_checker'. Server will use only plugin loaded general_goal_checker` fires once per run and is just the BT not using a goal-checker selector. And the global costmap's `Message Filter dropping message: frame 'laser' ... the timestamp on the message is earlier than all the data in the transform cache` appears a few times per session (distinct from slam's once-at-startup `queue is full` version)
+- **The driver's startup serial burst is not a nav2 problem and not worth chasing:** 69 `RETRY COUNT EXCEEDED` plus CRC failures over the first 10 s, then completely clean, including through the drive. `resyncSerial()` doing its job. Confirm the link is really alive by reading a *hardware* number out of `/roboclaw_status` — encoder counts and the two temperatures can only come from the board
+- **CPU:** nav2 ~39% of one core, the whole stack ~1 core of the Pi 5's 4, memory negligible. **`Control loop missed its desired rate of 15.0000Hz` is the stack's contention gauge** — a few per drive are normal (they cluster around the shim's fallback cycles), but it fires in bursts whenever anything else takes a core, which is how the throwaway-container abort above announced itself. First levers if it degrades: `vx_samples`/`vtheta_samples`, then `controller_frequency`, then the local costmap's 0.025 m resolution
+
+## Docker
+
+**⚠ `/ros_ws/install` is a named volume, and a named volume only seeds from the image while it is still empty.** Anything the Dockerfile installs there afterwards is **silently invisible**, and later image rebuilds can never reach it — the build succeeds, the files are in the layer, and the package simply is not there at runtime. Proven: the image's `/ros_ws/install/setup.bash` was dated Jul 29 while the mounted volume's was Jul 27.
+
+- So image-baked source packages go to **one shared overlay**, `$OVERLAY=/opt/overlay`. `colcon` merges into an existing install base without orphaning what is there, so each package keeps its own cached `RUN` layer. Adding the Nth package is one line: `git clone … "$OVERLAY/src/<name>" && build-overlay --packages-up-to <pkg>`. `build-overlay` sources ROS plus the overlay itself, so a later package can depend on an earlier one, and the entrypoint loops over the overlay list so **it never needs editing**
+- **Known consequence: the running `roboclaw_driver` may still be the stale Jul 27 copy from the volume**, shadowing the overlay (`ros2 pkg prefix roboclaw_driver` → `/ros_ws/install/...`), which makes bumping its git pin have no runtime effect. One-time fix that keeps the `scout` build: `docker compose run --rm --entrypoint bash build_package -c 'rm -rf /ros_ws/install/roboclaw_driver'`
+- **Put new apt packages *after* the librealsense `RUN`.** Adding them to the earlier layer invalidates its cache and costs a full librealsense rebuild — 13 min of the 13.5 min total on a Pi 5, vs 1.5 min for the wrapper alone
+- Runtime: `privileged: true` is sufficient for USB and SPI devices; no explicit device mounts needed (but see the `/dev/serial/by-id` caveat under LiDAR)
+
+**⚠ All bench and calibration tooling was DELETED on request (2026-07-30), along with the compose `test` profile.** Every measurement in this file came from tools that no longer exist — treat the numbers as the record and expect to rebuild the instrument before extending them. Removed: `spin_diagnostic.py` (spin and straight-line sweeps with duty/current/encoder/voltage logging), `tune_velocity_pid.py` (packet-serial client + PID autotune), `wheel_radius_calibrator.py`, `motor_test.py` (raw-UART open-loop duty + breakaway ramp), `led_test.py`, `pivot_check.py`. Three were untracked, so there is no git history to restore from. Only `gyro_calibrator.py` was kept, being a runtime node.
 
 ## Pi-side control notes
 
-- Device is the Pi 5 GPIO UART `/dev/ttyAMA0` (requires `dtparam=uart0=on` in config.txt; NOT `/dev/ttyAMA10`, which is the debug/console UART)
+- RoboClaw is on the Pi 5 GPIO UART **`/dev/ttyAMA0`** (needs `dtparam=uart0=on` in config.txt). **NOT `/dev/ttyAMA10`**, which is the debug/console UART
 - `sudo usermod -aG dialout $USER`; purge `modemmanager` if present
-- Deployed controller is the **`roboclaw_driver` ROS 2 node** (wimblerobotics/Sigyn, built from the `kahleeeb3` fork in the Dockerfile), run via docker-compose — `ros2 run`, not its launch file, so its odometry can be remapped to `/wheel_odom` for the EKF (see "Odometry EKF"); params in `scout/config/roboclaw.yaml`. Address 0x80, 115200 baud. There is no longer any standalone raw-UART bench path — `motor_test.py` was deleted, so open-loop duty commands now need a new tool.
-- The node converts `/cmd_vel` → per-wheel QPPS and sends **`MIXEDSPEEDACCELDIST` (SpeedAccelDistance)** each time a *new* `cmd_vel` arrives. So the **`cmd_vel` publisher** must stream ≥5 Hz (20–50 Hz) to satisfy the 0.2 s deadman, and must publish an explicit **zero** Twist to stop — otherwise the deadman just Free-Wheels to a coast (idle mode is Free Wheeling; it does not brake). It is NOT `SpeedAccelM1M2`; there is no send-always in the driver (it only re-sends on a new cmd_vel sequence)
-- **`accel` doubles as a top-speed limiter — do NOT use "a few thousand" here.** Each command carries a distance cap = `commanded_counts/s × max_seconds_uncommanded_travel (T)` and must decelerate to a stop within it, so reachable speed ≈ `sqrt(2·accel·V·T)`. To actually reach commanded V you need **`accel ≥ V/(2·T)`** (e.g. 1.2 m/s ≈ 7885 counts/s at T=0.2 s needs accel ≥ ~19,700; current config is 20000). accel 3000 pinned the robot at ~0.3–0.4 m/s. Lowering T tightens stop/overrun distance but raises the accel floor
-- The C++ driver already wraps serial I/O in try/except with `resyncSerial()` — transient CRC errors (a few are normal at startup) are retried, not fatal; dropouts coast via the deadman and the driver reconnects and resumes
+- Deployed controller is the **`roboclaw_driver` ROS 2 node** (wimblerobotics/Sigyn, `kahleeeb3` fork, built in the Dockerfile), run via `ros2 run` under docker-compose so its odometry can be remapped to `/wheel_odom`. Params in `scout/config/roboclaw.yaml`, address 0x80, 115200 baud. **There is no standalone raw-UART bench path any more** — open-loop duty commands need a new tool
+- The node converts `/cmd_vel` → per-wheel QPPS and sends **`MIXEDSPEEDACCELDIST`** each time a *new* `cmd_vel` arrives. There is no send-always. So the **publisher** must stream ≥5 Hz (use 20–50 Hz) to satisfy the deadman, and must send an explicit **zero** Twist to stop — otherwise the deadman just free-wheels to a coast
+- **⚠ `accel` doubles as a top-speed limiter — do NOT use "a few thousand".** Each command carries a distance cap = `commanded_counts/s × max_seconds_uncommanded_travel (T)` and must decelerate to a stop within it, so reachable speed ≈ `sqrt(2·accel·V·T)`. To actually reach commanded V you need **`accel ≥ V/(2·T)`** — 1.2 m/s ≈ 7885 counts/s at T=0.2 s needs ~19,700, and the config is 20000. accel 3000 pinned the robot at ~0.3–0.4 m/s. Lowering T tightens overrun distance but raises the accel floor
+- The C++ driver wraps serial I/O in try/except with `resyncSerial()` — transient CRC errors (a few are normal at startup) are retried, not fatal; dropouts coast via the deadman and the driver reconnects
 
 ## LED strip (APA102) Pi-side notes
 
-- Driver is the **`led_node`** ROS node (`scout/scout/led_node.py` + `apa102.py`), run by the `led` compose service. The old standalone `led_test.py` was deleted. `python3-spidev` is installed in the Dockerfile; `privileged: true` exposes `/dev` so the container sees the SPI device
-- **Enable SPI first:** uncomment `dtparam=spi=on` in `/boot/firmware/config.txt` and **reboot**. Same pattern as the UART `dtparam=uart0=on`
-- **The header SPI0 is `/dev/spidev0.0` (bus 0).** On the Pi 5 it lives on the RP1 (`/axi/pcie…/rp1/spi@50000`, alias `spi0`) and only appears once `dtparam=spi=on` is set
-- **`/dev/spidev10.0` is a trap — do NOT use it.** It is the BCM2712 SoC's internal SPI (`spi@7d004000`, alias `spi10`), present even when header SPI is disabled, and **not wired to GPIO10/11**. Opening it and calling `xfer2` succeeds silently (exit 0, no error) while nothing ever reaches pins 19/23 — a dark strip with a "passing" program. This burned an entire debugging session: the real fix was enabling `dtparam=spi=on`, not chasing a bus number
-- **Verify the mux, don't trust the device node:** after reboot `pinctrl get 10,11` must read **`a0`** (ALT0 = SPI). If it reads `none`, the pins are plain GPIO and SPI0 is not actually enabled, regardless of what `/dev/spidev*` exists
-- APA102 frame format (in `show()`): start = 4×`0x00`; per-LED = `0xE0 | brightness(0–31)`, then **BLUE, GREEN, RED**; end = `ceil(NUM_LEDS/16)` bytes of `0xFF`
+- Driver is the **`led_node`** ROS node (`scout/scout/led_node.py` + `apa102.py`), compose service `led`. `python3-spidev` is in the Dockerfile
+- **Enable SPI first:** uncomment `dtparam=spi=on` in `/boot/firmware/config.txt` and **reboot**
+- **The header SPI0 is `/dev/spidev0.0`.** On the Pi 5 it lives on the RP1 (`spi@50000`, alias `spi0`) and only appears once `dtparam=spi=on` is set
+- **⚠ `/dev/spidev10.0` is a trap.** It is the BCM2712's internal SPI (`spi@7d004000`, alias `spi10`), present even when header SPI is disabled and **not wired to GPIO10/11**. Opening it and calling `xfer2` succeeds silently while nothing reaches pins 19/23 — a dark strip with a "passing" program. This burned a whole session
+- **Verify the mux, don't trust the device node:** after reboot `pinctrl get 10,11` must read **`a0`** (ALT0 = SPI). `none` means the pins are plain GPIO regardless of what `/dev/spidev*` exists
+- APA102 frame format (in `show()`): start = 4×`0x00`; per-LED `0xE0 | brightness(0–31)` then **BLUE, GREEN, RED**; end = `ceil(NUM_LEDS/16)` bytes of `0xFF`
 
-## LED strip EMI (resolved — motor noise → flicker/wrong colors)
+## LED strip EMI (resolved)
 
-**Symptom:** the APA102 strip flickered and showed wrong colors *only while the motors were driving* — worst on the left side driving forward — plus glitches on motor start/stop.
+**Symptom:** flicker and wrong colors *only while the motors were driving* — worst on the left side driving forward — plus glitches on motor start/stop.
 
-**Root cause — two mechanisms:**
-1. **Capacitive coupling** onto the DATA/CLOCK lines from the RoboClaw's high-`dV/dt` H-bridge switching. It's **capacitive (E-field / displacement current), not magnetic** — confirmed because twisting the motor leads did *nothing* (that only cancels magnetic/inductive `dI/dt` coupling) while a grounded foil shield *did* help (only blocks E-fields). Mechanism: Maxwell displacement current across the parasitic capacitance between the motor leads and the signal wires, driven by the drive's `dV/dt`
+**Two mechanisms:**
+1. **Capacitive coupling** onto DATA/CLOCK from the RoboClaw's high-`dV/dt` H-bridge switching. Confirmed capacitive (E-field displacement current), not magnetic: twisting the motor leads did *nothing* (that only cancels inductive `dI/dt` coupling) while a grounded foil shield *did* help
 2. **Ground-reference bounce** on motor start/stop — the strip's logic ground momentarily shifting relative to the Pi's during the current transient, moving the reference the SPI logic thresholds against
 
 **Fix — target the victim, not the source:**
-- **Shortened the DATA/CLOCK jumper pigtails** to the bare minimum to reach the header. The long unshielded jumpers were acting as pickup antennas; shortening them cleared the gross flicker
-- **Dedicated signal-ground reference:** used the strip's two black wires as a star-ground split — black #1 → Buck Out − (power return), **black #2 → Pi GPIO GND, bundled with the green/yellow signal pigtails into the header** (near-zero-current logic reference that keeps the strip's ground tied tightly to the Pi's). This cleared the start/stop residual. See wiring diagram under **LED Strip** above
+- **Shortened the DATA/CLOCK pigtails** to the bare minimum. The long unshielded jumpers were pickup antennas; shortening cleared the gross flicker
+- **Dedicated signal-ground reference** via the star-ground split under **LED strip** above (black #1 → buck −, black #2 → Pi GND bundled with the signal pigtails). This cleared the start/stop residual
 
-**Principles (why it worked):**
-- The coupling was **capacitive** (`dV/dt` displacement current), so the cure is shorter/shielded signal runs, not lead twisting
-- **Split signal ground from power ground at the strip (star ground):** power-return current flows through black #1 to the buck; black #2 carries ~no current, so motor/LED power-return current stays *out* of the reference the SPI logic compares against
-- **Signal-line and signal-ground length/routing are what matter**; power +/− jumper length is not critical (low-impedance rails)
-- It is **not** made worse by the shared buck ground: motor return flows Battery± → driver → Battery± on the input side; the Pi and strip share only the buck *output* ground, so motor current never flows through the strip's ground path directly
+**Why it worked:** the coupling was capacitive, so the cure is shorter/shielded signal runs, not lead twisting. Splitting signal ground from power ground at the strip keeps power-return current out of the reference the SPI logic compares against. Signal-line and signal-ground length and routing are what matter; power +/− jumper length is not. The shared buck ground does not make it worse — motor return flows Battery± → driver → Battery± on the input side and never through the strip's ground path.
