@@ -40,8 +40,21 @@ bt_navigator:
     robot_base_frame: base_link
     # The fused EKF output, not the driver's raw /wheel_odom.
     odom_topic: /odom
-    bt_loop_duration: 10
-    default_server_timeout: 20
+    # ⚠ BOTH ARE RAISED OFF THE UPSTREAM DEFAULTS (10 / 20), WHICH FAIL EVERY GOAL HERE.
+    # default_server_timeout is the milliseconds a BT action client waits for a server to
+    # ACKNOWLEDGE a goal — not to complete it. Across DDS between the eight nav2 processes
+    # on a loaded Pi 5, first-call latency exceeds 20 ms every time, so compute_path_to_pose,
+    # both costmap-clear services, spin, wait and backup all timed out in sequence and the
+    # tree burned its whole recovery branch and aborted 167 ms after accepting the goal. The
+    # servers were fine and answered late: spin reported success 3.7 s after the abort.
+    #
+    # Raising this cannot mask a genuinely hung server — the BT still fails, just later.
+    #
+    # bt_loop_duration 10 asks for a 100 Hz tick this machine cannot hold ("Behavior Tree
+    # tick rate 100.00 was exceeded"). 20 ms / 50 Hz still far outruns the tree's own 1 Hz
+    # RateController replanning, so nothing downstream gets slower.
+    bt_loop_duration: 20
+    default_server_timeout: 200
     wait_for_service_timeout: 1000
 
     # default_nav_to_pose_bt_xml / default_nav_through_poses_bt_xml are left unset, which
@@ -250,15 +263,25 @@ controller_server:
       # perfectly-straight trajectories available.
       vx_samples: 12
       vtheta_samples: 21
-      # Must be > 0; with max_vel_y = min_vel_y = 0 these all collapse to one sample.
-      vy_samples: 5
+      # Must be > 0; with max_vel_y = min_vel_y = 0 every sample is vy=0, so 1 is enough.
+      vy_samples: 1
       # Distance/angle between poses along a candidate trajectory. Linear matches the
       # local costmap's 0.025 m cells so no cell is skipped. Angular is relaxed from
       # upstream's 0.025 rad to 0.05 (2.9 deg) because a full-speed pivot would otherwise
       # generate ~72 poses to footprint-check, for finer detail than a 0.34 m robot needs.
       linear_granularity: 0.025
       angular_granularity: 0.05
-      transform_tolerance: 0.2
+      # ⚠ 0.5, NOT upstream's 0.2, because this lookup crosses map->odom, which
+      # slam_toolbox publishes in bursts: it was measured 606 ms stale mid-goal while
+      # scan-matching (transform stuck while requests advanced), which threw
+      # "Extrapolation Error ... map to odom" every cycle until Controller patience
+      # exceeded killed the goal.
+      #
+      # This costs almost no accuracy. map->odom is a slowly-varying CORRECTION term,
+      # so a half-second-old one is nearly identical to the current one; all the fast
+      # motion rides on odom->base_link from the EKF, which stays fresh and is still
+      # held to 0.2 by the local costmap below.
+      transform_tolerance: 0.5
 
       # Must match general_goal_checker.xy_goal_tolerance; the RotateToGoal critic uses
       # this to decide it has arrived and should now only rotate.
@@ -339,7 +362,13 @@ local_costmap:
       update_frequency: 10.0
       # Only for Foxglove; the controller reads the costmap directly, not the topic.
       publish_frequency: 2.0
-      always_send_full_costmap: True
+      # False: incremental OccupancyGrid updates for Foxglove. Controller reads the
+      # in-process map, not this topic. Flip True only while debugging cost artifacts.
+      always_send_full_costmap: False
+      # Deliberately still 0.2 where the controller and global costmap are 0.5: this
+      # costmap's global_frame is odom, so it never touches the bursty map->odom. Its
+      # chain is the EKF's odom->base_link, which is fast and steady, and holding a
+      # tight tolerance on the map used for collision checking is worth keeping.
       transform_tolerance: 0.2
 
       # ⚠ THE REAL FOOTPRINT, not upstream's robot_radius. Half-extents from the mesh
@@ -424,8 +453,10 @@ global_costmap:
       # one cost that scales with map AREA rather than with motion.
       update_frequency: 1.0
       publish_frequency: 1.0
-      always_send_full_costmap: True
-      transform_tolerance: 0.2
+      always_send_full_costmap: False
+      # 0.5 for the same reason as the controller above: global_frame is map, so every
+      # pose lookup here inherits slam_toolbox's bursty map->odom.
+      transform_tolerance: 0.5
 
       # ⚠ THIS VALUE IS VERY NEARLY COSMETIC. StaticLayer resizes the master grid to
       # whatever resolution the incoming /map has, so the global costmap inherits

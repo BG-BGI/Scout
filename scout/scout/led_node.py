@@ -77,6 +77,7 @@ class LedNode(Node):
         self._speed = DEFAULT_SPEED
         self._phase = 0.0                 # advances every tick for animations
         self._last_tick = time.monotonic()
+        self._dirty = True                # force an initial blank show()
 
         self._srv = self.create_service(SetLedMode, 'set_led_mode',
                                          self._on_set_led_mode)
@@ -167,6 +168,7 @@ class LedNode(Node):
         self._speed = speed
         self._phase = 0.0
         self._strip.set_brightness(safe_brightness)
+        self._dirty = True
 
         msg = "mode='%s' color=#%02X%02X%02X brightness=%d%%->%d/31 speed=%.2f" % (
             mode, r, g, b, int(request.brightness), safe_brightness, speed)
@@ -185,6 +187,10 @@ class LedNode(Node):
         self._phase += dt * self._speed
 
         mode = self._mode
+        animated = mode in ('blink', 'breathe', 'rainbow', 'chase')
+        if not self._dirty and not animated:
+            return
+
         if mode == 'off':
             self._strip.set_all(0, 0, 0)
         elif mode == 'solid':
@@ -203,6 +209,8 @@ class LedNode(Node):
             self._render_chase()
 
         self._strip.show()
+        # Static modes only need SPI once until the next SetLedMode.
+        self._dirty = animated
 
     def _render_rainbow(self):
         n = self._num_leds

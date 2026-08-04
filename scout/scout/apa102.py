@@ -33,13 +33,15 @@ DEFAULT_BRIGHTNESS = 8        # 5-bit global brightness (0-31); low = low curren
 # 131 LEDs * ~60 mA ~= 7.9 A at full white. Used for the node's current budget.
 LED_FULL_WHITE_AMPS = 0.060
 
+_START_LEN = 4
+_LED_FRAME = 4  # brightness, B, G, R
+
 
 class APA102:
     """Minimal APA102 strip driver over a raw spidev SPI device.
 
-    Colors are staged in an in-memory buffer (one 4-byte LED frame each) and
-    flushed to the strip on show(). Each LED frame is stored on the wire as
-    [0xE0 | brightness, BLUE, GREEN, RED] — note the B-G-R byte order.
+    Colors are staged in a preallocated wire buffer and flushed on show().
+    Each LED frame on the wire is [0xE0 | brightness, BLUE, GREEN, RED].
     """
 
     def __init__(self, num_leds=NUM_LEDS, bus=SPI_BUS, device=SPI_DEVICE,
@@ -50,45 +52,46 @@ class APA102:
         self.spi.open(bus, device)
         self.spi.max_speed_hz = speed_hz
         self.spi.mode = 0                      # APA102 is CPOL=0, CPHA=0
-        # Per-LED frame buffer: [brightness_byte, blue, green, red] * num_leds.
-        self._buf = [[0xE0 | self.brightness, 0, 0, 0]
-                     for _ in range(num_leds)]
+
+        end_len = math.ceil(num_leds / 16)
+        self._buf = bytearray(_START_LEN + num_leds * _LED_FRAME + end_len)
+        # Start frame already zero; end frame must be 0xFF.
+        for i in range(len(self._buf) - end_len, len(self._buf)):
+            self._buf[i] = 0xFF
+        bright = 0xE0 | self.brightness
+        for i in range(num_leds):
+            self._buf[_START_LEN + i * _LED_FRAME] = bright
+
+    def _led_offset(self, i):
+        return _START_LEN + i * _LED_FRAME
 
     def set_pixel(self, i, r, g, b):
         """Stage RGB for LED `i` (stored B-G-R). Out-of-range index is ignored."""
         if 0 <= i < self.num_leds:
-            frame = self._buf[i]
-            frame[1] = b & 0xFF
-            frame[2] = g & 0xFF
-            frame[3] = r & 0xFF
+            off = self._led_offset(i)
+            self._buf[off + 1] = b & 0xFF
+            self._buf[off + 2] = g & 0xFF
+            self._buf[off + 3] = r & 0xFF
 
     def set_all(self, r, g, b):
         """Stage the same RGB color on every LED."""
+        rb, gb, bb = r & 0xFF, g & 0xFF, b & 0xFF
         for i in range(self.num_leds):
-            self.set_pixel(i, r, g, b)
+            off = self._led_offset(i)
+            self._buf[off + 1] = bb
+            self._buf[off + 2] = gb
+            self._buf[off + 3] = rb
 
     def set_brightness(self, brightness):
         """Set the 5-bit global brightness (0-31) on every LED."""
         self.brightness = max(0, min(31, brightness))
         byte = 0xE0 | self.brightness
-        for frame in self._buf:
-            frame[0] = byte
+        for i in range(self.num_leds):
+            self._buf[self._led_offset(i)] = byte
 
     def show(self):
-        """Assemble the full APA102 protocol frame and clock it out over SPI.
-
-        Frame layout:
-            Start frame:  4 bytes of 0x00
-            LED frames:   per LED -> [0xE0 | brightness, BLUE, GREEN, RED]
-            End frame:    ceil(NUM_LEDS / 16) bytes of 0xFF
-                          (extra clock edges to latch the last LEDs)
-        """
-        data = [0x00, 0x00, 0x00, 0x00]
-        for frame in self._buf:
-            data.extend(frame)
-        end_frame_len = math.ceil(self.num_leds / 16)
-        data.extend([0xFF] * end_frame_len)
-        self.spi.xfer2(data)
+        """Clock the prebuilt APA102 frame out over SPI."""
+        self.spi.xfer2(self._buf)
 
     def clear(self):
         """Turn every LED off and flush."""

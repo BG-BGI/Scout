@@ -199,7 +199,7 @@ BMI055 or BMI085 (K83122-100 vs -110/111, indistinguishable without librealsense
 
 ## Odometry EKF — gyro yaw + encoder distance (built 2026-07-30)
 
-`robot_localization`'s `ekf_node` fuses each sensor along its good axis only: **forward speed from the wheels, yaw rate from the gyro, nothing else from either.** Apt `ros-humble-robot-localization` 3.5.4, config `scout/config/ekf.yaml`, compose service `ekf`.
+`robot_localization`'s `ekf_node` fuses each sensor along its good axis only: **forward speed from the wheels, yaw rate from the gyro, nothing else from either.** Apt `ros-humble-robot-localization` 3.5.4, config `scout/config/ekf.yaml`, started from `robot.launch.py`.
 
 **Topic and TF ownership:**
 - The driver's raw estimate is remapped to **`/wheel_odom`**; **`/odom` is the fused output**, so anything reading `/odom` gets the good yaw for free
@@ -226,7 +226,7 @@ BMI055 or BMI085 (K83122-100 vs -110/111, indistinguishable without librealsense
 
 **⚠ The attached scanner is NOT the "RPLIDAR C1" in NOTES.md's parts list.** It is an **A2-family (triangulation)** unit: **256000 baud**, 16.0 m range, firmware 1.32, hardware rev 6, S/N `9A8FECF0C3E09ED4A0EA98F309574116`. A C1 is 460800 baud and 12 m — at 460800 this lidar never answers at all.
 
-`rplidar_ros` built from source into `$OVERLAY` (SDK 2.1.0), config `scout/config/rplidar.yaml`, compose service `lidar`, on a **CP2102 USB-UART bridge at `/dev/ttyUSB0`**. `usb_max_current_enable=1` is already set in `/boot/firmware/config.txt`.
+`rplidar_ros` built from source into `$OVERLAY` (SDK 2.1.0), config `scout/config/rplidar.yaml`, started from `robot.launch.py`, on a **CP2102 USB-UART bridge at `/dev/ttyUSB0`**. `usb_max_current_enable=1` is already set in `/boot/firmware/config.txt`.
 
 **Verified:** `/scan` at **11.7 Hz** (motor runs slightly above the commanded 10 Hz), **1800 beams at 0.20°** over 360°, 96% valid returns, range 0.15–16.0 m.
 
@@ -300,7 +300,7 @@ Mapping rides on the *fused* `/odom`, so the flat tire does not corrupt the map 
 
 ## Nav2 — path planning and following (built 2026-08-03)
 
-Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `camera` reuses `rs_launch.py`). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section** — slam_toolbox fills both roles.
+Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `robot.launch.py` reuses `rs_launch.py` for the camera). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section** — slam_toolbox fills both roles.
 
 **Topic and TF ownership:**
 - `navigation_launch.py` remaps controller_server's output to **`/cmd_vel_nav`** and velocity_smoother's `cmd_vel_smoothed` back to **`/cmd_vel`**, so `roboclaw_driver` needs no change and no launch file of our own is required
@@ -354,10 +354,12 @@ Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, 
 
 ## Docker
 
-**⚠ `/ros_ws/install` is a named volume, and a named volume only seeds from the image while it is still empty.** Anything the Dockerfile installs there afterwards is **silently invisible**, and later image rebuilds can never reach it — the build succeeds, the files are in the layer, and the package simply is not there at runtime. Proven: the image's `/ros_ws/install/setup.bash` was dated Jul 29 while the mounted volume's was Jul 27.
+**One install tree: `$OVERLAY=/opt/overlay`.** Image-baked forks (`roboclaw_driver`, realsense, rplidar) and locally built Scout packages all install there. The entrypoint sources only `$OVERLAY/install`. Compose mounts named volume `ros_overlay_install` on `/opt/overlay/install` so `build_package` survives `run --rm` (an empty volume seeds from the image once).
 
-- So image-baked source packages go to **one shared overlay**, `$OVERLAY=/opt/overlay`. `colcon` merges into an existing install base without orphaning what is there, so each package keeps its own cached `RUN` layer. Adding the Nth package is one line: `git clone … "$OVERLAY/src/<name>" && build-overlay --packages-up-to <pkg>`. `build-overlay` sources ROS plus the overlay itself, so a later package can depend on an earlier one, and the entrypoint loops over the overlay list so **it never needs editing**
-- **Known consequence: the running `roboclaw_driver` may still be the stale Jul 27 copy from the volume**, shadowing the overlay (`ros2 pkg prefix roboclaw_driver` → `/ros_ws/install/...`), which makes bumping its git pin have no runtime effect. One-time fix that keeps the `scout` build: `docker compose run --rm --entrypoint bash build_package -c 'rm -rf /ros_ws/install/roboclaw_driver'`
+- `colcon` merges into an existing install base without orphaning what is there, so each Dockerfile `RUN` keeps its own cached layer. Adding the Nth package is one line: `git clone … "$OVERLAY/src/<name>" && build-overlay --packages-up-to <pkg>`
+- Compose `build_package` installs with `--install-base /opt/overlay/install --symlink-install` against the `.:/ros_ws/src/` bind mount
+- **⚠ Volume still seeds only once.** Bumping an image-baked fork pin requires wiping `ros_overlay_install` (`docker compose down -v` or `docker volume rm …_ros_overlay_install`) then rebuilding so the volume re-seeds and `build_package` re-adds Scout. There is no longer a second `/ros_ws/install` path that can shadow a live overlay
+- Compose runtime is four services: `robot` (core launch), `slam`, `nav2`, `foxglove_bridge`
 - **Put new apt packages *after* the librealsense `RUN`.** Adding them to the earlier layer invalidates its cache and costs a full librealsense rebuild — 13 min of the 13.5 min total on a Pi 5, vs 1.5 min for the wrapper alone
 - Runtime: `privileged: true` is sufficient for USB and SPI devices; no explicit device mounts needed (but see the `/dev/serial/by-id` caveat under LiDAR)
 
@@ -367,14 +369,14 @@ Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, 
 
 - RoboClaw is on the Pi 5 GPIO UART **`/dev/ttyAMA0`** (needs `dtparam=uart0=on` in config.txt). **NOT `/dev/ttyAMA10`**, which is the debug/console UART
 - `sudo usermod -aG dialout $USER`; purge `modemmanager` if present
-- Deployed controller is the **`roboclaw_driver` ROS 2 node** (wimblerobotics/Sigyn, `kahleeeb3` fork, built in the Dockerfile), run via `ros2 run` under docker-compose so its odometry can be remapped to `/wheel_odom`. Params in `scout/config/roboclaw.yaml`, address 0x80, 115200 baud. **There is no standalone raw-UART bench path any more** — open-loop duty commands need a new tool
+- Deployed controller is the **`roboclaw_driver` ROS 2 node** (wimblerobotics/Sigyn, `kahleeeb3` fork, built in the Dockerfile), started from `robot.launch.py` so its odometry can be remapped to `/wheel_odom`. Params in `scout/config/roboclaw.yaml`, address 0x80, 115200 baud. **There is no standalone raw-UART bench path any more** — open-loop duty commands need a new tool
 - The node converts `/cmd_vel` → per-wheel QPPS and sends **`MIXEDSPEEDACCELDIST`** each time a *new* `cmd_vel` arrives. There is no send-always. So the **publisher** must stream ≥5 Hz (use 20–50 Hz) to satisfy the deadman, and must send an explicit **zero** Twist to stop — otherwise the deadman just free-wheels to a coast
 - **⚠ `accel` doubles as a top-speed limiter — do NOT use "a few thousand".** Each command carries a distance cap = `commanded_counts/s × max_seconds_uncommanded_travel (T)` and must decelerate to a stop within it, so reachable speed ≈ `sqrt(2·accel·V·T)`. To actually reach commanded V you need **`accel ≥ V/(2·T)`** — 1.2 m/s ≈ 7885 counts/s at T=0.2 s needs ~19,700, and the config is 20000. accel 3000 pinned the robot at ~0.3–0.4 m/s. Lowering T tightens overrun distance but raises the accel floor
 - The C++ driver wraps serial I/O in try/except with `resyncSerial()` — transient CRC errors (a few are normal at startup) are retried, not fatal; dropouts coast via the deadman and the driver reconnects
 
 ## LED strip (APA102) Pi-side notes
 
-- Driver is the **`led_node`** ROS node (`scout/scout/led_node.py` + `apa102.py`), compose service `led`. `python3-spidev` is in the Dockerfile
+- Driver is the **`led_node`** ROS node (`scout/scout/led_node.py` + `apa102.py`), started from `robot.launch.py`. `python3-spidev` is in the Dockerfile
 - **Enable SPI first:** uncomment `dtparam=spi=on` in `/boot/firmware/config.txt` and **reboot**
 - **The header SPI0 is `/dev/spidev0.0`.** On the Pi 5 it lives on the RP1 (`spi@50000`, alias `spi0`) and only appears once `dtparam=spi=on` is set
 - **⚠ `/dev/spidev10.0` is a trap.** It is the BCM2712's internal SPI (`spi@7d004000`, alias `spi10`), present even when header SPI is disabled and **not wired to GPIO10/11**. Opening it and calling `xfer2` succeeds silently while nothing reaches pins 19/23 — a dark strip with a "passing" program. This burned a whole session

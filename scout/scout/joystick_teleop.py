@@ -64,41 +64,37 @@ class JoystickTeleopNode(Node):
 
         self.create_timer(1.0 / PUBLISH_HZ, self._publish)
         self.get_logger().info(
-            'Joystick teleop started — waiting for controller at %s '
-            '(max linear %.2f m/s, max angular %.2f rad/s)'
+            'Joystick teleop on %s (max linear %.2f m/s, max angular %.2f rad/s)'
             % (JOY_DEV, self._max_linear, self._max_angular))
 
     # --- Controller reading (background thread) ------------------------------
     def _reader_loop(self):
-        """Read joystick events, reconnecting across unplug/replug.
+        """Read joystick events until stop or the device disappears.
 
-        Blocking reads on /dev/input/jsX; on disconnect we zero the inputs so a
-        held throttle can't keep the robot driving, then poll for the device.
+        enable_joystick on the launch file decides whether this node runs at all —
+        no reconnect poll. Missing device at start is a hard error; unplug mid-run
+        zeros inputs and ends the reader so a held throttle cannot keep driving.
         """
-        while not self._stop:
-            try:
-                dev = open(JOY_DEV, 'rb', buffering=0)
-            except OSError:
-                self._zero_inputs()
-                time.sleep(1.0)
-                continue
+        try:
+            dev = open(JOY_DEV, 'rb', buffering=0)
+        except OSError as exc:
+            self.get_logger().error('Cannot open %s: %s' % (JOY_DEV, exc))
+            return
 
-            self.get_logger().info('Controller connected: %s' % JOY_DEV)
-            try:
-                with dev:
-                    while not self._stop:
-                        data = dev.read(_JS_EVENT.size)
-                        if not data or len(data) < _JS_EVENT.size:
-                            break  # device went away
-                        _t, value, etype, number = _JS_EVENT.unpack(data)
-                        self._handle_event(value, etype, number)
-            except OSError:
-                pass
+        try:
+            with dev:
+                while not self._stop:
+                    data = dev.read(_JS_EVENT.size)
+                    if not data or len(data) < _JS_EVENT.size:
+                        break
+                    _t, value, etype, number = _JS_EVENT.unpack(data)
+                    self._handle_event(value, etype, number)
+        except OSError as exc:
+            self.get_logger().warn('Joystick read failed: %s' % exc)
 
-            if not self._stop:
-                self.get_logger().warn('Controller disconnected — robot stopped')
-            self._zero_inputs()
-            time.sleep(1.0)
+        self._zero_inputs()
+        if not self._stop:
+            self.get_logger().warn('Controller gone — inputs zeroed')
 
     def _handle_event(self, value, etype, number):
         if etype & ~_JS_INIT_FLAG != _JS_EVENT_AXIS:
@@ -159,8 +155,7 @@ class JoystickTeleopNode(Node):
     # --- Publishing ----------------------------------------------------------
     def _publish(self):
         # Only touch cmd_vel while the controller is actually driving, so idle
-        # zeros don't stomp other publishers (Foxglove, nav2). With no pad
-        # connected the inputs stay zero, so we naturally stay silent too.
+        # zeros don't stomp other publishers (Foxglove, nav2).
         active = self._rt > 0.0 or self._lt > 0.0 or self._turn != 0.0
         now = time.monotonic()
         if active:

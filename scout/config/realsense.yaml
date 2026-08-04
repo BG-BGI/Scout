@@ -1,32 +1,21 @@
-# Streams: color image, depth (for the cloud), IMU. Everything else off.
+# Streams: color image (live view), depth (obstacle avoidance), IMU. Everything else off.
 enable_color: true
 enable_depth: true
 enable_infra: false
 enable_infra1: false
 enable_infra2: false
 
-rgb_camera.color_profile: '640x480x15'
-depth_module.depth_profile: '640x480x15'
+# 5 FPS is the lowest D455 profile at 640x480 (probed: 5/15/30/60 — no 6).
+rgb_camera.color_profile: '640x480x5'
+depth_module.depth_profile: '640x480x5'
 
-# Depth pointcloud, textured with the color stream. The filter needs depth and
-# color in the SAME frameset to map the texture on, which is what enable_sync
-# buys; without it the cloud comes out untextured.
-#
-# EVERY pointcloud param is prefixed with the name librealsense gave the filter,
-# which is the CPU path it compiled: on aarch64 that is "Pointcloud (NEON)" ->
-# pointcloud__neon_. That includes stream_filter, so the `pointcloud.*` spelling
-# rs_launch defaults to is silently ignored here and the cloud publishes as bare
-# xyz. Verified against `ros2 param list`. stream_filter 2 = RS2_STREAM_COLOR.
-#
-# The plain names below are what a non-ARM host would use; harmless here (an
-# override for an undeclared param is ignored), and rs_launch prints a yellow
-# "not supported" warning for the neon spelling, which is equally harmless — it
-# validates against its own launch-arg list, not against the node.
-pointcloud.enable: true
+# Pointcloud off — depth image is enough for avoidance; the NEON cloud filter is the
+# expensive path on aarch64. enable_sync only mattered for textured clouds.
+pointcloud.enable: false
 pointcloud.stream_filter: 2
-pointcloud__neon_.enable: true
+pointcloud__neon_.enable: false
 pointcloud__neon_.stream_filter: 2
-enable_sync: true
+enable_sync: false
 
 # IMU: gyro + accel united into one sensor_msgs/Imu on /camera/camera/imu.
 # 200 Hz is the rate measured clean on this camera (199 Hz delivered).

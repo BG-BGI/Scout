@@ -46,8 +46,8 @@ class WheelJointRelay(Node):
         super().__init__('wheel_joint_relay')
 
         # Matching the driver's own 30 Hz joint_states rate buys nothing; this
-        # only feeds a visualisation.
-        self.publish_rate = max(1.0, self.declare_parameter('publish_rate', 30.0).value)
+        # only feeds a visualisation. 5 Hz is enough to see the wheels turn.
+        self.publish_rate = max(1.0, self.declare_parameter('publish_rate', 5.0).value)
         # Below this the driver is assumed gone and the wheels are held at their
         # last angle rather than drifting on a stale velocity.
         self.source_timeout = self.declare_parameter('source_timeout', 2.0).value

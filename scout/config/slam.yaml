@@ -67,7 +67,24 @@ slam_toolbox:
     map_update_interval: 2.0
     resolution: 0.05
     minimum_time_interval: 0.5
-    transform_timeout: 0.2
+    # ⚠ 0.8, NOT the 0.2 default, because this value is how far AHEAD of now() the
+    # publish loop stamps map->odom, and that lead is the only thing covering a stall in
+    # that loop. Ceres blocks it during every scan match: measured 7 solves in one goal,
+    # each with a nav2 "Extrapolation Error ... map to odom" within 2-88 ms of it, 7 for
+    # 7. Sampling /tf directly caught map->odom stamps ranging from +0.112 s to -0.545 s
+    # against the receiving clock, and a -0.606 s worst case was measured earlier (see
+    # nav2.yaml's transform_tolerance). 0.8 clears both with margin.
+    #
+    # This is a symptom fix and does not pretend otherwise: the stall is really the Pi
+    # having no headroom (4 cores, load average 18.9, containers summing to ~380% of
+    # 400%), and Ceres grabbing all 4 threads for each solve. Failures NOT coincident
+    # with a solve were also observed, and no lead time will help those -- only cutting
+    # load will. Relaxing minimum_travel_distance/heading below is the next knob.
+    #
+    # The accuracy cost is small for the same reason nav2 tolerates 0.5: map->odom is a
+    # slowly-varying CORRECTION, so a stale one is nearly the current one, while all the
+    # fast motion rides on the EKF's odom->base_link.
+    transform_timeout: 0.8
     tf_buffer_duration: 30.0
     # Serializing a large pose graph recurses deeply through boost archives.
     stack_size_to_use: 40000000

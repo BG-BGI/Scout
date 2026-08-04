@@ -41,10 +41,9 @@ RUN apt-get update && apt-get install -y \
 # install base without orphaning what is already there, so each package still gets
 # its own RUN layer and caches independently.
 #
-# Deliberately NOT /ros_ws/install: that path is a named volume at runtime, and a
-# volume only seeds from the image while it is still empty. Anything baked there
-# after the volume exists is silently invisible, and later image rebuilds can never
-# reach it. /ros_ws/install belongs to colcon as the output for our own packages.
+# Deliberately under $OVERLAY (not a separate /ros_ws/install tree). Compose mounts
+# a named volume on /opt/overlay/install so build_package persists; an empty volume
+# seeds from this image layer once.
 # --------------------------------------------------------------------------------
 ENV OVERLAY=/opt/overlay
 
@@ -139,14 +138,11 @@ RUN cat > /ros_entrypoint.sh <<'EOF'
 #!/bin/bash
 set -e
 source "/opt/ros/$ROS_DISTRO/setup.bash"
-# Overlays in ascending precedence: image-baked source packages first, then the colcon
-# workspace from the ros_ws_install volume, so a locally built package wins. Adding a
-# source package means adding a RUN above, never touching this list.
-for overlay in "$OVERLAY/install" /ros_ws/install; do
-  if [ -f "$overlay/setup.bash" ]; then
-    source "$overlay/setup.bash"
-  fi
-done
+# Single install tree: image-baked forks and locally built Scout packages both live
+# under $OVERLAY/install. Adding a source package means adding a RUN above.
+if [ -f "$OVERLAY/install/setup.bash" ]; then
+  source "$OVERLAY/install/setup.bash"
+fi
 exec "$@"
 EOF
 
