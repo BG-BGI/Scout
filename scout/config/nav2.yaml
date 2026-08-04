@@ -362,9 +362,10 @@ local_costmap:
       update_frequency: 10.0
       # Only for Foxglove; the controller reads the costmap directly, not the topic.
       publish_frequency: 2.0
-      # False: incremental OccupancyGrid updates for Foxglove. Controller reads the
-      # in-process map, not this topic. Flip True only while debugging cost artifacts.
-      always_send_full_costmap: False
+      # True for Foxglove testing (full OccupancyGrid each publish). Foxglove does not
+      # apply /costmap_updates, so False looks like an empty map. TODO: set False again
+      # once viz is sorted — saves DDS/CPU; controller never reads this topic.
+      always_send_full_costmap: True
       # Deliberately still 0.2 where the controller and global costmap are 0.5: this
       # costmap's global_frame is odom, so it never touches the bursty map->odom. Its
       # chain is the EKF's odom->base_link, which is fast and steady, and holding a
@@ -385,11 +386,12 @@ local_costmap:
       # direction, which in a pipe is a real fraction of the clearance.
       footprint_padding: 0.0
 
-      # No static_layer: this costmap is deliberately a live view of what the lidar can
-      # see right now, in the odom frame, so the controller reacts to the world rather
-      # than to the map's memory of it. Obstacle layer rather than upstream's voxel_layer,
-      # whose 3D marking machinery buys nothing from a single planar scan.
-      plugins: ["obstacle_layer", "inflation_layer"]
+      # No static_layer: this costmap is deliberately a live view in the odom frame.
+      # Lidar (mark+clear) and depth (mark-only) MUST be separate ObstacleLayers.
+      # Same layer: lidar beams that pass *over* a low obstacle (shoe in a doorway) to a
+      # wall behind raytrace those cells free and wipe the depth marks — robot then
+      # plans/drives through. Depth stays local-only for CPU.
+      plugins: ["obstacle_layer", "depth_layer", "inflation_layer"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -426,6 +428,44 @@ local_costmap:
           # something is seen behind it; set true if stale obstacles become the problem.
           inf_is_valid: false
 
+      # Under-lidar band. Own layer so lidar raytrace cannot wipe low marks.
+      # Two sources on the same cloud: mark only the 0.05–0.22 m band; clear along
+      # full-height depth rays (incl. floor hits) so removing a shoe frees those cells.
+      # Lidar still must not clear this layer — that was the doorway drive-over bug.
+      depth_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: depth_mark depth_clear
+        footprint_clearing_enabled: True
+        combination_method: 1
+        depth_mark:
+          topic: /camera/camera/depth/color/points
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          obstacle_max_range: 1.2
+          obstacle_min_range: 0.15
+          raytrace_max_range: 1.2
+          raytrace_min_range: 0.15
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.22
+          observation_persistence: 0.0
+          inf_is_valid: false
+        depth_clear:
+          topic: /camera/camera/depth/color/points
+          data_type: "PointCloud2"
+          marking: False
+          clearing: True
+          obstacle_max_range: 1.2
+          obstacle_min_range: 0.15
+          raytrace_max_range: 1.2
+          raytrace_min_range: 0.15
+          # Include floor returns so rays clear through where a removed shoe was.
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          observation_persistence: 0.0
+          inf_is_valid: false
+
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         # ⚠ THE "DO NOT BE AFRAID" DIALS. Inflation cannot make a gap passable or
@@ -453,7 +493,8 @@ global_costmap:
       # one cost that scales with map AREA rather than with motion.
       update_frequency: 1.0
       publish_frequency: 1.0
-      always_send_full_costmap: False
+      # True with local for Foxglove; TODO: False again for CPU (see local_costmap note).
+      always_send_full_costmap: True
       # 0.5 for the same reason as the controller above: global_frame is map, so every
       # pose lookup here inherits slam_toolbox's bursty map->odom.
       transform_tolerance: 0.5

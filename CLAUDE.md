@@ -54,7 +54,7 @@ That is a **coast, not a brake** (idle mode is Free Wheeling). There is no hardw
 
 **LiDAR** — see the LiDAR section: an **A2-family** unit (not the C1 in NOTES.md), CP2102 USB-UART on `/dev/ttyUSB0`
 
-**Camera** — Intel RealSense D455, FW 5.17.0.10, USB 3.2. Used for its IMU only so far
+**Camera** — Intel RealSense D455, FW 5.17.0.10, USB 3.2. IMU for yaw; color for live view; depth→decimated XYZ for under-lidar local costmap marking
 
 **LED strip** — APA102, 131 LEDs, **SPI-driven (separate DATA + CLOCK)**. NOT a WS2812/NeoPixel, so `rpi_ws281x` and bit-banged timing libraries do not apply.
 
@@ -311,8 +311,10 @@ Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, 
 - **The real footprint polygon replaces `robot_radius: 0.22`:** `[[0.169, 0.167], [0.169, -0.167], [-0.169, -0.167], [-0.169, 0.167]]` from the mesh bounds, with `footprint_padding: 0.0` (upstream 0.01). This drops the **inscribed radius from 0.22 to 0.167**, and that is the number that decides the narrowest passable gap: `InflationLayer` marks everything within the inscribed radius as cost 253 and **NavFn treats 253 as impassable**, so the planned corridor is `pipe_width − 0.334` — exactly the physical fit and nothing more
 - `inflation_radius: 0.25` / `cost_scaling_factor: 10.0` (upstream 0.55 / 3.0), leaving ~8 cm of steeply-decaying gradient past the inscribed radius instead of 33 cm of penalty on a 33 cm robot. **These are the "do not be afraid" dials**, and they must stay in step between the two costmaps or the planner and controller disagree about the cost of hugging a wall
 - **`ObstacleFootprint` replaces upstream's `BaseObstacle` in the DWB critic list, and that single swap is the core of it.** `BaseObstacle` scores the one cell under `base_link`, so with any inflation it is really a distance-from-wall penalty — inside a pipe the centre cell is permanently inflated and the robot refuses to be where it must be. `ObstacleFootprint` rasters the oriented polygon and rejects a trajectory only when it actually covers a lethal cell, so passing 2 cm from a wall scores like passing 20 cm from it. Keep its `scale` tiny (0.02) so residual inflation stays a nudge
+- **Depth (under-lidar):** local **`depth_layer`** (never share with lidar clearing — doorway over-clear bug). `depth_mark` = height band 0.05–0.22 m mark-only; `depth_clear` = same cloud, full height, clear-only so removing an object frees cells via floor/wall rays. Decimation×4, 1.2 m range. Global stays lidar-only
+- **`always_send_full_costmap: True` temporarily** so Foxglove can see `/local_costmap/costmap` (it ignores `/costmap_updates`). Flip both costmaps back to `False` when done testing — controller/planner do not use the published topic; full grids are DDS/CPU only
 - Controller is `RotationShimController` wrapping **DWB** (pivot onto the path, then follow it — a skid-steer should never arc onto a path, and in a pipe there is no room to). The primary controller's params live in the **same `FollowPath` namespace**; that is how the shim loads them
-- Local costmap is `obstacle_layer` + `inflation_layer` only, no static layer: a live 3 m rolling view at **0.025 m** cells, finer than the map because one 0.05 m cell is 15% of the robot's width. Global costmap is static + obstacle + inflation with `track_unknown_space: true` and the planner's `allow_unknown: true`, so it will commit into unmapped space
+- Local costmap plugins: `obstacle_layer` + `depth_layer` + `inflation_layer`, no static layer: a live 3 m rolling view at **0.025 m** cells. Global costmap is static + obstacle (lidar) + inflation with `track_unknown_space: true` and the planner's `allow_unknown: true`
 
 **Verified end to end (2026-08-03, hard floor, ~20.x V pack):**
 - All eight nodes activated on the first try with **zero warnings or errors**. Local costmap 120 × 120 at 0.025 m; global costmap 106 × 134 at 0.05 m; published footprint is the real polygon
