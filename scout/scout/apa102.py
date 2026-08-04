@@ -29,12 +29,37 @@ SPI_BUS, SPI_DEVICE = 0, 0    # /dev/spidev0.0 = RP1 SPI0 on the header (GPIO10 
 SPI_HZ = 1_000_000            # 1 MHz: slow clock tolerates 3.3V logic straight into the strip
 DEFAULT_BRIGHTNESS = 8        # 5-bit global brightness (0-31); low = low current
 
+# Visual white-balance (not current limiting). Equal R=G=B looks cool/blue on
+# these APA102s because blue/green dies outshine red at the same PWM.
+# Tuned so #FFFFFF is neutral and #FF9900 stays deep orange (not tennis-ball).
+R_GAIN = 1.00
+G_GAIN = 0.28
+B_GAIN = 0.27
+# Push chroma away from gray after gains (fights slight white-wash on mixed colors).
+SATURATION = 1.15
+
 # Rough per-LED current at full white, full (31/31) brightness. From CLAUDE.md:
 # 131 LEDs * ~60 mA ~= 7.9 A at full white. Used for the node's current budget.
 LED_FULL_WHITE_AMPS = 0.060
 
 _START_LEN = 4
 _LED_FRAME = 4  # brightness, B, G, R
+
+
+def _wb(r, g, b):
+    """Channel gains, then saturation boost; clamp to 0..255."""
+    r = (r & 0xFF) * R_GAIN
+    g = (g & 0xFF) * G_GAIN
+    b = (b & 0xFF) * B_GAIN
+    gray = (r + g + b) / 3.0
+    r = gray + SATURATION * (r - gray)
+    g = gray + SATURATION * (g - gray)
+    b = gray + SATURATION * (b - gray)
+    return (
+        max(0, min(255, int(round(r)))),
+        max(0, min(255, int(round(g)))),
+        max(0, min(255, int(round(b)))),
+    )
 
 
 class APA102:
@@ -68,14 +93,15 @@ class APA102:
     def set_pixel(self, i, r, g, b):
         """Stage RGB for LED `i` (stored B-G-R). Out-of-range index is ignored."""
         if 0 <= i < self.num_leds:
+            r, g, b = _wb(r, g, b)
             off = self._led_offset(i)
-            self._buf[off + 1] = b & 0xFF
-            self._buf[off + 2] = g & 0xFF
-            self._buf[off + 3] = r & 0xFF
+            self._buf[off + 1] = b
+            self._buf[off + 2] = g
+            self._buf[off + 3] = r
 
     def set_all(self, r, g, b):
         """Stage the same RGB color on every LED."""
-        rb, gb, bb = r & 0xFF, g & 0xFF, b & 0xFF
+        rb, gb, bb = _wb(r, g, b)
         for i in range(self.num_leds):
             off = self._led_offset(i)
             self._buf[off + 1] = bb
