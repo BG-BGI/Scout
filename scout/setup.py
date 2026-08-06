@@ -13,6 +13,8 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
+        ('share/' + package_name + '/behavior_trees',
+         glob('behavior_trees/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -32,6 +34,7 @@ setup(
             'gyro_calibrator = scout.gyro_calibrator:main',
             'battery_monitor = scout.battery_monitor:main',
             'wheel_joint_relay = scout.wheel_joint_relay:main',
+            'tilt_monitor = scout.tilt_monitor:main',
         ],
     },
 )

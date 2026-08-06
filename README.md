@@ -26,3 +26,20 @@ then `docker compose build` and `build_package` so the new `ros_overlay_install`
 ```bash
 docker compose exec slam /ros_entrypoint.sh ros2 service call   /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph   "{filename: /ros_ws/src/maps/office}"
 ```
+
+### Explore (frontier mapping)
+
+Profile-gated; does not start with plain `docker compose up`. After `robot` + `slam` + `nav2` look healthy:
+
+```bash
+docker compose --profile explore up -d explore
+```
+
+Stop (stopping explore alone leaves any in-flight Nav2 goal running):
+
+```bash
+docker compose --profile explore stop explore
+docker compose exec -T robot ros2 lifecycle set /bt_navigator deactivate
+```
+
+Resume navigation later with `activate` on the same node, or `docker compose restart nav2` for a full reset.

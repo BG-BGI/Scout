@@ -1,9 +1,10 @@
-"""Core robot stack: drivetrain, sensors, odom fusion, LED.
+"""Core robot stack: drivetrain, sensors, odom fusion, LED, tilt monitor.
 
 slam / nav2 / foxglove_bridge stay as separate compose services.
 
     ros2 launch scout robot.launch.py
     ros2 launch scout robot.launch.py enable_joystick:=false
+    ros2 launch scout robot.launch.py camera_config:=realsense_tight_tunnel.yaml
 """
 
 import os
@@ -13,7 +14,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
 
@@ -26,12 +27,19 @@ def generate_launch_description():
         config = src_config
 
     enable_joystick = LaunchConfiguration('enable_joystick')
+    camera_config = LaunchConfiguration('camera_config')
+    camera_config_path = PathJoinSubstitution([config, camera_config])
 
     return LaunchDescription([
         DeclareLaunchArgument(
             'enable_joystick',
             default_value='true',
             description='Start joystick_teleop (set false when Nav2 owns /cmd_vel)',
+        ),
+        DeclareLaunchArgument(
+            'camera_config',
+            default_value='realsense.yaml',
+            description='Basename under scout/config for the RealSense launch config',
         ),
 
         IncludeLaunchDescription(
@@ -79,7 +87,7 @@ def generate_launch_description():
                 ),
             ),
             launch_arguments={
-                'config_file': os.path.join(config, 'realsense.yaml'),
+                'config_file': camera_config_path,
             }.items(),
         ),
 
@@ -100,6 +108,18 @@ def generate_launch_description():
             output='screen',
             parameters=[os.path.join(config, 'ekf.yaml')],
             remappings=[('/odometry/filtered', '/odom')],
+        ),
+
+        Node(
+            package='scout',
+            executable='tilt_monitor',
+            output='screen',
+            remappings=[
+                ('imu/data', '/imu/data'),
+                ('tilt_alarm', '/tilt_alarm'),
+                ('explore/resume', '/explore/resume'),
+                ('navigate_to_pose', '/navigate_to_pose'),
+            ],
         ),
 
         Node(

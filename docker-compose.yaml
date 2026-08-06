@@ -26,19 +26,18 @@ services:
       --build-base /ros_ws/build
       --install-base /opt/overlay/install
 
-  # Drivetrain, sensors, odom chain, LED. Pass enable_joystick:=false when navigating
-  # so the pad cannot fight /cmd_vel.
+  # Drivetrain, sensors, odom chain, LED. Comment/uncomment one command line.
   robot:
     <<: *base
     command: ros2 launch scout robot.launch.py enable_joystick:=false
+    # command: ros2 launch scout robot.launch.py enable_joystick:=false camera_config:=realsense_tight_tunnel.yaml
 
-  # Occupancy grid mapping from /scan, publishing /map and map->odom. Needs `robot` up
-  # first. `up slam` starts a fresh map; the other two modes override the command, e.g.
-  #   docker compose run --rm slam ros2 launch scout slam.launch.py mode:=continue map:=house
+  # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
   slam:
     <<: *base
-    # command: ros2 launch scout slam.launch.py mode:=new
-    command: ros2 launch scout slam.launch.py mode:=localization map:=house
+    command: ros2 launch scout slam.launch.py mode:=new
+    # command: ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
+    # command: ros2 launch scout slam.launch.py mode:=localization map:=house
     # command: ros2 launch scout slam.launch.py mode:=continue map:=office
 
   # Path planning and following. Needs `slam` up first for /map and map->odom.
@@ -52,12 +51,23 @@ services:
   # it. `docker compose restart nav2` is what clears one. Note that `docker stop` here
   # leaves the last command latched for up to velocity_timeout (0.5 s) and the deadman
   # then only coasts, so it is a way to end navigation, not a way to brake.
+  #
+  # Comment/uncomment one command line.
   nav2:
     <<: *base
-    command: >
-      ros2 launch nav2_bringup navigation_launch.py
-      params_file:=/ros_ws/src/scout/config/nav2.yaml
-      use_sim_time:=false
+    command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2.yaml use_sim_time:=false
+    # command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false
+
+  # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
+  # starts it. Start after robot+slam+nav2 look healthy:
+  #   docker compose --profile explore up -d explore
+  # Kill switch (stop alone leaves Nav2 driving — deactivate bt_navigator to clear the goal):
+  #   docker compose --profile explore stop explore
+  #   docker compose exec -T robot ros2 lifecycle set /bt_navigator deactivate
+  explore:
+    <<: *base
+    profiles: ["explore"]
+    command: ros2 launch scout explore.launch.py
 
   foxglove_bridge:
     <<: *base

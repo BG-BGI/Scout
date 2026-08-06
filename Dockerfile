@@ -128,10 +128,20 @@ RUN apt-get update && apt-get install -y \
     ros-humble-slam-toolbox \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
+    ros-humble-map-msgs \
     ros-humble-compressed-image-transport \
     ros-humble-compressed-depth-image-transport \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# explore_lite (frontier exploration) — no Humble apt package; build into $OVERLAY.
+# Repo is a multi-package workspace; only lift explore + explore_lite_msgs into src.
+# Wipe ros_overlay_install after rebuild so the volume re-seeds with this package.
+RUN git clone --depth 1 https://github.com/robo-friends/m-explore-ros2.git /tmp/m-explore-ros2 \
+    && mv /tmp/m-explore-ros2/explore /tmp/m-explore-ros2/explore_lite_msgs "$OVERLAY/src/" \
+    && rm -rf /tmp/m-explore-ros2 \
+    && build-overlay --packages-up-to explore_lite \
+    && rm -rf "$OVERLAY/src/explore" "$OVERLAY/src/explore_lite_msgs"
 
 # Modify the ROS entrypoint
 RUN cat > /ros_entrypoint.sh <<'EOF'

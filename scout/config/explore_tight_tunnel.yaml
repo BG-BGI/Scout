@@ -1,0 +1,18 @@
+# explore_lite frontier exploration for closed tight tunnels / pipes.
+# Launched by scout/launch/explore.launch.py (compose profile `explore`).
+/**:
+  ros__parameters:
+    use_sim_time: false
+    robot_base_frame: base_link
+    return_to_init: true
+    costmap_topic: map
+    costmap_updates_topic: map_updates
+    visualize: true
+    planner_frequency: 0.2
+    progress_timeout: 45.0
+    potential_scale: 2.0
+    orientation_scale: 0.0
+    gain_scale: 1.5
+    transform_tolerance: 0.5
+    # Corridor end frontiers are short; upstream 0.75 m often misses them.
+    min_frontier_size: 0.35

@@ -12,6 +12,7 @@ Examples:
     ros2 launch scout slam.launch.py mode:=continue map:=house
     ros2 launch scout slam.launch.py mode:=localization map:=house \
         map_start_pose:=1.5,0.0,3.14159
+    ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
 """
 
 import os
@@ -76,9 +77,26 @@ def _map_params(map_name):
     return {'map_file_name': path}
 
 
+def _resolve_params_file(name):
+    """Basename under scout/config; bind-mount wins over install share."""
+    if os.path.isabs(name):
+        path = name
+    else:
+        src = os.path.join('/ros_ws/src/scout/config', name)
+        if os.path.isfile(src):
+            path = src
+        else:
+            path = os.path.join(
+                get_package_share_directory('scout'), 'config', name)
+    if not os.path.isfile(path):
+        raise RuntimeError(f"slam params_file not found: {path}")
+    return path
+
+
 def _launch_setup(context, *args, **kwargs):
     mode = LaunchConfiguration('mode').perform(context)
     map_name = LaunchConfiguration('map').perform(context)
+    params_file = LaunchConfiguration('params_file').perform(context)
 
     if mode not in MODES:
         raise RuntimeError(
@@ -113,8 +131,7 @@ def _launch_setup(context, *args, **kwargs):
             'scan_buffer_size': 3,
         }
 
-    config = os.path.join(
-        get_package_share_directory('scout'), 'config', 'slam.yaml')
+    config = _resolve_params_file(params_file)
 
     return [
         Node(
@@ -148,6 +165,12 @@ def generate_launch_description():
             description='Where in the loaded map the robot is starting, as '
                         '"x,y,theta". Used by mode:=localization; refine later by '
                         'publishing /initialpose.',
+        ),
+        DeclareLaunchArgument(
+            'params_file',
+            default_value='slam.yaml',
+            description='Basename (or absolute path) of the slam_toolbox params '
+                        'YAML under scout/config. Use slam_tight_tunnel.yaml for pipes.',
         ),
         OpaqueFunction(function=_launch_setup),
     ])
