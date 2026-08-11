@@ -64,10 +64,15 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # respawn: a hard SPI fault (beyond the soft retry inside the node)
+        # brings the strip back instead of leaving it dark until a container
+        # restart — this happened live (TimeoutError in xfer2 killed the node).
         Node(
             package='scout',
             executable='led_node',
             output='screen',
+            respawn=True,
+            respawn_delay=2.0,
         ),
 
         Node(

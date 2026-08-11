@@ -208,7 +208,16 @@ class LedNode(Node):
         elif mode == 'chase':
             self._render_chase()
 
-        self._strip.show()
+        # A transient SPI timeout (TimeoutError/errno 110 from xfer2 under bus
+        # contention or EMI) must not kill the node — drop the frame, stay
+        # dirty so a static mode retries next tick.
+        try:
+            self._strip.show()
+        except (TimeoutError, OSError) as exc:
+            self.get_logger().warn('SPI show() failed, frame dropped: %s' % exc,
+                                   throttle_duration_sec=5.0)
+            self._dirty = True
+            return
         # Static modes only need SPI once until the next SetLedMode.
         self._dirty = animated
 

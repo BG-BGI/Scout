@@ -69,10 +69,17 @@ class FollowMe(Node):
         self._lost_timeout = float(p('lost_timeout', 0.5).value)
         publish_hz = float(p('publish_hz', 20.0).value)
         # Obstacle avoidance: forward corridor gating + repulsive steering.
-        # Chassis is 0.334 m wide -> 0.25 m half-width gives ~4 cm/side margin.
+        # Half-width 0.30 covers the 0.238 m circumscribed radius while the
+        # robot yaws to track the target, not just the 0.167 m box half-width —
+        # telemetry showed obstacles sliding out of a 0.25 m strip mid-rotation.
         self._avoid_lookahead = float(p('avoid_lookahead', 0.9).value)
         self._avoid_hard_stop = float(p('avoid_hard_stop', 0.35).value)
-        self._corridor_half_width = float(p('corridor_half_width', 0.25).value)
+        self._corridor_half_width = float(p('corridor_half_width', 0.30).value)
+        # A clearance reading this old stops gating (min-hold window) — bridges
+        # scans where a seen obstacle briefly reads inf, which telemetry showed
+        # causing full-speed bursts right next to furniture.
+        self._clearance_hold = float(p('clearance_hold', 1.0).value)
+        self._max_accel = float(p('max_accel', 0.6).value)  # m/s^2 vx slew
         self._avoid_radius = float(p('avoid_radius', 1.0).value)
         self._k_avoid = float(p('k_avoid', 0.35).value)
         self._target_exclusion = float(p('target_exclusion', 0.35).value)
@@ -89,6 +96,9 @@ class FollowMe(Node):
         self._status = 'idle'
         self._corridor_min = math.inf  # nearest non-target return in the corridor
         self._wz_avoid = 0.0           # repulsive steering from side obstacles
+        self._clearance_log = []       # (stamp, clearance) ring for the min-hold
+        self._vx_out = 0.0             # slew-limited forward command
+        self._last_tick = time.monotonic()
         self._depth_corridor_min = math.inf
         self._depth_stamp = 0.0
         self._last_depth_proc = 0.0
@@ -116,6 +126,8 @@ class FollowMe(Node):
     def _on_start(self, request, response):
         self._active = True
         self._target = None
+        self._clearance_log = []
+        self._vx_out = 0.0
         self._set_status('searching')
         response.success = True
         response.message = 'following: searching for a target in the front sector'
@@ -134,6 +146,8 @@ class FollowMe(Node):
         self._active = False
         self._target = None
         self._stop_until = time.monotonic() + STOP_GRACE
+        self._clearance_log = []
+        self._vx_out = 0.0
         self._set_status('idle')
 
     # --- perception ---------------------------------------------------------------
@@ -279,8 +293,20 @@ class FollowMe(Node):
         return True
 
     # --- control (sole cmd_vel writer) ----------------------------------------------
+    def _held_clearance(self, now):
+        """Worst (smallest) corridor clearance seen in the hold window."""
+        fresh = self._corridor_min
+        if now - self._depth_stamp < self._depth_stale:
+            fresh = min(fresh, self._depth_corridor_min)
+        self._clearance_log.append((now, fresh))
+        cutoff = now - self._clearance_hold
+        self._clearance_log = [(t, c) for t, c in self._clearance_log if t >= cutoff]
+        return min(c for _, c in self._clearance_log)
+
     def _tick(self):
         now = time.monotonic()
+        dt = now - self._last_tick
+        self._last_tick = now
         if self._active and self._target is not None:
             if now - self._target_seen > self._lost_timeout:
                 self._target = None
@@ -289,23 +315,28 @@ class FollowMe(Node):
                 return
             dist = math.hypot(*self._target)
             bearing = math.atan2(self._target[1], self._target[0])
+            corridor = self._held_clearance(now)
             twist = Twist()
             if dist > self._stop_dist:
                 vx = self._kp_lin * (dist - self._standoff)
                 # Follow only, never reverse toward the thing behind the error.
                 vx = max(0.0, min(self._max_vx, vx))
-                # Corridor gate: scale to zero as the path ahead closes down.
-                # Lidar and (fresh) depth-cloud clearances merge here.
-                corridor = self._corridor_min
-                if now - self._depth_stamp < self._depth_stale:
-                    corridor = min(corridor, self._depth_corridor_min)
+                # Corridor gate: scale to zero as the path ahead closes down,
+                # against the min-held clearance so one blank scan can't
+                # un-see an obstacle.
                 zone = self._avoid_lookahead - self._avoid_hard_stop
                 free = corridor - self._avoid_hard_stop
                 scale = max(0.0, min(1.0, free / zone)) if zone > 0 else 1.0
-                twist.linear.x = vx * scale
-                blocked = (scale == 0.0 and vx > 0.0)
+                vx *= scale
+                blocked = (scale == 0.0 and vx == 0.0 and dist > self._standoff)
             else:
+                vx = 0.0
                 blocked = False
+            # Slew-limit vx so a reopened corridor ramps instead of stepping.
+            step = self._max_accel * max(dt, 0.0)
+            self._vx_out += max(-4 * step, min(step, vx - self._vx_out))
+            self._vx_out = max(0.0, self._vx_out)
+            twist.linear.x = self._vx_out
             twist.angular.z = max(-self._max_wz, min(
                 self._max_wz, self._kp_ang * bearing + self._wz_avoid))
             self._pub.publish(twist)
@@ -315,11 +346,11 @@ class FollowMe(Node):
             # Avoidance telemetry, 1 Hz while driving (throttled).
             depth_fresh = now - self._depth_stamp < self._depth_stale
             self.get_logger().info(
-                'dist %.2f brg %.0f° | corr lidar %.2f depth %s | '
+                'dist %.2f brg %.0f° | corr lidar %.2f depth %s held %.2f | '
                 'wz_avoid %+.2f | vx %.2f wz %+.2f%s' % (
                     dist, math.degrees(bearing), self._corridor_min,
                     ('%.2f' % self._depth_corridor_min) if depth_fresh else 'stale',
-                    self._wz_avoid, twist.linear.x, twist.angular.z,
+                    corridor, self._wz_avoid, twist.linear.x, twist.angular.z,
                     ' BLOCKED' if blocked else ''),
                 throttle_duration_sec=1.0)
         elif self._stop_until > now:
