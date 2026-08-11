@@ -196,7 +196,8 @@ batteryTopic.subscribe((msg) => {
 const trickState = document.getElementById('trick-state');
 const trickButtons = document.querySelectorAll('#tricks button');
 trickStatusTopic.subscribe((msg) => {
-  trickState.textContent = msg.data;
+  // 'idle' or 'name|#RRGGBB|mode' (LED cue riding along for led_status).
+  trickState.textContent = msg.data.split('|')[0];
   const busy = msg.data !== 'idle';
   trickButtons.forEach((b) => { b.disabled = busy; });
 });

@@ -49,13 +49,6 @@ PATTERN_CONNECT = ('blink', '#00FF00', 50, 2.0)
 PATTERN_DISCONNECT = ('blink', '#FF8000', 50, 1.0)
 PATTERN_OFF = ('off', '', 0, 1.0)
 
-TRICK_COLORS = {
-    'spin': '#0080FF',
-    'wiggle': '#B040FF',
-    'figure8': '#00FFFF',
-    'wheelie': '#FF2000',
-}
-
 VALID_MODES = ('off', 'solid', 'blink', 'breathe', 'rainbow', 'chase')
 
 
@@ -142,6 +135,8 @@ class LedStatus(Node):
         self._client_count = count
 
     def _on_trick(self, msg: String):
+        # trick_player sends 'idle' or 'name|#RRGGBB|mode' (color may change
+        # per segment, e.g. countdown's red -> orange -> green).
         if msg.data != self._trick:
             self._trick = msg.data
             self._resolve()
@@ -176,8 +171,9 @@ class LedStatus(Node):
             pattern = PATTERN_WARN
         elif self._overlay:
             pattern = self._overlay[0]
-        elif self._trick in TRICK_COLORS:
-            pattern = ('chase', TRICK_COLORS[self._trick], 50, 2.0)
+        elif self._trick != 'idle' and '|' in self._trick:
+            _name, color, mode = (self._trick.split('|') + ['', 'chase'])[:3]
+            pattern = (mode if mode in VALID_MODES else 'chase', color, 50, 2.0)
         elif self._user_pattern:
             pattern = self._user_pattern
         else:

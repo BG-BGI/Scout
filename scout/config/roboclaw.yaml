@@ -82,7 +82,13 @@ roboclaw_driver:
     # uncapped, with no dips — so cadence is not a straight-line limiter at this accel.
     # MIXEDSPEEDACCELDIST still ramps (not an instant sign flip). Dial down toward 12000-16000
     # if starts feel too abrupt (but keep accel >= max_linear_counts/0.4 or top speed re-clips).
-    accel: 20000                       # counts/s^2
+    #
+    # 40000 (~6 m/s^2 chassis) raised from 20000 for trick punch: at 20000 (~3 m/s^2) the
+    # wheelie's reverse->forward flip ramps over ~0.65 s and the nose never unloads; ~5 m/s^2
+    # is the rough lift threshold with the rear-mounted pack. Cost: teleop starts are jerkier
+    # and hard launches can break traction (burnout trick relies on exactly that). Drop back
+    # to 20000 if normal driving feels too abrupt.
+    accel: 40000                       # counts/s^2
 
     # --- outputs ---
     publish_odom: true                 # remapped to /wheel_odom; it feeds the EKF

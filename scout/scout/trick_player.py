@@ -34,23 +34,67 @@ MAX_LINEAR = 1.0     # m/s, roboclaw.yaml max_linear_velocity
 MAX_ANGULAR = 3.0    # rad/s, roboclaw.yaml max_angular_velocity
 STOP_GRACE = 0.3     # s of explicit zeros after a trick, then silence
 
-# name: [(duration_s, vx m/s, wz rad/s), ...]
-# All durations/magnitudes are first guesses pending on-robot tuning. The
-# wheelie in particular: accel 20000 counts/s^2 ramps the -1 -> +1 m/s flip
-# over ~0.65 s, so whether the nose lifts depends on real decel authority and
-# the rear battery weight — tune the two burst durations on a hard floor.
+# name: [(duration_s, vx m/s, wz rad/s[, '#RRGGBB' led override]), ...]
+# A (dur, 0, 0) segment is a deliberate hard stop (zeros keep the deadman fed).
+# Durations/magnitudes are first guesses pending on-robot tuning. The wheelie
+# depends on the roboclaw.yaml `accel`: at 20000 counts/s^2 the -1 -> +1 m/s
+# flip ramps over ~0.65 s (~3 m/s^2) and the nose stays down; 40000+ is what
+# gives it a chance. Tune on a hard floor.
 TRICKS = {
-    'spin':    [(4.2, 0.0, 3.0)],
-    'wiggle':  [(0.3, 0.0, 2.5), (0.3, 0.0, -2.5)] * 6,
-    'figure8': [(3.5, 0.4, 1.5), (3.5, 0.4, -1.5)],
-    'wheelie': [(0.4, -1.0, 0.0), (0.6, 1.0, 0.0)],
+    'spin':      [(4.2, 0.0, 3.0)],
+    'wiggle':    [(0.3, 0.0, 2.5), (0.3, 0.0, -2.5)] * 6,
+    'figure8':   [(3.5, 0.4, 1.5), (3.5, 0.4, -1.5)],
+    'wheelie':   [(0.4, -1.0, 0.0), (0.6, 1.0, 0.0)],
+    # Lunge, hard stop, psych pause, lunge again, retreat.
+    'fakeout':   [(0.3, 1.0, 0.0), (0.4, 0.0, 0.0), (0.5, 0.0, 0.0),
+                  (0.3, 1.0, 0.0), (0.6, -0.6, 0.0)],
+    # Wet-dog shake: fast small pivots at the scrub floor.
+    'shiver':    [(0.15, 0.0, 2.5), (0.15, 0.0, -2.5)] * 8,
+    # One full rev each way; the reversal snap is the show (2*pi/3 ~= 2.1 s).
+    'whiplash':  [(2.1, 0.0, 3.0), (2.1, 0.0, -3.0)],
+    # One clean circle around a point ~27 cm to the left (r = vx/wz).
+    'orbit':     [(4.2, 0.4, 1.5)],
+    # Snake down the hallway (~1.8 m of travel).
+    'slalom':    [(0.5, 0.6, 1.2), (0.5, 0.6, -1.2)] * 3,
+    # Slow reverse with lazy alternating arcs.
+    'moonwalk':  [(0.7, -0.25, 0.8), (0.7, -0.25, -0.8)] * 4,
+    # Butt-wiggle creep forward (arcs, so the pivot floor does not apply).
+    'wag':       [(0.2, 0.15, 2.5), (0.2, 0.15, -2.5)] * 6,
+    # LED steps red -> orange -> green while stationary, then a 1 s sprint.
+    'countdown': [(1.0, 0.0, 0.0, '#FF0000'), (1.0, 0.0, 0.0, '#FF8000'),
+                  (1.0, 0.0, 0.0, '#00FF00'), (1.0, 1.0, 0.0, '#00FF00'),
+                  (0.4, 0.0, 0.0, '#00FF00')],
+    # Stationary light show with pivot pulses on the beat.
+    'disco':     [(0.25, 0.0, 2.5), (0.25, 0.0, -2.5)] * 8,
+    # Full-accel launch; with accel >= 40000 the wheels chirp before hooking up.
+    'burnout':   [(1.2, 1.0, 0.0), (0.5, 0.0, 0.0)],
+}
+
+# Default LED (color, led_node mode) per trick; 'rainbow' ignores color.
+# A segment's 4th element overrides the color mid-trick (see countdown).
+TRICK_LED = {
+    'spin':      ('#0080FF', 'chase'),
+    'wiggle':    ('#B040FF', 'chase'),
+    'figure8':   ('#00FFFF', 'chase'),
+    'wheelie':   ('#FF2000', 'chase'),
+    'fakeout':   ('#FF2000', 'chase'),
+    'shiver':    ('#4060FF', 'breathe'),
+    'whiplash':  ('#FFFFFF', 'blink'),
+    'orbit':     ('#00FFFF', 'chase'),
+    'slalom':    ('#00FF40', 'chase'),
+    'moonwalk':  ('', 'rainbow'),
+    'wag':       ('#B040FF', 'chase'),
+    'countdown': ('#FF0000', 'solid'),
+    'disco':     ('', 'rainbow'),
+    'burnout':   ('#FF6000', 'chase'),
 }
 
 
 def _validate_tricks(min_pivot_rate):
     """Raise if any trick segment violates the caps or the pivot floor."""
     for name, segments in TRICKS.items():
-        for i, (dur, vx, wz) in enumerate(segments):
+        for i, seg in enumerate(segments):
+            dur, vx, wz = seg[0], seg[1], seg[2]
             if dur <= 0.0:
                 raise ValueError('%s[%d]: duration %.2f <= 0' % (name, i, dur))
             if abs(vx) > MAX_LINEAR:
@@ -61,6 +105,8 @@ def _validate_tricks(min_pivot_rate):
                 raise ValueError(
                     '%s[%d]: pivot at %.2f rad/s is under the %.2f flat-tire floor'
                     % (name, i, wz, min_pivot_rate))
+        if name not in TRICK_LED:
+            raise ValueError('%s: missing TRICK_LED entry' % name)
 
 
 class TrickPlayer(Node):
@@ -90,6 +136,7 @@ class TrickPlayer(Node):
         self._segments = []
         self._started = 0.0         # monotonic start of the trick
         self._stop_until = 0.0      # monotonic end of the zero burst
+        self._segment_color = None  # current segment's LED color override
 
         self.create_service(PlayTrick, 'play_trick', self._on_play)
         self.create_service(Trigger, 'stop_trick', self._on_stop)
@@ -127,6 +174,7 @@ class TrickPlayer(Node):
         self._segments = TRICKS[name]
         self._started = time.monotonic()
         self._stop_until = 0.0
+        self._segment_color = None
         self._publish_status()
 
         total = sum(seg[0] for seg in self._segments)
@@ -154,8 +202,14 @@ class TrickPlayer(Node):
 
         if self._trick is not None:
             elapsed = now - self._started
-            for dur, vx, wz in self._segments:
+            for seg in self._segments:
+                dur, vx, wz = seg[0], seg[1], seg[2]
                 if elapsed < dur:
+                    # Segments may override the trick's LED color mid-run.
+                    color = seg[3] if len(seg) > 3 else None
+                    if color != self._segment_color:
+                        self._segment_color = color
+                        self._publish_status()
                     twist = Twist()
                     # Publish-time clamp backs up the import-time validation.
                     twist.linear.x = max(-MAX_LINEAR, min(MAX_LINEAR, vx))
@@ -172,12 +226,19 @@ class TrickPlayer(Node):
         """End the active trick and start the zero burst."""
         self._trick = None
         self._segments = []
+        self._segment_color = None
         self._stop_until = time.monotonic() + STOP_GRACE
         self._publish_status()
 
     def _publish_status(self):
+        """'idle', or 'name|#RRGGBB|mode' so led_status just renders it."""
         msg = String()
-        msg.data = self._trick or 'idle'
+        if self._trick is None:
+            msg.data = 'idle'
+        else:
+            color, mode = TRICK_LED[self._trick]
+            msg.data = '%s|%s|%s' % (
+                self._trick, self._segment_color or color, mode)
         self._status_pub.publish(msg)
 
     def stop(self):
