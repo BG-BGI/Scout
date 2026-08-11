@@ -87,7 +87,8 @@ class LedStatus(Node):
         self._trick = 'idle'
         self._user_pattern = None       # set by /set_user_led
         self._seen_battery = False
-        self._clients = 0
+        # NB: not `_clients` — that name is rclpy.Node's internal client list.
+        self._client_count = 0
 
         # Output-side state.
         self._sent_pattern = None
@@ -134,11 +135,11 @@ class LedStatus(Node):
 
     def _on_clients(self, msg):
         count = len(msg.clients)
-        if self._clients == 0 and count > 0:
+        if self._client_count == 0 and count > 0:
             self._set_overlay(PATTERN_CONNECT, self._connect_s)
-        elif self._clients > 0 and count == 0:
+        elif self._client_count > 0 and count == 0:
             self._set_overlay(PATTERN_DISCONNECT, self._disconnect_s)
-        self._clients = count
+        self._client_count = count
 
     def _on_trick(self, msg: String):
         if msg.data != self._trick:
