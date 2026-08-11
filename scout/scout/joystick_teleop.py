@@ -39,10 +39,11 @@ TURN_EXPO = 0.6            # turn-stick response curve: 0 = linear, 1 = pure cub
 TRIGGER_DEADZONE = 0.03    # ignore trigger rest noise
 
 # Live-adjustable speed limits (D-pad), with hard caps and per-press steps.
-LINEAR_MIN, LINEAR_MAX = 0.05, 1.2      # m/s  (1.2 = max_linear_velocity in roboclaw.yaml)
-ANGULAR_MIN, ANGULAR_MAX = 0.3, 4.0     # rad/s (4.0 = max_angular_velocity in roboclaw.yaml)
-LINEAR_DEFAULT, ANGULAR_DEFAULT = 0.35, 0.7
-LINEAR_STEP, ANGULAR_STEP = 0.05, 0.2
+# NB the driver clamps at roboclaw.yaml's real caps (1.0 m/s, 3.0 rad/s).
+LINEAR_MIN, LINEAR_MAX = 0.05, 1.0      # m/s
+ANGULAR_MIN, ANGULAR_MAX = 0.5, 3.0     # rad/s
+LINEAR_DEFAULT, ANGULAR_DEFAULT = 0.35, 1.5
+LINEAR_STEP, ANGULAR_STEP = 0.05, 0.5
 
 
 class JoystickTeleopNode(Node):
