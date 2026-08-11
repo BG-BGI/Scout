@@ -3,6 +3,12 @@ x-service: &base
   image: scout:latest
   network_mode: host
   ipc: host
+  # Keep DDS off wlan0: discovery/multicast on the corp WiFi blackholed the Pi's
+  # link for ~10 min after stack start (association held, no disconnect logged).
+  # All nodes run on the Pi; Foxglove/webui ride websockets, so nothing needs DDS
+  # off-host. Remove only if a ROS node must run on another machine.
+  environment:
+    - ROS_LOCALHOST_ONLY=1
   entrypoint: /ros_entrypoint.sh
   volumes:
     - .:/ros_ws/src/
