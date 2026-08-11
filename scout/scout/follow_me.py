@@ -312,6 +312,16 @@ class FollowMe(Node):
             new_status = 'blocked' if blocked else 'locked'
             if self._status != new_status:
                 self._set_status(new_status)
+            # Avoidance telemetry, 1 Hz while driving (throttled).
+            depth_fresh = now - self._depth_stamp < self._depth_stale
+            self.get_logger().info(
+                'dist %.2f brg %.0f° | corr lidar %.2f depth %s | '
+                'wz_avoid %+.2f | vx %.2f wz %+.2f%s' % (
+                    dist, math.degrees(bearing), self._corridor_min,
+                    ('%.2f' % self._depth_corridor_min) if depth_fresh else 'stale',
+                    self._wz_avoid, twist.linear.x, twist.angular.z,
+                    ' BLOCKED' if blocked else ''),
+                throttle_duration_sec=1.0)
         elif self._stop_until > now:
             self._pub.publish(Twist())
 
