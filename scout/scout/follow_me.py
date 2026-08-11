@@ -88,6 +88,16 @@ class FollowMe(Node):
         self._mem_range = float(p('memory_range', 1.5).value)
         self._mem_half_width = float(p('memory_half_width', 0.6).value)
         self._mem_voxel = float(p('memory_voxel', 0.05).value)
+        # Mover-noise rejection: a voxel must be seen twice to count; points
+        # near the target's recent path are never stored (a walking person
+        # otherwise paints a ghost trail the robot then refuses to cross); and
+        # memory the camera can currently see through is erased on the spot.
+        self._mem_confirm = int(p('memory_confirm_hits', 2).value)
+        self._mem_clear_radius = float(p('memory_clear_radius', 0.15).value)
+        self._trail_ttl = float(p('trail_ttl', 4.0).value)
+        self._trail_radius = float(p('trail_radius', 0.45).value)
+        self._clear_min_range = float(p('clear_min_range', 0.5).value)
+        self._clear_half_fov = math.radians(float(p('clear_half_fov_deg', 35.0).value))
         self._avoid_radius = float(p('avoid_radius', 1.0).value)
         self._k_avoid = float(p('k_avoid', 0.35).value)
         self._target_exclusion = float(p('target_exclusion', 0.35).value)
@@ -107,7 +117,8 @@ class FollowMe(Node):
         self._clearance_log = []       # (stamp, clearance) ring for the min-hold
         self._vx_out = 0.0             # slew-limited forward command
         self._last_tick = time.monotonic()
-        self._obstacle_mem = {}        # {(vx_odom, vy_odom) voxel: last-seen stamp}
+        self._obstacle_mem = {}        # {(vx_odom, vy_odom): [hits, last-seen]}
+        self._target_trail = []        # [(stamp, x_odom, y_odom)] of the target
         self._depth_corridor_min = math.inf
         self._depth_stamp = 0.0
         self._last_depth_proc = 0.0
@@ -179,6 +190,17 @@ class FollowMe(Node):
                 return  # nothing near the old target this scan; keep waiting
         self._target = best
         self._target_seen = time.monotonic()
+        # Record the target's path in odom so its ghost points can be rejected
+        # at memory-store time (a walking person must not paint a wall).
+        pose = self._odom_pose()
+        if pose is not None:
+            ox, oy, oyaw = pose
+            c, s = math.cos(oyaw), math.sin(oyaw)
+            self._target_trail.append((self._target_seen,
+                                       ox + best[0] * c - best[1] * s,
+                                       oy + best[0] * s + best[1] * c))
+            cutoff = self._target_seen - self._trail_ttl
+            self._target_trail = [t for t in self._target_trail if t[0] >= cutoff]
         if self._status == 'searching':
             self._set_status('locked')  # blocked/locked handled by the tick
 
@@ -289,16 +311,50 @@ class FollowMe(Node):
         if self._target is not None:
             mem &= (np.hypot(x - self._target[0], y - self._target[1])
                     > self._target_exclusion)
+        pose = self._odom_pose()
+        if pose is None:
+            return
+        ox, oy, oyaw = pose
+        c, s = math.cos(oyaw), math.sin(oyaw)
         if mem.any():
-            pose = self._odom_pose()
-            if pose is not None:
-                ox, oy, oyaw = pose
-                c, s = math.cos(oyaw), math.sin(oyaw)
-                wx = ox + x[mem] * c - y[mem] * s
-                wy = oy + x[mem] * s + y[mem] * c
-                v = self._mem_voxel
-                for px, py in zip(np.round(wx / v) * v, np.round(wy / v) * v):
-                    self._obstacle_mem[(float(px), float(py))] = now
+            wx = ox + x[mem] * c - y[mem] * s
+            wy = oy + x[mem] * s + y[mem] * c
+            # Reject anything near the target's recent path — mover ghosts.
+            if self._target_trail:
+                trail = np.array([(t[1], t[2]) for t in self._target_trail],
+                                 dtype=np.float32)
+                d2 = ((wx[:, None] - trail[None, :, 0]) ** 2
+                      + (wy[:, None] - trail[None, :, 1]) ** 2)
+                keep = d2.min(axis=1) > self._trail_radius ** 2
+                wx, wy = wx[keep], wy[keep]
+            v = self._mem_voxel
+            for px, py in zip(np.round(wx / v) * v, np.round(wy / v) * v):
+                entry = self._obstacle_mem.get((float(px), float(py)))
+                if entry is None:
+                    self._obstacle_mem[(float(px), float(py))] = [1, now]
+                else:
+                    entry[0] = min(entry[0] + 1, 10)
+                    entry[1] = now
+        # Erase memory the camera can currently see through: any remembered
+        # voxel inside the live view cone with no low return near it now is
+        # a stale ghost. Blind-zone voxels (close/under-FOV) are untouched.
+        if self._obstacle_mem:
+            live = np.stack([x[mem], y[mem]], axis=1) if mem.any() else \
+                np.empty((0, 2), dtype=np.float32)
+            ci, si = math.cos(-oyaw), math.sin(-oyaw)
+            for key in list(self._obstacle_mem.keys()):
+                dx, dy = key[0] - ox, key[1] - oy
+                bx = dx * ci - dy * si
+                by = dx * si + dy * ci
+                r = math.hypot(bx, by)
+                if (bx <= 0.0 or r < self._clear_min_range
+                        or r > self._mem_range
+                        or abs(math.atan2(by, bx)) > self._clear_half_fov):
+                    continue  # outside the live view: memory stands
+                if live.shape[0] == 0 or np.min(
+                        (live[:, 0] - bx) ** 2 + (live[:, 1] - by) ** 2) \
+                        > self._mem_clear_radius ** 2:
+                    del self._obstacle_mem[key]
 
     def _odom_pose(self):
         """(x, y, yaw) of base_link in odom, or None if TF is not up."""
@@ -317,15 +373,17 @@ class FollowMe(Node):
         if not self._obstacle_mem:
             return math.inf
         cutoff = now - self._mem_ttl
-        self._obstacle_mem = {k: t for k, t in self._obstacle_mem.items()
-                              if t >= cutoff}
-        if not self._obstacle_mem:
+        self._obstacle_mem = {k: e for k, e in self._obstacle_mem.items()
+                              if e[1] >= cutoff}
+        confirmed = [k for k, e in self._obstacle_mem.items()
+                     if e[0] >= self._mem_confirm]
+        if not confirmed:
             return math.inf
         pose = self._odom_pose()
         if pose is None:
             return math.inf
         ox, oy, oyaw = pose
-        pts = np.array(list(self._obstacle_mem.keys()), dtype=np.float32)
+        pts = np.array(confirmed, dtype=np.float32)
         c, s = math.cos(-oyaw), math.sin(-oyaw)
         dx, dy = pts[:, 0] - ox, pts[:, 1] - oy
         bx = dx * c - dy * s
