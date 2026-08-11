@@ -136,20 +136,21 @@ class JoystickTeleopNode(Node):
         # full-deflection endpoint (+/-1), so top turn rate is unchanged.
         return (1.0 - TURN_EXPO) * frac + TURN_EXPO * frac ** 3
 
+    # One button owns speed now that D-pad up is the follow toggle: each press
+    # steps UP through clear presets and wraps back to the slowest.
+    SPEED_PRESETS = (0.35, 0.6, 1.0)
+
     def _on_dpad_y(self, value):
-        # Up toggles follow-me. Down steps linear max DOWN, wrapping to max
-        # below the floor (one button covers the whole range now that up is
-        # the follow toggle). Act once per press.
+        # Up toggles follow-me. Down cycles the speed presets upward.
+        # Act once per press.
         state = -1 if value < -16000 else (1 if value > 16000 else 0)
         if state and state != self._dpad_y:
             if state < 0:
                 self._toggle_follow()
             else:
-                new = self._max_linear - LINEAR_STEP
-                if new < LINEAR_MIN - 1e-9:
-                    new = LINEAR_MAX
-                self._max_linear = new
-                self.get_logger().info('Max linear speed: %.2f m/s' % new)
+                higher = [s for s in self.SPEED_PRESETS if s > self._max_linear + 1e-9]
+                self._max_linear = higher[0] if higher else self.SPEED_PRESETS[0]
+                self.get_logger().info('Max linear speed: %.2f m/s' % self._max_linear)
         self._dpad_y = state
 
     def _on_dpad_x(self, value):

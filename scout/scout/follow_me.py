@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Follow the nearest object in front of the robot at a fixed standoff.
 
-Lidar-only: no ML, no camera. Each scan, beams inside the search sector and
-range window are clustered (consecutive beams whose ranges differ < cluster_gap);
+Lidar tracks the target: each scan, beams inside the search sector and range
+window are clustered (consecutive beams whose ranges differ < cluster_gap);
 the tracked target is the cluster centroid nearest the previous target (gated),
 or the nearest cluster overall while acquiring. A P-loop drives range error to
 `standoff` and bearing to zero. Follows anything — a person's legs, a box on a
-string — which is the point.
+string — which is the point. No ML.
+
+The D455 depth cloud guards the corridor: the lidar plane sits 24 cm up, so
+shoes, toys and thresholds are invisible to it. Depth points in the
+0.05–0.25 m base_link height band that fall inside the forward corridor merge
+into the same clearance gate (camera FOV is forward-only, so flank repulsion
+stays lidar's job). The cloud is already ×4-decimated for the nav2 costmap.
 
 ⚠ The scanner is mounted 180° backwards (see CLAUDE.md). TF corrects the URDF,
 but raw /scan angles are lidar-frame, so robot-forward is scan angle pi:
@@ -25,12 +31,15 @@ turning in place is accepted here (command fidelity does not matter mid-chase).
 import math
 import time
 
+import numpy as np
 import rclpy
+import tf2_ros
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import LaserScan, PointCloud2
+from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
@@ -64,9 +73,14 @@ class FollowMe(Node):
         self._avoid_lookahead = float(p('avoid_lookahead', 0.9).value)
         self._avoid_hard_stop = float(p('avoid_hard_stop', 0.35).value)
         self._corridor_half_width = float(p('corridor_half_width', 0.25).value)
-        self._avoid_radius = float(p('avoid_radius', 0.7).value)
+        self._avoid_radius = float(p('avoid_radius', 1.0).value)
         self._k_avoid = float(p('k_avoid', 0.35).value)
         self._target_exclusion = float(p('target_exclusion', 0.35).value)
+        # Depth-cloud corridor guard (under-lidar obstacles).
+        self._depth_band_lo = float(p('depth_band_low', 0.05).value)
+        self._depth_band_hi = float(p('depth_band_high', 0.25).value)
+        self._depth_period = float(p('depth_period', 0.2).value)
+        self._depth_stale = float(p('depth_stale', 1.0).value)
 
         self._active = False
         self._target = None          # (x, y) in base_link, robot-forward = +x
@@ -75,11 +89,20 @@ class FollowMe(Node):
         self._status = 'idle'
         self._corridor_min = math.inf  # nearest non-target return in the corridor
         self._wz_avoid = 0.0           # repulsive steering from side obstacles
+        self._depth_corridor_min = math.inf
+        self._depth_stamp = 0.0
+        self._last_depth_proc = 0.0
+        self._cam_rot = None           # camera optical -> base_link, cached
+        self._cam_trans = None
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
         self._pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self._status_pub = self.create_publisher(String, 'follow_status', 10)
         self.create_subscription(LaserScan, 'scan', self._on_scan,
                                  qos_profile_sensor_data)
+        self.create_subscription(PointCloud2, 'camera/camera/depth/color/points',
+                                 self._on_depth, qos_profile_sensor_data)
         self.create_service(Trigger, 'follow_me/start', self._on_start)
         self.create_service(Trigger, 'follow_me/stop', self._on_stop)
         self.create_timer(1.0 / publish_hz, self._tick)
@@ -206,6 +229,55 @@ class FollowMe(Node):
         # Obstacle on the right pushes left (+z CCW) and vice versa.
         self._wz_avoid = self._k_avoid * (right_prox - left_prox)
 
+    def _on_depth(self, msg: PointCloud2):
+        """Depth-cloud corridor guard for obstacles under the lidar plane."""
+        now = time.monotonic()
+        if not self._active or now - self._last_depth_proc < self._depth_period:
+            return
+        if self._cam_rot is None and not self._resolve_camera_tf(msg.header.frame_id):
+            return
+        self._last_depth_proc = now
+        try:
+            pts = point_cloud2.read_points_numpy(
+                msg, field_names=('x', 'y', 'z'), skip_nans=True)
+        except (AttributeError, TypeError):
+            # Very old sensor_msgs_py without read_points_numpy: skip depth.
+            return
+        if pts.size == 0:
+            self._depth_corridor_min = math.inf
+            self._depth_stamp = now
+            return
+        p = pts.astype(np.float32) @ self._cam_rot.T + self._cam_trans
+        x, y, z = p[:, 0], p[:, 1], p[:, 2]
+        sel = ((z > self._depth_band_lo) & (z < self._depth_band_hi)
+               & (x > 0.0) & (x <= self._avoid_lookahead)
+               & (np.abs(y) <= self._corridor_half_width))
+        if self._target is not None:
+            tx, ty = self._target
+            sel &= (np.hypot(x - tx, y - ty) > self._target_exclusion)
+        self._depth_corridor_min = float(x[sel].min()) if sel.any() else math.inf
+        self._depth_stamp = now
+
+    def _resolve_camera_tf(self, frame_id):
+        """Cache the static camera-optical -> base_link transform as a matrix."""
+        try:
+            t = self._tf_buffer.lookup_transform('base_link', frame_id,
+                                                 rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return False
+        q = t.transform.rotation
+        x, y, z, w = q.x, q.y, q.z, q.w
+        self._cam_rot = np.array([
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ], dtype=np.float32)
+        tr = t.transform.translation
+        self._cam_trans = np.array([tr.x, tr.y, tr.z], dtype=np.float32)
+        self.get_logger().info('Depth corridor guard active (camera TF cached)')
+        return True
+
     # --- control (sole cmd_vel writer) ----------------------------------------------
     def _tick(self):
         now = time.monotonic()
@@ -223,8 +295,12 @@ class FollowMe(Node):
                 # Follow only, never reverse toward the thing behind the error.
                 vx = max(0.0, min(self._max_vx, vx))
                 # Corridor gate: scale to zero as the path ahead closes down.
+                # Lidar and (fresh) depth-cloud clearances merge here.
+                corridor = self._corridor_min
+                if now - self._depth_stamp < self._depth_stale:
+                    corridor = min(corridor, self._depth_corridor_min)
                 zone = self._avoid_lookahead - self._avoid_hard_stop
-                free = self._corridor_min - self._avoid_hard_stop
+                free = corridor - self._avoid_hard_stop
                 scale = max(0.0, min(1.0, free / zone)) if zone > 0 else 1.0
                 twist.linear.x = vx * scale
                 blocked = (scale == 0.0 and vx > 0.0)
