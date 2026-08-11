@@ -3,6 +3,12 @@ x-service: &base
   image: scout:latest
   network_mode: host
   ipc: host
+  # Keep DDS off wlan0: discovery/multicast on the corp WiFi blackholed the Pi's
+  # link for ~10 min after stack start (association held, no disconnect logged).
+  # All nodes run on the Pi; Foxglove/webui ride websockets, so nothing needs DDS
+  # off-host. Remove only if a ROS node must run on another machine.
+  environment:
+    - ROS_LOCALHOST_ONLY=1
   entrypoint: /ros_entrypoint.sh
   volumes:
     - .:/ros_ws/src/
@@ -27,9 +33,15 @@ services:
       --install-base /opt/overlay/install
 
   # Drivetrain, sensors, odom chain, LED. Comment/uncomment one command line.
+  #
+  # restart: unless-stopped => comes back on power-on (docker.service is enabled by
+  # default on Pi OS). Applies only to containers created by `up -d`, never `run`.
+  # slam/nav2 deliberately have NO restart policy: teleop needs neither, and nav2's
+  # latched-goal trap makes unattended autostart dangerous.
   robot:
     <<: *base
-    command: ros2 launch scout robot.launch.py enable_joystick:=false
+    restart: unless-stopped
+    command: ros2 launch scout robot.launch.py enable_joystick:=true
     # command: ros2 launch scout robot.launch.py enable_joystick:=false camera_config:=realsense_tight_tunnel.yaml
 
   # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
@@ -71,9 +83,25 @@ services:
 
   foxglove_bridge:
     <<: *base
+    restart: unless-stopped
     # network_mode: bridge  # only in WSL
     # ports: ["8765:8765"]  # only in WSL
     command: ros2 run foxglove_bridge foxglove_bridge
+
+  # Web UI transport: JSON<->DDS bridge on ws://:9090 (roslibjs speaks to this).
+  # Publishes /connected_clients, which led_status uses for connect/disconnect flashes.
+  rosbridge:
+    <<: *base
+    restart: unless-stopped
+    command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+
+  # Static files for the web UI (http://scout.local). Serves the bind-mounted
+  # ./webui directly, so UI edits are live without a rebuild. Host networking +
+  # root in the container makes port 80 fine.
+  webui:
+    <<: *base
+    restart: unless-stopped
+    command: python3 -m http.server 80 --directory /ros_ws/src/webui
 
 volumes:
   ros_ws_build:
