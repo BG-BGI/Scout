@@ -88,11 +88,16 @@ class FollowMe(Node):
         self._mem_range = float(p('memory_range', 1.5).value)
         self._mem_half_width = float(p('memory_half_width', 0.6).value)
         self._mem_voxel = float(p('memory_voxel', 0.05).value)
-        # Mover-noise rejection: a voxel must be seen twice to count; points
-        # near the target's recent path are never stored (a walking person
-        # otherwise paints a ghost trail the robot then refuses to cross); and
-        # memory the camera can currently see through is erased on the spot.
+        # Mover-noise rejection: a voxel must be seen twice AND across a
+        # `memory_confirm_window` span to count (a walking foot sweeps a 5 cm
+        # voxel in one frame; furniture dwells); voxels that never confirm
+        # expire fast; points near the target's recent path are never stored
+        # (a walking person otherwise paints a ghost trail the robot then
+        # refuses to cross); and memory the camera can currently see through
+        # is erased on the spot.
         self._mem_confirm = int(p('memory_confirm_hits', 2).value)
+        self._mem_confirm_window = float(p('memory_confirm_window', 0.5).value)
+        self._mem_unconfirmed_ttl = float(p('memory_unconfirmed_ttl', 1.5).value)
         self._mem_clear_radius = float(p('memory_clear_radius', 0.15).value)
         self._trail_ttl = float(p('trail_ttl', 4.0).value)
         self._trail_radius = float(p('trail_radius', 0.45).value)
@@ -117,7 +122,7 @@ class FollowMe(Node):
         self._clearance_log = []       # (stamp, clearance) ring for the min-hold
         self._vx_out = 0.0             # slew-limited forward command
         self._last_tick = time.monotonic()
-        self._obstacle_mem = {}        # {(vx_odom, vy_odom): [hits, last-seen]}
+        self._obstacle_mem = {}   # {(vx_odom, vy_odom): [hits, first, last]}
         self._target_trail = []        # [(stamp, x_odom, y_odom)] of the target
         self._depth_corridor_min = math.inf
         self._depth_stamp = 0.0
@@ -331,10 +336,10 @@ class FollowMe(Node):
             for px, py in zip(np.round(wx / v) * v, np.round(wy / v) * v):
                 entry = self._obstacle_mem.get((float(px), float(py)))
                 if entry is None:
-                    self._obstacle_mem[(float(px), float(py))] = [1, now]
+                    self._obstacle_mem[(float(px), float(py))] = [1, now, now]
                 else:
                     entry[0] = min(entry[0] + 1, 10)
-                    entry[1] = now
+                    entry[2] = now
         # Erase memory the camera can currently see through: any remembered
         # voxel inside the live view cone with no low return near it now is
         # a stale ghost. Blind-zone voxels (close/under-FOV) are untouched.
@@ -372,11 +377,18 @@ class FollowMe(Node):
         """Nearest remembered obstacle inside the live corridor, base_link."""
         if not self._obstacle_mem:
             return math.inf
-        cutoff = now - self._mem_ttl
-        self._obstacle_mem = {k: e for k, e in self._obstacle_mem.items()
-                              if e[1] >= cutoff}
-        confirmed = [k for k, e in self._obstacle_mem.items()
-                     if e[0] >= self._mem_confirm]
+
+        def _ok(e):
+            return (e[0] >= self._mem_confirm
+                    and e[2] - e[1] >= self._mem_confirm_window)
+
+        # Confirmed voxels live mem_ttl; unconfirmed ones are mover noise and
+        # get only memory_unconfirmed_ttl to earn their dwell.
+        self._obstacle_mem = {
+            k: e for k, e in self._obstacle_mem.items()
+            if e[2] >= now - (self._mem_ttl if _ok(e)
+                              else self._mem_unconfirmed_ttl)}
+        confirmed = [k for k, e in self._obstacle_mem.items() if _ok(e)]
         if not confirmed:
             return math.inf
         pose = self._odom_pose()

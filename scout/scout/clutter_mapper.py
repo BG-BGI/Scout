@@ -9,9 +9,11 @@ camera's narrow live window and across sessions.
 Clearing is polar ray approximation: live cloud points (full height,
 including floor hits) are binned by bearing; a marked cell is decremented
 when a live ray in its bearing bin reaches beyond it — the camera saw
-through where the mark was, so the chair has moved. Marks need two hits to
-report (single-frame mover noise), and decay only by being seen-through,
-never by time — persistence is the point.
+through where the mark was, so the chair has moved. Marks need two hits AND
+sightings spanning `confirm_window` seconds to report — a walking person
+sweeps through a 5 cm cell far too fast to dwell, so movers never confirm.
+Unconfirmed cells expire after `unconfirmed_ttl`; confirmed ones decay only
+by being seen-through, never by time — persistence is the point.
 
 Outputs:
   /clutter_map     nav_msgs/OccupancyGrid, transient-local, for the web UI
@@ -65,8 +67,13 @@ class ClutterMapper(Node):
         self._period = float(p('process_period', 0.3).value)
         self._file = str(p('file', '/ros_ws/src/maps/clutter.npz').value)
         self._autosave = float(p('autosave_period', 30.0).value)
+        # Mover rejection: sightings must span this long before a cell reports
+        # (a walker crosses a cell in well under a second; furniture dwells),
+        # and cells that never confirm are dropped instead of accumulating.
+        self._confirm_window = float(p('confirm_window', 1.0).value)
+        self._unconfirmed_ttl = float(p('unconfirmed_ttl', 5.0).value)
 
-        self._cells = {}          # {(ix, iy): log-odds int}
+        self._cells = {}          # {(ix, iy): [log-odds, first_seen, last_seen]}
         self._dirty = False
         self._last_proc = 0.0
         self._cam_rot = None
@@ -99,13 +106,19 @@ class ClutterMapper(Node):
             return
         try:
             data = np.load(self._file)
+            # Loaded cells were confirmed when saved: dwell pre-satisfied.
+            now = time.monotonic()
             for ix, iy, v in data['cells']:
-                self._cells[(int(ix), int(iy))] = int(v)
+                self._cells[(int(ix), int(iy))] = [
+                    int(v), now - self._confirm_window, now]
         except Exception as exc:  # noqa: BLE001 — corrupt file must not kill the node
             self.get_logger().error('Could not load %s: %s' % (self._file, exc))
 
     def _save(self):
-        cells = np.array([(ix, iy, v) for (ix, iy), v in self._cells.items()],
+        # Only confirmed cells persist — saving in-flight marks would resurrect
+        # mover ghosts as confirmed on the next load.
+        cells = np.array([(ix, iy, e[0]) for (ix, iy), e in self._cells.items()
+                          if self._confirmed(e)],
                          dtype=np.int32).reshape(-1, 3)
         try:
             np.savez_compressed(self._file, cells=cells)
@@ -114,6 +127,10 @@ class ClutterMapper(Node):
         except OSError as exc:
             self.get_logger().error('Could not save %s: %s' % (self._file, exc))
             return False
+
+    def _confirmed(self, entry):
+        return (entry[0] >= REPORT_AT
+                and entry[2] - entry[1] >= self._confirm_window)
 
     def _autosave_tick(self):
         if self._dirty:
@@ -210,7 +227,12 @@ class ClutterMapper(Node):
             for ix, iy in zip((wx / self._res).astype(int),
                               (wy / self._res).astype(int)):
                 key = (int(ix), int(iy))
-                self._cells[key] = min(self._cells.get(key, 0) + MARK, CAP)
+                entry = self._cells.get(key)
+                if entry is None:
+                    self._cells[key] = [MARK, now, now]
+                else:
+                    entry[0] = min(entry[0] + MARK, CAP)
+                    entry[2] = now
             self._dirty = True
 
         # Clear: marked cells in view that a longer ray sees through.
@@ -229,16 +251,24 @@ class ClutterMapper(Node):
                     continue
                 b = min(nbins - 1, max(0, int((cb + self._half_fov) / bin_w)))
                 if free_to[b] > cr + 2.0 * self._res:
-                    v = self._cells[key] - CLEAR
-                    if v <= 0:
+                    entry = self._cells[key]
+                    entry[0] -= CLEAR
+                    if entry[0] <= 0:
                         del self._cells[key]
-                    else:
-                        self._cells[key] = v
                     self._dirty = True
+
+        # Expire marks that never confirmed — mover residue, not furniture.
+        cutoff = now - self._unconfirmed_ttl
+        stale = [k for k, e in self._cells.items()
+                 if not self._confirmed(e) and e[2] < cutoff]
+        for k in stale:
+            del self._cells[k]
+        if stale:
+            self._dirty = True
 
     # --- output ------------------------------------------------------------------
     def _publish(self):
-        occupied = [(k, v) for k, v in self._cells.items() if v >= REPORT_AT]
+        occupied = [(k, e) for k, e in self._cells.items() if self._confirmed(e)]
         header = Header()
         header.stamp = self.get_clock().now().to_msg()
         header.frame_id = 'map'
