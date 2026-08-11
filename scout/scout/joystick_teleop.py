@@ -1,3 +1,4 @@
+import math
 import os
 import struct
 import threading
@@ -31,6 +32,9 @@ _JS_EVENT_AXIS = 0x02
 _JS_INIT_FLAG = 0x80
 
 PUBLISH_HZ = 25.0          # > 1/WATCHDOG_TIMEOUT so the motor driver stays armed
+PIVOT_FLOOR = 2.5          # rad/s: below this an in-place turn cannot beat the flat
+                           # front-left tire's drag — left side stalls, robot arcs
+                           # (see CLAUDE.md). Applied to pure pivots only.
 STOP_GRACE = 0.3           # after release, briefly publish zeros, then go silent
                            # so other cmd_vel sources (Foxglove, nav2) can drive
 STICK_DEADZONE = 0.08      # ignore small left-stick noise so the robot tracks straight
@@ -208,6 +212,10 @@ class JoystickTeleopNode(Node):
                 turn = -turn
             twist = Twist()
             twist.linear.x = throttle * self._max_linear
+            # Pure pivot: enforce the flat-tire floor so all four wheels
+            # actually turn instead of the left side dragging.
+            if throttle == 0.0 and turn != 0.0 and abs(turn) < PIVOT_FLOOR:
+                turn = math.copysign(PIVOT_FLOOR, turn)
             twist.angular.z = turn
             self._pub.publish(twist)
         elif now - self._last_active < STOP_GRACE:
