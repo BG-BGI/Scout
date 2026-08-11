@@ -83,7 +83,7 @@ RUN git clone https://github.com/realsenseai/librealsense.git -b v2.57.7 --depth
         -DBUILD_PYTHON_BINDINGS=ON \
         -DBUILD_UNIT_TESTS=OFF \
         -DCMAKE_BUILD_TYPE=Release \
-    && make -j2 \
+    && make -j$(nproc) \
     && make install \
     && cd / && rm -rf librealsense
 
