@@ -78,6 +78,7 @@ class LedStatus(Node):
         self._critical_active = False
         self._overlay = None            # (pattern, monotonic expiry)
         self._trick = 'idle'
+        self._follow = 'idle'           # idle | searching | locked|dist|deg
         self._user_pattern = None       # set by /set_user_led
         self._seen_battery = False
         # NB: not `_clients` — that name is rclpy.Node's internal client list.
@@ -91,6 +92,7 @@ class LedStatus(Node):
 
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
         self.create_subscription(String, 'trick_status', self._on_trick, 10)
+        self.create_subscription(String, 'follow_status', self._on_follow, 10)
         if ConnectedClients is not None:
             self.create_subscription(ConnectedClients, 'connected_clients',
                                      self._on_clients, 10)
@@ -141,6 +143,13 @@ class LedStatus(Node):
             self._trick = msg.data
             self._resolve()
 
+    def _on_follow(self, msg: String):
+        # follow_me sends 'idle', 'searching', or 'locked|dist|deg'.
+        state = msg.data.split('|')[0]
+        if state != self._follow:
+            self._follow = state
+            self._resolve()
+
     def _on_user_led(self, request, response):
         mode = (request.mode or '').strip().lower()
         if mode not in VALID_MODES:
@@ -174,6 +183,10 @@ class LedStatus(Node):
         elif self._trick != 'idle' and '|' in self._trick:
             _name, color, mode = (self._trick.split('|') + ['', 'chase'])[:3]
             pattern = (mode if mode in VALID_MODES else 'chase', color, 50, 2.0)
+        elif self._follow == 'locked':
+            pattern = ('chase', '#00FF40', 50, 2.0)
+        elif self._follow == 'searching':
+            pattern = ('breathe', '#4060FF', 50, 1.0)
         elif self._user_pattern:
             pattern = self._user_pattern
         else:

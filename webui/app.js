@@ -210,8 +210,35 @@ trickButtons.forEach((btn) => {
   });
 });
 
+// --- follow me ------------------------------------------------------------------------
+const followState = document.getElementById('follow-state');
+const followStartSrv = new ROSLIB.Service({
+  ros, name: '/follow_me/start', serviceType: 'std_srvs/srv/Trigger',
+});
+const followStopSrv = new ROSLIB.Service({
+  ros, name: '/follow_me/stop', serviceType: 'std_srvs/srv/Trigger',
+});
+new ROSLIB.Topic({
+  ros, name: '/follow_status', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  // 'idle' | 'searching' | 'locked|<dist m>|<bearing deg>'
+  const parts = msg.data.split('|');
+  followState.textContent = parts[0] === 'locked'
+    ? 'locked ' + parts[1] + ' m @ ' + parts[2] + '°' : parts[0];
+});
+document.getElementById('follow-start').addEventListener('click', () => {
+  followStartSrv.callService(new ROSLIB.ServiceRequest({}),
+    (res) => { followState.textContent = res.success ? 'searching' : res.message; },
+    (err) => { followState.textContent = 'error: ' + err; });
+});
+function stopFollow() {
+  followStopSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
+}
+document.getElementById('follow-stop').addEventListener('click', stopFollow);
+
 document.getElementById('stop').addEventListener('click', () => {
   stopTrickSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
+  stopFollow();  // follow_me would keep chasing through the zero burst
   cancelNav();   // a live nav goal would keep driving through the zero burst
   zeroBurst();
 });

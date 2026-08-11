@@ -129,6 +129,13 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # Lidar follow-me. Inert until /follow_me/start is called.
+        Node(
+            package='scout',
+            executable='follow_me',
+            output='screen',
+        ),
+
         # LED arbitration: sole caller of /set_led_mode. Web UI talks to
         # /set_user_led on this node, never to led_node directly.
         Node(
