@@ -7,6 +7,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
 from geometry_msgs.msg import Twist
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
 
 # --- Xbox controller mapping (Linux joydev / xpad driver) --------------------
 # Axis/button numbers come from the kernel joystick interface. If the robot
@@ -57,6 +59,14 @@ class JoystickTeleopNode(Node):
         self._max_linear = LINEAR_DEFAULT
         self._max_angular = ANGULAR_DEFAULT
         self._last_active = 0.0   # monotonic time of last live input; gates publishing
+
+        # Follow-me toggle (D-pad up). Actual state tracked from /follow_status
+        # so the toggle stays truthful if the mode was started/stopped elsewhere
+        # (web UI, service call).
+        self._follow_active = False
+        self._follow_start = self.create_client(Trigger, 'follow_me/start')
+        self._follow_stop = self.create_client(Trigger, 'follow_me/stop')
+        self.create_subscription(String, 'follow_status', self._on_follow_status, 10)
 
         self._stop = False
         self._reader = threading.Thread(target=self._reader_loop, daemon=True)
@@ -127,10 +137,19 @@ class JoystickTeleopNode(Node):
         return (1.0 - TURN_EXPO) * frac + TURN_EXPO * frac ** 3
 
     def _on_dpad_y(self, value):
-        # Up increases linear max, down decreases it. Act once per press.
+        # Up toggles follow-me. Down steps linear max DOWN, wrapping to max
+        # below the floor (one button covers the whole range now that up is
+        # the follow toggle). Act once per press.
         state = -1 if value < -16000 else (1 if value > 16000 else 0)
         if state and state != self._dpad_y:
-            self._adjust_linear(LINEAR_STEP if state < 0 else -LINEAR_STEP)
+            if state < 0:
+                self._toggle_follow()
+            else:
+                new = self._max_linear - LINEAR_STEP
+                if new < LINEAR_MIN - 1e-9:
+                    new = LINEAR_MAX
+                self._max_linear = new
+                self.get_logger().info('Max linear speed: %.2f m/s' % new)
         self._dpad_y = state
 
     def _on_dpad_x(self, value):
@@ -143,6 +162,23 @@ class JoystickTeleopNode(Node):
     def _adjust_linear(self, delta):
         self._max_linear = max(LINEAR_MIN, min(LINEAR_MAX, self._max_linear + delta))
         self.get_logger().info('Max linear speed: %.2f m/s' % self._max_linear)
+
+    # --- follow-me toggle ------------------------------------------------------
+    def _on_follow_status(self, msg: String):
+        self._follow_active = msg.data.split('|')[0] in (
+            'searching', 'locked', 'blocked')
+
+    def _toggle_follow(self):
+        client = self._follow_stop if self._follow_active else self._follow_start
+        verb = 'stop' if self._follow_active else 'start'
+        if not client.service_is_ready():
+            self.get_logger().warn('follow_me/%s service not available' % verb)
+            return
+        client.call_async(Trigger.Request())
+        # Optimistic flip so a double-press acts sanely before /follow_status
+        # confirms; the subscription overwrites with the truth.
+        self._follow_active = not self._follow_active
+        self.get_logger().info('Follow-me %s requested (D-pad up)' % verb)
 
     def _adjust_angular(self, delta):
         self._max_angular = max(ANGULAR_MIN, min(ANGULAR_MAX, self._max_angular + delta))

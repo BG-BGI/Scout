@@ -185,6 +185,8 @@ class LedStatus(Node):
             pattern = (mode if mode in VALID_MODES else 'chase', color, 50, 2.0)
         elif self._follow == 'locked':
             pattern = ('chase', '#00FF40', 50, 2.0)
+        elif self._follow == 'blocked':
+            pattern = ('blink', '#FF8000', 50, 2.0)
         elif self._follow == 'searching':
             pattern = ('breathe', '#4060FF', 50, 1.0)
         elif self._user_pattern:

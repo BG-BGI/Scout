@@ -59,12 +59,22 @@ class FollowMe(Node):
         self._assoc_gate = float(p('association_gate', 0.5).value)
         self._lost_timeout = float(p('lost_timeout', 0.5).value)
         publish_hz = float(p('publish_hz', 20.0).value)
+        # Obstacle avoidance: forward corridor gating + repulsive steering.
+        # Chassis is 0.334 m wide -> 0.25 m half-width gives ~4 cm/side margin.
+        self._avoid_lookahead = float(p('avoid_lookahead', 0.9).value)
+        self._avoid_hard_stop = float(p('avoid_hard_stop', 0.35).value)
+        self._corridor_half_width = float(p('corridor_half_width', 0.25).value)
+        self._avoid_radius = float(p('avoid_radius', 0.7).value)
+        self._k_avoid = float(p('k_avoid', 0.35).value)
+        self._target_exclusion = float(p('target_exclusion', 0.35).value)
 
         self._active = False
         self._target = None          # (x, y) in base_link, robot-forward = +x
         self._target_seen = 0.0
         self._stop_until = 0.0
         self._status = 'idle'
+        self._corridor_min = math.inf  # nearest non-target return in the corridor
+        self._wz_avoid = 0.0           # repulsive steering from side obstacles
 
         self._pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self._status_pub = self.create_publisher(String, 'follow_status', 10)
@@ -108,6 +118,7 @@ class FollowMe(Node):
         if not self._active:
             return
         clusters = self._clusters(msg)
+        self._update_obstacles(msg)
         if not clusters:
             return
         if self._target is None:
@@ -121,8 +132,8 @@ class FollowMe(Node):
                 return  # nothing near the old target this scan; keep waiting
         self._target = best
         self._target_seen = time.monotonic()
-        if self._status != 'locked':
-            self._set_status('locked')
+        if self._status == 'searching':
+            self._set_status('locked')  # blocked/locked handled by the tick
 
     def _clusters(self, msg):
         """Cluster centroids (x fwd, y left in base_link) inside sector+range."""
@@ -158,6 +169,43 @@ class FollowMe(Node):
     def _wrap(a):
         return (a + math.pi) % (2.0 * math.pi) - math.pi
 
+    def _update_obstacles(self, msg):
+        """Corridor clearance + repulsive steering from everything non-target.
+
+        Beams within `target_exclusion` of the tracked target are the thing we
+        are following, not an obstacle — without the carve-out the standoff
+        gate and the corridor gate fight each other and the robot never moves.
+        """
+        corridor_min = math.inf
+        left_prox = 0.0    # y > 0
+        right_prox = 0.0   # y < 0
+        inv_r = 1.0 / self._avoid_radius
+        tx, ty = self._target if self._target else (None, None)
+        n = len(msg.ranges)
+        for i in range(n):
+            r = msg.ranges[i]
+            if not (math.isfinite(r) and self._min_range <= r <= self._max_range):
+                continue
+            bearing = self._wrap(msg.angle_min + i * msg.angle_increment
+                                 + self._yaw_offset)
+            if abs(bearing) > math.pi / 2:
+                continue  # behind the beam of travel; irrelevant while following
+            x = r * math.cos(bearing)
+            y = r * math.sin(bearing)
+            if tx is not None and math.hypot(x - tx, y - ty) < self._target_exclusion:
+                continue
+            if 0.0 < x <= self._avoid_lookahead and abs(y) <= self._corridor_half_width:
+                corridor_min = min(corridor_min, x)
+            if r < self._avoid_radius:
+                w = (1.0 / max(r, 0.05) - inv_r)
+                if y > 0.0:
+                    left_prox = max(left_prox, w)
+                else:
+                    right_prox = max(right_prox, w)
+        self._corridor_min = corridor_min
+        # Obstacle on the right pushes left (+z CCW) and vice versa.
+        self._wz_avoid = self._k_avoid * (right_prox - left_prox)
+
     # --- control (sole cmd_vel writer) ----------------------------------------------
     def _tick(self):
         now = time.monotonic()
@@ -173,10 +221,21 @@ class FollowMe(Node):
             if dist > self._stop_dist:
                 vx = self._kp_lin * (dist - self._standoff)
                 # Follow only, never reverse toward the thing behind the error.
-                twist.linear.x = max(0.0, min(self._max_vx, vx))
-            twist.angular.z = max(-self._max_wz,
-                                  min(self._max_wz, self._kp_ang * bearing))
+                vx = max(0.0, min(self._max_vx, vx))
+                # Corridor gate: scale to zero as the path ahead closes down.
+                zone = self._avoid_lookahead - self._avoid_hard_stop
+                free = self._corridor_min - self._avoid_hard_stop
+                scale = max(0.0, min(1.0, free / zone)) if zone > 0 else 1.0
+                twist.linear.x = vx * scale
+                blocked = (scale == 0.0 and vx > 0.0)
+            else:
+                blocked = False
+            twist.angular.z = max(-self._max_wz, min(
+                self._max_wz, self._kp_ang * bearing + self._wz_avoid))
             self._pub.publish(twist)
+            new_status = 'blocked' if blocked else 'locked'
+            if self._status != new_status:
+                self._set_status(new_status)
         elif self._stop_until > now:
             self._pub.publish(Twist())
 
@@ -186,9 +245,9 @@ class FollowMe(Node):
 
     def _publish_status(self):
         msg = String()
-        if self._status == 'locked' and self._target is not None:
-            msg.data = 'locked|%.2f|%.0f' % (
-                math.hypot(*self._target),
+        if self._status in ('locked', 'blocked') and self._target is not None:
+            msg.data = '%s|%.2f|%.0f' % (
+                self._status, math.hypot(*self._target),
                 math.degrees(math.atan2(self._target[1], self._target[0])))
         else:
             msg.data = self._status
