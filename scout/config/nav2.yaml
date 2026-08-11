@@ -514,7 +514,7 @@ global_costmap:
       # makes the planner's allow_unknown a deliberate choice instead of an accident.
       track_unknown_space: true
 
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "depth_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -543,6 +543,47 @@ global_costmap:
           raytrace_min_range: 0.0
           min_obstacle_height: 0.0
           max_obstacle_height: 2.0
+          inf_is_valid: false
+
+      # Under-lidar band, same dual-source pattern as the local costmap (see the long
+      # note there): mark only the 0.05–0.22 m band, clear along full-height depth rays,
+      # own layer so lidar raytrace cannot wipe low marks (the doorway drive-over bug).
+      # Global planning now knows about shoes/toys/thresholds seen anywhere the camera
+      # has looked, not just inside the local window — a plan routes around known floor
+      # clutter instead of discovering it at the last metre. Marks persist until a depth
+      # ray clears them, which is the same lingering-obstacle trade the lidar layer makes.
+      depth_layer:
+        plugin: "nav2_costmap_2d::ObstacleLayer"
+        enabled: True
+        observation_sources: depth_mark depth_clear
+        footprint_clearing_enabled: True
+        combination_method: 1
+        depth_mark:
+          topic: /camera/camera/depth/color/points
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          obstacle_max_range: 1.2
+          obstacle_min_range: 0.15
+          raytrace_max_range: 1.2
+          raytrace_min_range: 0.15
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.22
+          observation_persistence: 0.0
+          inf_is_valid: false
+        depth_clear:
+          topic: /camera/camera/depth/color/points
+          data_type: "PointCloud2"
+          marking: False
+          clearing: True
+          obstacle_max_range: 1.2
+          obstacle_min_range: 0.15
+          raytrace_max_range: 1.2
+          raytrace_min_range: 0.15
+          # Include floor returns so rays clear through where a removed shoe was.
+          min_obstacle_height: 0.0
+          max_obstacle_height: 2.0
+          observation_persistence: 0.0
           inf_is_valid: false
 
       inflation_layer:
