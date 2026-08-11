@@ -83,7 +83,7 @@ RUN git clone https://github.com/realsenseai/librealsense.git -b v2.57.7 --depth
         -DBUILD_PYTHON_BINDINGS=ON \
         -DBUILD_UNIT_TESTS=OFF \
         -DCMAKE_BUILD_TYPE=Release \
-    && make -j$(nproc) \
+    && make -j2 \
     && make install \
     && cd / && rm -rf librealsense
 
@@ -131,6 +131,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-map-msgs \
     ros-humble-compressed-image-transport \
     ros-humble-compressed-depth-image-transport \
+    ros-humble-rosbridge-suite \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

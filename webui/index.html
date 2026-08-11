@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Scout</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>Scout</h1>
+  <div id="conn" class="badge disconnected">connecting…</div>
+  <div id="battery" class="badge">— V</div>
+</header>
+
+<main>
+  <!-- Drive pad -->
+  <section id="drive">
+    <div id="pad">
+      <div id="stick"></div>
+    </div>
+    <div id="gamepad-row">
+      <span id="gamepad-state">no gamepad</span>
+      <span id="gamepad-debug"></span>
+    </div>
+  </section>
+
+  <aside>
+    <button id="stop">STOP</button>
+
+    <section class="panel">
+      <h2>Speed</h2>
+      <label>Linear <output id="lin-out">0.35</output> m/s
+        <input type="range" id="lin" min="0.05" max="1.0" step="0.05" value="0.35">
+      </label>
+      <label>Angular <output id="ang-out">0.7</output> rad/s
+        <input type="range" id="ang" min="0.3" max="3.0" step="0.1" value="0.7">
+      </label>
+    </section>
+
+    <section class="panel">
+      <h2>Tricks <span id="trick-state" class="dim">idle</span></h2>
+      <div id="tricks" class="grid">
+        <button data-trick="spin">Spin</button>
+        <button data-trick="wiggle">Wiggle</button>
+        <button data-trick="figure8">Figure-8</button>
+        <button data-trick="wheelie">Wheelie</button>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Lights</h2>
+      <div class="grid" id="led-modes">
+        <button data-mode="off">Off</button>
+        <button data-mode="solid">Solid</button>
+        <button data-mode="blink">Blink</button>
+        <button data-mode="breathe">Breathe</button>
+        <button data-mode="rainbow">Rainbow</button>
+        <button data-mode="chase">Chase</button>
+      </div>
+      <label>Color <input type="color" id="led-color" value="#00ff88"></label>
+      <label>Brightness <output id="led-bright-out">50</output>%
+        <input type="range" id="led-bright" min="0" max="100" step="5" value="50">
+      </label>
+      <label>Speed <output id="led-speed-out">1.0</output>
+        <input type="range" id="led-speed" min="0.2" max="4" step="0.2" value="1.0">
+      </label>
+      <div id="led-result" class="dim"></div>
+    </section>
+  </aside>
+</main>
+
+<script src="vendor/roslib.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

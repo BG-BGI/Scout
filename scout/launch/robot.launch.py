@@ -122,6 +122,21 @@ def generate_launch_description():
             ],
         ),
 
+        # Trick macros (web UI). Inert until /play_trick is called.
+        Node(
+            package='scout',
+            executable='trick_player',
+            output='screen',
+        ),
+
+        # LED arbitration: sole caller of /set_led_mode. Web UI talks to
+        # /set_user_led on this node, never to led_node directly.
+        Node(
+            package='scout',
+            executable='led_status',
+            output='screen',
+        ),
+
         Node(
             package='scout',
             executable='joystick_teleop',

@@ -35,6 +35,8 @@ setup(
             'battery_monitor = scout.battery_monitor:main',
             'wheel_joint_relay = scout.wheel_joint_relay:main',
             'tilt_monitor = scout.tilt_monitor:main',
+            'trick_player = scout.trick_player:main',
+            'led_status = scout.led_status:main',
         ],
     },
 )
