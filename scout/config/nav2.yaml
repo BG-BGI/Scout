@@ -555,7 +555,7 @@ global_costmap:
       depth_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
         enabled: True
-        observation_sources: depth_mark depth_clear
+        observation_sources: depth_mark depth_clear clutter
         footprint_clearing_enabled: True
         combination_method: 1
         depth_mark:
@@ -584,6 +584,24 @@ global_costmap:
           min_obstacle_height: 0.0
           max_obstacle_height: 2.0
           observation_persistence: 0.0
+          inf_is_valid: false
+        # clutter_mapper's persistent low-obstacle points (map frame, z=0.1,
+        # republished at 1 Hz). Mark-only: the mapper does its own ray-clearing,
+        # and depth_clear must not wipe marks the camera can no longer see.
+        # 25 m ranges: these are map-wide points, not a live sensor window.
+        clutter:
+          topic: /clutter_points
+          data_type: "PointCloud2"
+          marking: True
+          clearing: False
+          obstacle_max_range: 25.0
+          obstacle_min_range: 0.0
+          raytrace_max_range: 25.0
+          raytrace_min_range: 0.0
+          min_obstacle_height: 0.0
+          max_obstacle_height: 0.3
+          # Slightly over the 1 Hz republish so marks never age out between clouds.
+          observation_persistence: 1.5
           inf_is_valid: false
 
       inflation_layer:

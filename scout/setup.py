@@ -38,6 +38,7 @@ setup(
             'trick_player = scout.trick_player:main',
             'led_status = scout.led_status:main',
             'follow_me = scout.follow_me:main',
+            'clutter_mapper = scout.clutter_mapper:main',
         ],
     },
 )

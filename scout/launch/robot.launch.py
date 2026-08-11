@@ -141,6 +141,14 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # Persistent under-lidar clutter layer (chair bases, shoes). Idles
+        # until slam provides map->base_link; saves to /ros_ws/src/maps/.
+        Node(
+            package='scout',
+            executable='clutter_mapper',
+            output='screen',
+        ),
+
         # LED arbitration: sole caller of /set_led_mode. Web UI talks to
         # /set_user_led on this node, never to led_node directly.
         Node(

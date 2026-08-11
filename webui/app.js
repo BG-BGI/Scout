@@ -306,6 +306,32 @@ planTopic.subscribe((msg) => {
   plan = msg.poses.map((ps) => ({ x: ps.pose.position.x, y: ps.pose.position.y }));
 });
 
+// Persistent under-lidar clutter (chair bases, shoes) from clutter_mapper,
+// drawn as an orange overlay so low obstacles are visible in the map.
+const clutterCanvas = document.createElement('canvas');
+let clutter = null;   // latest /clutter_map info
+const clutterTopic = new ROSLIB.Topic({
+  ros, name: '/clutter_map', messageType: 'nav_msgs/msg/OccupancyGrid',
+  throttle_rate: 2000, queue_length: 1,
+});
+clutterTopic.subscribe((msg) => {
+  clutter = msg.info;
+  const w = msg.info.width, h = msg.info.height;
+  clutterCanvas.width = w;
+  clutterCanvas.height = h;
+  const img = clutterCanvas.getContext('2d').createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    if (msg.data[i] > 50) {
+      img.data[4 * i] = 255;
+      img.data[4 * i + 1] = 140;
+      img.data[4 * i + 2] = 0;
+      img.data[4 * i + 3] = 230;
+    }
+  }
+  clutterCanvas.getContext('2d').putImageData(img, 0, 0);
+  drawMap();
+});
+
 function worldToCanvas(wx, wy) {
   // map origin is the world coord of cell (0,0); canvas y is flipped.
   const sx = mapCanvas.width / grid.width;
@@ -331,6 +357,16 @@ function drawMap() {
   // Flip vertically so world +y is up.
   mapCtx.scale(1, -1);
   mapCtx.drawImage(gridCanvas, 0, -mapCanvas.height, mapCanvas.width, mapCanvas.height);
+  if (clutter && clutter.width > 1) {
+    // Place the clutter grid in the same flipped world coords as the map.
+    const ppmX = mapCanvas.width / (grid.width * grid.resolution);
+    const ppmY = mapCanvas.height / (grid.height * grid.resolution);
+    const xPx = (clutter.origin.position.x - grid.origin.position.x) * ppmX;
+    const yPx = (clutter.origin.position.y - grid.origin.position.y) * ppmY;
+    const wPx = clutter.width * clutter.resolution * ppmX;
+    const hPx = clutter.height * clutter.resolution * ppmY;
+    mapCtx.drawImage(clutterCanvas, xPx, -(yPx + hPx), wPx, hPx);
+  }
   mapCtx.restore();
 
   if (plan && plan.length > 1) {
