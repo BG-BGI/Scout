@@ -80,6 +80,14 @@ class FollowMe(Node):
         # causing full-speed bursts right next to furniture.
         self._clearance_hold = float(p('clearance_hold', 1.0).value)
         self._max_accel = float(p('max_accel', 0.6).value)  # m/s^2 vx slew
+        # Odom-anchored memory of low depth obstacles. The D455 cannot see
+        # closer than ~0.4 m and low objects fall out of its vertical FOV on
+        # approach (office-chair bases), so points seen earlier are remembered
+        # in the odom frame and re-projected into base_link every tick.
+        self._mem_ttl = float(p('memory_ttl', 8.0).value)
+        self._mem_range = float(p('memory_range', 1.5).value)
+        self._mem_half_width = float(p('memory_half_width', 0.6).value)
+        self._mem_voxel = float(p('memory_voxel', 0.05).value)
         self._avoid_radius = float(p('avoid_radius', 1.0).value)
         self._k_avoid = float(p('k_avoid', 0.35).value)
         self._target_exclusion = float(p('target_exclusion', 0.35).value)
@@ -99,6 +107,7 @@ class FollowMe(Node):
         self._clearance_log = []       # (stamp, clearance) ring for the min-hold
         self._vx_out = 0.0             # slew-limited forward command
         self._last_tick = time.monotonic()
+        self._obstacle_mem = {}        # {(vx_odom, vy_odom) voxel: last-seen stamp}
         self._depth_corridor_min = math.inf
         self._depth_stamp = 0.0
         self._last_depth_proc = 0.0
@@ -127,6 +136,7 @@ class FollowMe(Node):
         self._active = True
         self._target = None
         self._clearance_log = []
+        self._obstacle_mem = {}
         self._vx_out = 0.0
         self._set_status('searching')
         response.success = True
@@ -271,6 +281,61 @@ class FollowMe(Node):
             sel &= (np.hypot(x - tx, y - ty) > self._target_exclusion)
         self._depth_corridor_min = float(x[sel].min()) if sel.any() else math.inf
         self._depth_stamp = now
+        # Remember low points in a wider apron than the live corridor, anchored
+        # in odom, so they survive the camera's close-range blind zone.
+        mem = ((z > self._depth_band_lo) & (z < self._depth_band_hi)
+               & (x > 0.0) & (x <= self._mem_range)
+               & (np.abs(y) <= self._mem_half_width))
+        if self._target is not None:
+            mem &= (np.hypot(x - self._target[0], y - self._target[1])
+                    > self._target_exclusion)
+        if mem.any():
+            pose = self._odom_pose()
+            if pose is not None:
+                ox, oy, oyaw = pose
+                c, s = math.cos(oyaw), math.sin(oyaw)
+                wx = ox + x[mem] * c - y[mem] * s
+                wy = oy + x[mem] * s + y[mem] * c
+                v = self._mem_voxel
+                for px, py in zip(np.round(wx / v) * v, np.round(wy / v) * v):
+                    self._obstacle_mem[(float(px), float(py))] = now
+
+    def _odom_pose(self):
+        """(x, y, yaw) of base_link in odom, or None if TF is not up."""
+        try:
+            t = self._tf_buffer.lookup_transform('odom', 'base_link',
+                                                 rclpy.time.Time())
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            return None
+        q = t.transform.rotation
+        return (t.transform.translation.x, t.transform.translation.y,
+                2.0 * math.atan2(q.z, q.w))
+
+    def _memory_corridor_min(self, now):
+        """Nearest remembered obstacle inside the live corridor, base_link."""
+        if not self._obstacle_mem:
+            return math.inf
+        cutoff = now - self._mem_ttl
+        self._obstacle_mem = {k: t for k, t in self._obstacle_mem.items()
+                              if t >= cutoff}
+        if not self._obstacle_mem:
+            return math.inf
+        pose = self._odom_pose()
+        if pose is None:
+            return math.inf
+        ox, oy, oyaw = pose
+        pts = np.array(list(self._obstacle_mem.keys()), dtype=np.float32)
+        c, s = math.cos(-oyaw), math.sin(-oyaw)
+        dx, dy = pts[:, 0] - ox, pts[:, 1] - oy
+        bx = dx * c - dy * s
+        by = dx * s + dy * c
+        sel = (bx > 0.0) & (bx <= self._avoid_lookahead) \
+            & (np.abs(by) <= self._corridor_half_width)
+        if self._target is not None:
+            sel &= (np.hypot(bx - self._target[0], by - self._target[1])
+                    > self._target_exclusion)
+        return float(bx[sel].min()) if sel.any() else math.inf
 
     def _resolve_camera_tf(self, frame_id):
         """Cache the static camera-optical -> base_link transform as a matrix."""
@@ -295,7 +360,7 @@ class FollowMe(Node):
     # --- control (sole cmd_vel writer) ----------------------------------------------
     def _held_clearance(self, now):
         """Worst (smallest) corridor clearance seen in the hold window."""
-        fresh = self._corridor_min
+        fresh = min(self._corridor_min, self._memory_corridor_min(now))
         if now - self._depth_stamp < self._depth_stale:
             fresh = min(fresh, self._depth_corridor_min)
         self._clearance_log.append((now, fresh))
@@ -346,11 +411,12 @@ class FollowMe(Node):
             # Avoidance telemetry, 1 Hz while driving (throttled).
             depth_fresh = now - self._depth_stamp < self._depth_stale
             self.get_logger().info(
-                'dist %.2f brg %.0f° | corr lidar %.2f depth %s held %.2f | '
-                'wz_avoid %+.2f | vx %.2f wz %+.2f%s' % (
+                'dist %.2f brg %.0f° | corr lidar %.2f depth %s held %.2f '
+                'mem %d | wz_avoid %+.2f | vx %.2f wz %+.2f%s' % (
                     dist, math.degrees(bearing), self._corridor_min,
                     ('%.2f' % self._depth_corridor_min) if depth_fresh else 'stale',
-                    corridor, self._wz_avoid, twist.linear.x, twist.angular.z,
+                    corridor, len(self._obstacle_mem),
+                    self._wz_avoid, twist.linear.x, twist.angular.z,
                     ' BLOCKED' if blocked else ''),
                 throttle_duration_sec=1.0)
         elif self._stop_until > now:
