@@ -26,6 +26,14 @@
     </div>
   </section>
 
+  <!-- Map + tap-to-navigate (needs slam + nav2 services running) -->
+  <section id="nav" class="panel">
+    <h2>Map <span id="nav-state" class="dim">no map</span></h2>
+    <canvas id="map-canvas" width="300" height="300"></canvas>
+    <button id="cancel-goal">Cancel Goal</button>
+    <div class="dim">Tap the map to send a nav goal. Robot drives itself.</div>
+  </section>
+
   <aside>
     <button id="stop">STOP</button>
 
