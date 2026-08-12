@@ -151,7 +151,9 @@ def main():
             note = chat(args.frame_model, FRAME_SYSTEM,
                         [image_part(downscale_jpeg(photo)),
                          {"type": "text", "text": caption}],
-                        max_tokens=300)
+                        # generous cap: reasoning models (Gemini 2.5) spend
+                        # completion tokens on internal thinking first
+                        max_tokens=1500)
         except (RuntimeError, requests.RequestException, KeyError) as exc:
             note = "(annotation failed: %s)" % exc
         entries.append({"waypoint": cap["waypoint"],
