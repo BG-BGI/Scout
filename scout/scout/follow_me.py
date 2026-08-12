@@ -77,6 +77,16 @@ class FollowMe(Node):
         self._min_beams = int(p('min_cluster_beams', 3).value)
         self._assoc_gate = float(p('association_gate', 0.5).value)
         self._lost_timeout = float(p('lost_timeout', 0.5).value)
+        # Reacquire after occlusion: plain nearest-cluster acquire grabs the
+        # occluder itself (it IS the nearest thing in the sector once the
+        # person steps behind it). For `reacquire_window` seconds after a
+        # loss, only a cluster that has MOVED >= `reacquire_motion` in odom
+        # can be locked — furniture cannot qualify, a returning person does —
+        # preferring the mover nearest to where the target vanished. After
+        # the window, falls back to nearest-cluster (fresh start).
+        self._reacq_window = float(p('reacquire_window', 10.0).value)
+        self._reacq_motion = float(p('reacquire_motion', 0.12).value)
+        self._reacq_track_gate = float(p('reacquire_track_gate', 0.3).value)
         publish_hz = float(p('publish_hz', 20.0).value)
         # Obstacle avoidance: forward corridor gating + repulsive steering.
         # Half-width 0.30 covers the 0.238 m circumscribed radius while the
@@ -137,6 +147,8 @@ class FollowMe(Node):
         self._last_tick = time.monotonic()
         self._obstacle_mem = {}   # {(vx_odom, vy_odom): [hits, first, last]}
         self._target_trail = []        # [(stamp, x_odom, y_odom)] of the target
+        self._lost_anchor = None       # (stamp, x_odom, y_odom) of the last fix
+        self._search_tracks = []       # [[ox, oy, first_ox, first_oy, last_seen]]
         self._depth_corridor_min = math.inf
         self._depth_stamp = 0.0
         self._last_depth_proc = 0.0
@@ -167,6 +179,8 @@ class FollowMe(Node):
         self._clearance_log = []
         self._rear_log = []
         self._obstacle_mem = {}
+        self._lost_anchor = None
+        self._search_tracks = []
         self._vx_out = 0.0
         self._set_status('searching')
         response.success = True
@@ -188,6 +202,8 @@ class FollowMe(Node):
         self._stop_until = time.monotonic() + STOP_GRACE
         self._clearance_log = []
         self._rear_log = []
+        self._lost_anchor = None
+        self._search_tracks = []
         self._vx_out = 0.0
         self._set_status('idle')
 
@@ -200,8 +216,11 @@ class FollowMe(Node):
         if not clusters:
             return
         if self._target is None:
-            # Acquire: nearest cluster wins.
-            best = min(clusters, key=lambda c: math.hypot(c[0], c[1]))
+            best = self._acquire(clusters)
+            if best is None:
+                return  # reacquire window: no qualifying mover yet
+            self._lost_anchor = None
+            self._search_tracks = []
         else:
             # Re-associate: nearest to the last position, gated.
             tx, ty = self._target
@@ -223,6 +242,42 @@ class FollowMe(Node):
             self._target_trail = [t for t in self._target_trail if t[0] >= cutoff]
         if self._status == 'searching':
             self._set_status('locked')  # blocked/locked handled by the tick
+
+    def _acquire(self, clusters):
+        """Pick a cluster to lock, or None to keep searching.
+
+        Fresh start (no recent loss): nearest cluster, as before — the
+        operator stands in front and presses Follow, possibly motionless.
+        Within `reacquire_window` of a loss: only clusters whose odom
+        position has moved >= `reacquire_motion` qualify (the occluder the
+        target stepped behind is the nearest cluster but never moves);
+        nearest to the loss anchor wins.
+        """
+        now = time.monotonic()
+        anchor = self._lost_anchor
+        if anchor is None or now - anchor[0] > self._reacq_window:
+            return min(clusters, key=lambda c: math.hypot(c[0], c[1]))
+        pose = self._odom_pose()
+        if pose is None:
+            return min(clusters, key=lambda c: math.hypot(c[0], c[1]))
+        ox, oy, oyaw = pose
+        c, s = math.cos(oyaw), math.sin(oyaw)
+        movers = []
+        for cx, cy in clusters:
+            wx = ox + cx * c - cy * s
+            wy = oy + cx * s + cy * c
+            for t in self._search_tracks:
+                if math.hypot(wx - t[0], wy - t[1]) <= self._reacq_track_gate:
+                    t[0], t[1], t[4] = wx, wy, now
+                    if math.hypot(wx - t[2], wy - t[3]) >= self._reacq_motion:
+                        movers.append(((cx, cy), math.hypot(wx - anchor[1],
+                                                            wy - anchor[2])))
+                    break
+            else:
+                self._search_tracks.append([wx, wy, wx, wy, now])
+        self._search_tracks = [t for t in self._search_tracks
+                               if now - t[4] <= 1.0]
+        return min(movers, key=lambda m: m[1])[0] if movers else None
 
     def _clusters(self, msg):
         """Cluster centroids (x fwd, y left in base_link) inside sector+range."""
@@ -472,6 +527,16 @@ class FollowMe(Node):
         self._last_tick = now
         if self._active and self._target is not None:
             if now - self._target_seen > self._lost_timeout:
+                # Anchor the loss point in odom so reacquire can prefer
+                # movers near where the target vanished.
+                pose = self._odom_pose()
+                if pose is not None:
+                    ox, oy, oyaw = pose
+                    c, s = math.cos(oyaw), math.sin(oyaw)
+                    tx, ty = self._target
+                    self._lost_anchor = (now, ox + tx * c - ty * s,
+                                         oy + tx * s + ty * c)
+                self._search_tracks = []
                 self._target = None
                 self._set_status('searching')
                 self._stop_until = now + STOP_GRACE
