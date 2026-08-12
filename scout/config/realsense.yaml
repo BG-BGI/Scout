@@ -25,7 +25,7 @@ json_file_path: /ros_ws/src/scout/config/d455_scout_preset.json
 
 # 240 mW (default 150, max 360, step 30): denser returns on the low-texture
 # floor band that depth_mark/clutter actually consume. Indoor use.
-depth_module.laser_power: 240
+depth_module.laser_power: 240.0   # must be float — int is rejected with a type error
 depth_module.enable_auto_exposure: true
 
 # Untextured XYZ from depth for Nav2 local costmap (under-lidar band). stream_filter 1
