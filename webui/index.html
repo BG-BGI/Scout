@@ -15,19 +15,27 @@
 </header>
 
 <main>
-  <!-- Map: the primary surface — nav goals, area select, live pose -->
-  <section id="nav">
-    <div class="map-head">
-      <h2>Map</h2>
-      <span id="nav-state" class="dim">no map</span>
-      <button id="cancel-goal">Cancel Goal</button>
-    </div>
-    <div id="map-frame">
-      <canvas id="map-canvas" width="300" height="300"></canvas>
-    </div>
-    <div class="dim map-hint">Tap the map to send a nav goal — the robot drives
-      itself. Select area in Patrol to outline a coverage zone.</div>
-  </section>
+  <!-- Stage: map + camera, the robot's two live views side by side -->
+  <div id="stage">
+    <section id="nav">
+      <div class="map-head">
+        <h2>Map</h2>
+        <span id="nav-state" class="dim">no map</span>
+        <button id="cancel-goal">Cancel Goal</button>
+      </div>
+      <div id="map-frame">
+        <canvas id="map-canvas" width="300" height="300"></canvas>
+      </div>
+      <div class="dim map-hint">Tap the map to send a nav goal — the robot drives
+        itself. Select area in Patrol to outline a coverage zone.</div>
+    </section>
+
+    <section class="panel" id="camera-panel">
+      <h2>Camera <span id="cam-state" class="dim">off</span></h2>
+      <img id="cam-img" alt="camera view">
+      <button id="cam-toggle">Show camera</button>
+    </section>
+  </div>
 
   <!-- Manual drive: STOP + touch stick -->
   <section id="drive">
@@ -64,12 +72,6 @@
       </div>
       <div class="dim">Chases the nearest object in front (0.7 m standoff).
         Stand ~1–2 m ahead, then press Follow.</div>
-    </section>
-
-    <section class="panel">
-      <h2>Camera <span id="cam-state" class="dim">off</span></h2>
-      <img id="cam-img" alt="camera view">
-      <button id="cam-toggle">Show camera</button>
     </section>
 
     <section class="panel">

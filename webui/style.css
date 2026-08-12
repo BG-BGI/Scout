@@ -66,20 +66,27 @@ main {
 }
 main > *, aside > * { min-width: 0; }
 #drive { order: 1; }
-#nav   { order: 2; }
+#stage { order: 2; }
 aside  { order: 3; }
+
+/* stage: map + camera. Phone stacks them; desktop puts them side by side. */
+#stage { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+#stage > * { min-width: 0; }
 
 @media (min-width: 940px) {
   main {
     grid-template-columns: minmax(0, 1fr) 360px;
     grid-template-rows: auto minmax(0, 1fr);
     grid-template-areas:
-      "nav drive"
-      "nav aside";
+      "stage drive"
+      "stage aside";
     overflow: hidden;
     height: 100%;
   }
-  #nav   { grid-area: nav; }
+  #stage { grid-area: stage; flex-direction: row; min-height: 0; }
+  #stage #nav { flex: 1 1 auto; }
+  #stage #camera-panel { flex: 0 1 400px; align-self: flex-start; max-height: 100%; }
+  #stage #camera-panel img { object-fit: contain; }
   #drive { grid-area: drive; }
   aside  { grid-area: aside; overflow-y: auto; min-height: 0; padding-right: 2px; }
 }
