@@ -58,6 +58,18 @@
     </section>
 
     <section class="panel">
+      <h2>Patrol <span id="patrol-state" class="dim">idle</span></h2>
+      <div class="grid">
+        <button id="patrol-mark">Mark waypoint</button>
+        <button id="patrol-clear">Clear route</button>
+        <button id="patrol-start">Start patrol</button>
+        <button id="patrol-stop">Stop patrol</button>
+      </div>
+      <div id="patrol-result" class="dim">Drive to a vantage point, Mark, repeat;
+        Start replays the route and photographs each stop.</div>
+    </section>
+
+    <section class="panel">
       <h2>Camera <span id="cam-state" class="dim">off</span></h2>
       <img id="cam-img" alt="camera view" style="width:100%;display:none;border-radius:6px">
       <button id="cam-toggle">Show camera</button>

@@ -13,3 +13,5 @@ maps/*.posegraph
 maps/*.data
 maps/*.pgm
 maps/*.yaml
+captures/*
+!captures/.gitkeep

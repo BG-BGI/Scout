@@ -247,6 +247,7 @@ document.getElementById('stop').addEventListener('click', () => {
   stopTrickSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
   stopFollow();  // follow_me would keep chasing through the zero burst
   cancelNav();   // a live nav goal would keep driving through the zero burst
+  patrolStop();  // a patrol would send the NEXT waypoint after the cancel
   zeroBurst();
 });
 
@@ -449,6 +450,31 @@ navStatusTopic.subscribe((msg) => {
   if (!msg.status_list.length) return;
   const s = msg.status_list[msg.status_list.length - 1].status;
   if (NAV_STATUS[s]) navState.textContent = NAV_STATUS[s];
+});
+
+// --- patrol ---------------------------------------------------------------------------
+const patrolState = document.getElementById('patrol-state');
+const patrolResult = document.getElementById('patrol-result');
+function patrolSrv(name) {
+  const srv = new ROSLIB.Service({
+    ros, name: '/patrol/' + name, serviceType: 'std_srvs/srv/Trigger',
+  });
+  return () => srv.callService(new ROSLIB.ServiceRequest({}),
+    (res) => { patrolResult.textContent = res.message; },
+    (err) => { patrolResult.textContent = 'error: ' + err; });
+}
+const patrolStop = patrolSrv('stop');
+document.getElementById('patrol-mark').addEventListener('click', patrolSrv('mark'));
+document.getElementById('patrol-clear').addEventListener('click', patrolSrv('clear'));
+document.getElementById('patrol-start').addEventListener('click', patrolSrv('start'));
+document.getElementById('patrol-stop').addEventListener('click', patrolStop);
+new ROSLIB.Topic({
+  ros, name: '/patrol_status', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  // 'idle|<n>' or '<state>|<n>|<i>/<n>'
+  const parts = msg.data.split('|');
+  patrolState.textContent = parts[0] === 'idle'
+    ? 'idle · ' + parts[1] + ' wp' : parts[0] + ' ' + parts[2];
 });
 
 // --- camera view ----------------------------------------------------------------------

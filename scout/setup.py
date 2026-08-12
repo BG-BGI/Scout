@@ -39,6 +39,7 @@ setup(
             'led_status = scout.led_status:main',
             'follow_me = scout.follow_me:main',
             'clutter_mapper = scout.clutter_mapper:main',
+            'patrol_capture = scout.patrol_capture:main',
         ],
     },
 )

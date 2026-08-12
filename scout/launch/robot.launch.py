@@ -149,6 +149,14 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # Waypoint patrol + pose-stamped photo capture (progress docs).
+        # Inert until /patrol/start; needs slam + nav2 for motion.
+        Node(
+            package='scout',
+            executable='patrol_capture',
+            output='screen',
+        ),
+
         # LED arbitration: sole caller of /set_led_mode. Web UI talks to
         # /set_user_led on this node, never to led_node directly.
         Node(
