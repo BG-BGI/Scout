@@ -367,6 +367,8 @@ Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, 
 
 **⚠ All bench and calibration tooling was DELETED on request (2026-07-30), along with the compose `test` profile.** Every measurement in this file came from tools that no longer exist — treat the numbers as the record and expect to rebuild the instrument before extending them. Removed: `spin_diagnostic.py` (spin and straight-line sweeps with duty/current/encoder/voltage logging), `tune_velocity_pid.py` (packet-serial client + PID autotune), `wheel_radius_calibrator.py`, `motor_test.py` (raw-UART open-loop duty + breakaway ramp), `led_test.py`, `pivot_check.py`. Three were untracked, so there is no git history to restore from. Only `gyro_calibrator.py` was kept, being a runtime node.
 
+**Exception (2026-08-12): `scripts/camera_health.py` and `scripts/camera_selfcal.py` are KEEPERS**, not bench rigs — recurring camera maintenance instruments (stereo calibration drifts with temperature and knocks), same class as the kept `gyro_calibrator`. `camera_health.py --plane` is the plane-fit RMS check (subpixel <0.1 good, >0.2 recalibrate); `--watch` is the MinZ/MaxZ instrument for the disparity-shift bench. Both need the robot service stopped first (device claim). **IMU flash recalibration is deliberately not provided** — online `gyro_calibrator` bias estimation is the only IMU path the EKF consumes, `rs-imu-calibration` corrects bias-not-scale anyway, and flash writes sit next to the Motion-Module wedge hazard. Do not re-litigate.
+
 ## Pi-side control notes
 
 - RoboClaw is on the Pi 5 GPIO UART **`/dev/ttyAMA0`** (needs `dtparam=uart0=on` in config.txt). **NOT `/dev/ttyAMA10`**, which is the debug/console UART
