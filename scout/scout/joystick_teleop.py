@@ -29,7 +29,9 @@ AXIS_DPAD_Y = 7   # D-pad up/down:    up   = -32767, down  = +32767
 # Linux joystick event: u32 time, s16 value, u8 type, u8 number (8 bytes).
 _JS_EVENT = struct.Struct('<IhBB')
 _JS_EVENT_AXIS = 0x02
+_JS_EVENT_BUTTON = 0x01
 _JS_INIT_FLAG = 0x80
+BTN_A = 0   # Xbox A, both xpad USB and stock Bluetooth HID mappings
 
 PUBLISH_HZ = 25.0          # > 1/WATCHDOG_TIMEOUT so the motor driver stays armed
 PIVOT_FLOOR = 2.5          # rad/s: below this an in-place turn cannot beat the flat
@@ -73,6 +75,11 @@ class JoystickTeleopNode(Node):
         self._follow_stop = self.create_client(Trigger, 'follow_me/stop')
         self.create_subscription(String, 'follow_status', self._on_follow_status, 10)
 
+        # A button marks a patrol waypoint. The reader thread only sets a
+        # flag; the publish timer (executor thread) makes the service call.
+        self._mark_requested = False
+        self._patrol_mark = self.create_client(Trigger, 'patrol/mark')
+
         self._stop = False
         self._reader = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader.start()
@@ -112,8 +119,12 @@ class JoystickTeleopNode(Node):
             self.get_logger().warn('Controller gone — inputs zeroed')
 
     def _handle_event(self, value, etype, number):
+        if etype & ~_JS_INIT_FLAG == _JS_EVENT_BUTTON:
+            if number == BTN_A and value == 1 and not (etype & _JS_INIT_FLAG):
+                self._mark_requested = True
+            return
         if etype & ~_JS_INIT_FLAG != _JS_EVENT_AXIS:
-            return  # buttons unused
+            return  # other buttons unused
         if number == AXIS_RT:
             self._rt = self._trigger_frac(value)
         elif number == AXIS_LT:
@@ -196,6 +207,14 @@ class JoystickTeleopNode(Node):
 
     # --- Publishing ----------------------------------------------------------
     def _publish(self):
+        if self._mark_requested:
+            self._mark_requested = False
+            if self._patrol_mark.service_is_ready():
+                fut = self._patrol_mark.call_async(Trigger.Request())
+                fut.add_done_callback(lambda f: self.get_logger().info(
+                    'Mark: %s' % f.result().message))
+            else:
+                self.get_logger().warn('patrol/mark not available')
         # Only touch cmd_vel while the controller is actually driving, so idle
         # zeros don't stomp other publishers (Foxglove, nav2).
         active = self._rt > 0.0 or self._lt > 0.0 or self._turn != 0.0

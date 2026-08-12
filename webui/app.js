@@ -122,10 +122,15 @@ window.addEventListener('gamepaddisconnected', (ev) => {
   }
 });
 
+let gpAWas = false;
 function readGamepad() {
   if (gamepadIndex === null) return null;
   const gp = navigator.getGamepads()[gamepadIndex];
   if (!gp) return null;
+  // A button (standard mapping index 0) marks a patrol waypoint, on press.
+  const aNow = !!(gp.buttons[0] && gp.buttons[0].pressed);
+  if (aNow && !gpAWas) patrolMark();
+  gpAWas = aNow;
   const rt = gp.buttons[7] ? gp.buttons[7].value : 0;
   const lt = gp.buttons[6] ? gp.buttons[6].value : 0;
   const x = gp.axes[0] || 0;
@@ -464,7 +469,8 @@ function patrolSrv(name) {
     (err) => { patrolResult.textContent = 'error: ' + err; });
 }
 const patrolStop = patrolSrv('stop');
-document.getElementById('patrol-mark').addEventListener('click', patrolSrv('mark'));
+const patrolMark = patrolSrv('mark');   // also fired by gamepad A (readGamepad)
+document.getElementById('patrol-mark').addEventListener('click', patrolMark);
 document.getElementById('patrol-clear').addEventListener('click', patrolSrv('clear'));
 document.getElementById('patrol-start').addEventListener('click', patrolSrv('start'));
 document.getElementById('patrol-stop').addEventListener('click', patrolStop);
