@@ -36,8 +36,10 @@ services:
   #
   # restart: unless-stopped => comes back on power-on (docker.service is enabled by
   # default on Pi OS). Applies only to containers created by `up -d`, never `run`.
-  # slam/nav2 deliberately have NO restart policy: teleop needs neither, and nav2's
-  # latched-goal trap makes unattended autostart dangerous.
+  # slam/nav2 became always-on with patrol_capture (2026-08-12): marking needs the
+  # map frame, patrols need the planner, and reboots kept stranding both. The old
+  # "latched-goal trap" argument was about killing CLIENTS of a running nav2 — a
+  # freshly booted nav2 holds no goal, so autostart adds no unattended motion.
   robot:
     <<: *base
     restart: unless-stopped
@@ -47,6 +49,7 @@ services:
   # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
   slam:
     <<: *base
+    restart: unless-stopped
     command: ros2 launch scout slam.launch.py mode:=new
     # command: ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
     # command: ros2 launch scout slam.launch.py mode:=localization map:=house
@@ -67,6 +70,7 @@ services:
   # Comment/uncomment one command line.
   nav2:
     <<: *base
+    restart: unless-stopped
     command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2.yaml use_sim_time:=false
     # command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false
 
