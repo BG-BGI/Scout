@@ -30,7 +30,9 @@ docker compose build
 docker compose --profile build run --rm build_package
 
 # Bring up only the always-on services this branch's compose defines.
-WANT="robot rosbridge webui foxglove_bridge"
+# slam + nav2 are always-on since patrol_capture: marking waypoints needs the
+# map frame and patrols need the planner, and a deploy must not strand them.
+WANT="robot rosbridge webui foxglove_bridge slam nav2"
 HAVE=$(docker compose config --services)
 UP=""
 for s in $WANT; do echo "$HAVE" | grep -qx "$s" && UP="$UP $s"; done
