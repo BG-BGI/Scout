@@ -400,13 +400,25 @@ function drawMap() {
     mapCtx.fill();
     mapCtx.restore();
   }
+
+  if (boxSel) {
+    const a = worldToCanvas(boxSel.x0, boxSel.y0);
+    const b = worldToCanvas(boxSel.x1, boxSel.y1);
+    mapCtx.strokeStyle = '#40a0ff';
+    mapCtx.lineWidth = 2;
+    mapCtx.setLineDash([6, 4]);
+    mapCtx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y),
+      Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+    mapCtx.setLineDash([]);
+  }
 }
 
 const goalPub = new ROSLIB.Topic({
   ros, name: '/goal_pose', messageType: 'geometry_msgs/msg/PoseStamped',
 });
 mapCanvas.addEventListener('click', (ev) => {
-  if (!grid) return;
+  if (suppressGoalClick) { suppressGoalClick = false; return; }
+  if (boxMode || !grid) return;
   const r = mapCanvas.getBoundingClientRect();
   const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
   const cy = (ev.clientY - r.top) * (mapCanvas.height / r.height);
@@ -477,10 +489,80 @@ document.getElementById('patrol-stop').addEventListener('click', patrolStop);
 new ROSLIB.Topic({
   ros, name: '/patrol_status', messageType: 'std_msgs/msg/String',
 }).subscribe((msg) => {
-  // 'idle|<n>' or '<state>|<n>|<i>/<n>'
+  // 'idle|<n>' | '<state>|<n>|<i>/<n>' | 'plan|<coverage feedback text>'
   const parts = msg.data.split('|');
+  if (parts[0] === 'plan') {
+    patrolResult.textContent = parts.slice(1).join('|');
+    return;
+  }
   patrolState.textContent = parts[0] === 'idle'
     ? 'idle · ' + parts[1] + ' wp' : parts[0] + ' ' + parts[2];
+});
+
+// --- coverage box select ---------------------------------------------------------
+// 'Select area' arms one drag on the map canvas; the box goes to /coverage_box
+// (map frame) and patrol_capture replies on /patrol_status with 'plan|...'.
+const coverageBoxPub = new ROSLIB.Topic({
+  ros, name: '/coverage_box', messageType: 'geometry_msgs/msg/PolygonStamped',
+});
+const areaBtn = document.getElementById('patrol-area');
+let boxMode = false;
+let boxSel = null;   // {x0, y0, x1, y1} in map coords while dragging
+let suppressGoalClick = false;  // a box drag must not also fire a nav goal
+
+function canvasToWorld(ev) {
+  const r = mapCanvas.getBoundingClientRect();
+  const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
+  const cy = (ev.clientY - r.top) * (mapCanvas.height / r.height);
+  return {
+    x: cx / (mapCanvas.width / grid.width) * grid.resolution
+      + grid.origin.position.x,
+    y: (mapCanvas.height - cy) / (mapCanvas.height / grid.height)
+      * grid.resolution + grid.origin.position.y,
+  };
+}
+
+areaBtn.addEventListener('click', () => {
+  boxMode = !boxMode;
+  areaBtn.classList.toggle('selected', boxMode);
+  patrolResult.textContent = boxMode
+    ? 'Drag a box on the map to plan coverage.' : 'Area select cancelled.';
+});
+
+mapCanvas.addEventListener('pointerdown', (ev) => {
+  if (!boxMode || !grid) return;
+  mapCanvas.setPointerCapture(ev.pointerId);
+  const w = canvasToWorld(ev);
+  boxSel = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+  ev.preventDefault();
+});
+mapCanvas.addEventListener('pointermove', (ev) => {
+  if (!boxSel) return;
+  const w = canvasToWorld(ev);
+  boxSel.x1 = w.x;
+  boxSel.y1 = w.y;
+  drawMap();
+});
+mapCanvas.addEventListener('pointerup', () => {
+  if (!boxSel) return;
+  suppressGoalClick = true;
+  const b = boxSel;
+  boxSel = null;
+  boxMode = false;
+  areaBtn.classList.remove('selected');
+  drawMap();
+  if (Math.abs(b.x1 - b.x0) < 0.3 || Math.abs(b.y1 - b.y0) < 0.3) {
+    patrolResult.textContent = 'Box too small — drag a larger area.';
+    return;
+  }
+  coverageBoxPub.publish(new ROSLIB.Message({
+    header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+    polygon: { points: [
+      { x: Math.min(b.x0, b.x1), y: Math.min(b.y0, b.y1), z: 0 },
+      { x: Math.max(b.x0, b.x1), y: Math.max(b.y0, b.y1), z: 0 },
+    ] },
+  }));
+  patrolResult.textContent = 'Planning coverage…';
 });
 
 // --- camera view ----------------------------------------------------------------------

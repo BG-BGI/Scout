@@ -28,6 +28,7 @@ import math
 import os
 import time
 
+import numpy as np
 import rclpy
 import tf2_ros
 import yaml
@@ -35,7 +36,8 @@ from rclpy.node import Node
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PolygonStamped, PoseStamped
+from nav_msgs.msg import OccupancyGrid
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
@@ -56,6 +58,14 @@ class PatrolCapture(Node):
         self._frame_max_age = float(p('frame_max_age', 2.0).value)
         self._abort_voltage = float(p('abort_voltage', 17.0).value)
         self._goal_timeout = float(p('goal_timeout', 120.0).value)
+        # Coverage planning: a box dragged on the web UI map arrives on
+        # /coverage_box; a serpentine route over its free/unknown cells
+        # (obstacles inflated by coverage_inflation) replaces the current
+        # patrol route. Spacing is the stripe pitch — 1.0 m suits photo
+        # documentation; the lidar maps far wider than that regardless.
+        self._cov_spacing = float(p('coverage_spacing', 1.0).value)
+        self._cov_inflation = float(p('coverage_inflation', 0.30).value)
+        self._cov_max_wp = int(p('coverage_max_waypoints', 120).value)
 
         self._route = self._load_route()
         self._state = 'idle'      # idle | driving | settling | capturing
@@ -77,6 +87,10 @@ class PatrolCapture(Node):
                                  'camera/camera/color/image_raw/compressed',
                                  self._on_frame, qos_profile_sensor_data)
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
+        self._grid = None
+        self.create_subscription(OccupancyGrid, 'map', self._on_grid, 1)
+        self.create_subscription(PolygonStamped, 'coverage_box',
+                                 self._on_coverage_box, 1)
         self._status_pub = self.create_publisher(String, 'patrol_status', 10)
 
         self.create_service(Trigger, 'patrol/mark', self._on_mark)
@@ -112,6 +126,105 @@ class PatrolCapture(Node):
 
     def _on_battery(self, msg):
         self._battery_v = msg.voltage
+
+    def _on_grid(self, msg):
+        self._grid = msg
+
+    # --- coverage planning --------------------------------------------------------
+    def _on_coverage_box(self, msg: PolygonStamped):
+        if self._state != 'idle':
+            self._plan_feedback('coverage ignored: patrol is running')
+            return
+        if self._grid is None:
+            self._plan_feedback('coverage failed: no /map yet (slam running?)')
+            return
+        pts = msg.polygon.points
+        if len(pts) < 2:
+            return
+        xs = [p.x for p in pts]
+        ys = [p.y for p in pts]
+        try:
+            route = self._plan_coverage(min(xs), min(ys), max(xs), max(ys))
+        except Exception as exc:  # noqa: BLE001 — a bad box must not kill the node
+            self._plan_feedback('coverage failed: %s' % exc)
+            return
+        if not route:
+            self._plan_feedback('coverage failed: no reachable stripes in the box')
+            return
+        if len(route) > self._cov_max_wp:
+            self._plan_feedback('coverage failed: %d waypoints > max %d — '
+                                'smaller box or larger coverage_spacing'
+                                % (len(route), self._cov_max_wp))
+            return
+        self._route = route
+        self._save_route()
+        dist = sum(math.hypot(route[i + 1]['x'] - route[i]['x'],
+                              route[i + 1]['y'] - route[i]['y'])
+                   for i in range(len(route) - 1))
+        self._plan_feedback('coverage route: %d waypoints, ~%.0f m — press Start'
+                            % (len(route), dist))
+
+    def _plan_feedback(self, text):
+        self.get_logger().info(text)
+        msg = String()
+        msg.data = 'plan|%s' % text
+        self._status_pub.publish(msg)
+
+    def _plan_coverage(self, x0, y0, x1, y1):
+        """Serpentine stripes over free/unknown cells inside the box.
+
+        Occupied cells (>=50) are inflated by coverage_inflation; unknown
+        (-1) counts as coverable — mapping unexplored space is the point,
+        and nav2 plans through unknown (allow_unknown). Stripes are split
+        at obstacles; nav2 routes between segment endpoints on its own.
+        """
+        info = self._grid.info
+        res = info.resolution
+        grid = np.array(self._grid.data, dtype=np.int8).reshape(
+            info.height, info.width)
+        blocked = grid >= 50
+        for _ in range(max(1, int(round(self._cov_inflation / res)))):
+            d = blocked.copy()
+            d[1:, :] |= blocked[:-1, :]
+            d[:-1, :] |= blocked[1:, :]
+            d[:, 1:] |= blocked[:, :-1]
+            d[:, :-1] |= blocked[:, 1:]
+            blocked = d
+
+        def cell_x(wx):
+            return int((wx - info.origin.position.x) / res)
+
+        def cell_y(wy):
+            return int((wy - info.origin.position.y) / res)
+
+        cx0 = max(0, cell_x(x0))
+        cx1 = min(info.width - 1, cell_x(x1))
+        min_run = max(2, int(round(0.45 / res)))   # skip slivers < robot length
+        route = []
+        flip = False
+        wy = y0 + self._cov_spacing / 2.0
+        while wy < y1:
+            iy = cell_y(wy)
+            if 0 <= iy < info.height and cx1 > cx0:
+                open_row = ~blocked[iy, cx0:cx1 + 1]
+                # runs of consecutive open cells
+                idx = np.flatnonzero(np.diff(np.concatenate(
+                    ([0], open_row.view(np.int8), [0]))))
+                segs = [(idx[i], idx[i + 1] - 1) for i in range(0, len(idx), 2)
+                        if idx[i + 1] - idx[i] >= min_run]
+                if flip:
+                    segs = [(b, a) for a, b in reversed(segs)]
+                for a, b in segs:
+                    wxa = info.origin.position.x + (cx0 + a + 0.5) * res
+                    wxb = info.origin.position.x + (cx0 + b + 0.5) * res
+                    yaw = 0.0 if wxb >= wxa else math.pi
+                    route.append({'x': round(wxa, 3), 'y': round(wy, 3),
+                                  'yaw': round(yaw, 3)})
+                    route.append({'x': round(wxb, 3), 'y': round(wy, 3),
+                                  'yaw': round(yaw, 3)})
+            flip = not flip
+            wy += self._cov_spacing
+        return route
 
     def _map_pose(self):
         try:
