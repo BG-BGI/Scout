@@ -9,7 +9,10 @@ enable_infra2: false
 # 848x480, the D455's optimal stereo resolution — precision degrades below it,
 # and MinZ scales with X-resolution. If the wrapper rejects the profile it
 # logs the full supported list; fall back to '640x480x5'.
-rgb_camera.color_profile: '640x480x5'
+# Color at 15 FPS for the web UI live view (5 is a slideshow). JPEG encoding
+# is per-subscriber lazy, so the always-on cost is only the wrapper's color
+# path; the ~5-8% of a core for compression happens only while a panel looks.
+rgb_camera.color_profile: '640x480x15'
 depth_module.depth_profile: '848x480x5'
 
 # Advanced-mode preset: DefaultPreset_D455 base with the High Accuracy overlay

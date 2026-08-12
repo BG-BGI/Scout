@@ -451,6 +451,46 @@ navStatusTopic.subscribe((msg) => {
   if (NAV_STATUS[s]) navState.textContent = NAV_STATUS[s];
 });
 
+// --- camera view ----------------------------------------------------------------------
+// Subscribe ONLY while the panel is shown: compressed_image_transport JPEG-encodes
+// per-subscriber, so a hidden panel costs the robot zero CPU. rosbridge JSON
+// delivers the JPEG bytes base64-encoded — straight into a data URL.
+const camImg = document.getElementById('cam-img');
+const camState = document.getElementById('cam-state');
+const camToggle = document.getElementById('cam-toggle');
+let camTopic = null;
+
+function camStart() {
+  if (camTopic) return;
+  camTopic = new ROSLIB.Topic({
+    ros, name: '/camera/camera/color/image_raw/compressed',
+    messageType: 'sensor_msgs/msg/CompressedImage',
+    throttle_rate: 250, queue_length: 1,   // 4 Hz on the wire, ~1-2 Mbps
+  });
+  camTopic.subscribe((msg) => {
+    camImg.src = 'data:image/jpeg;base64,' + msg.data;
+    camState.textContent = 'live';
+  });
+  camImg.style.display = 'block';
+  camState.textContent = 'waiting…';
+  camToggle.textContent = 'Hide camera';
+}
+function camStop() {
+  if (!camTopic) return;
+  camTopic.unsubscribe();
+  camTopic = null;
+  camImg.style.display = 'none';
+  camImg.removeAttribute('src');
+  camState.textContent = 'off';
+  camToggle.textContent = 'Show camera';
+}
+camToggle.addEventListener('click', () => (camTopic ? camStop() : camStart()));
+// Coexists with the zeroBurst visibility hook: hidden tab = stop streaming.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) camStop();
+});
+ros.on('close', camStop);   // resubscribe manually after a reconnect
+
 // --- lights -------------------------------------------------------------------------
 const ledResult = document.getElementById('led-result');
 const ledBright = document.getElementById('led-bright');
