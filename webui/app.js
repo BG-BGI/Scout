@@ -401,15 +401,33 @@ function drawMap() {
     mapCtx.restore();
   }
 
-  if (boxSel) {
-    const a = worldToCanvas(boxSel.x0, boxSel.y0);
-    const b = worldToCanvas(boxSel.x1, boxSel.y1);
+  if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
+    mapCtx.fillStyle = '#40a0ff';
     mapCtx.lineWidth = 2;
-    mapCtx.setLineDash([6, 4]);
-    mapCtx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y),
-      Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-    mapCtx.setLineDash([]);
+    mapCtx.beginPath();
+    areaPts.forEach((p, i) => {
+      const c = worldToCanvas(p.x, p.y);
+      i ? mapCtx.lineTo(c.x, c.y) : mapCtx.moveTo(c.x, c.y);
+    });
+    mapCtx.stroke();
+    if (areaPts.length > 2) {
+      const first = worldToCanvas(areaPts[0].x, areaPts[0].y);
+      const last = worldToCanvas(areaPts[areaPts.length - 1].x,
+        areaPts[areaPts.length - 1].y);
+      mapCtx.setLineDash([6, 4]);
+      mapCtx.beginPath();
+      mapCtx.moveTo(last.x, last.y);
+      mapCtx.lineTo(first.x, first.y);
+      mapCtx.stroke();
+      mapCtx.setLineDash([]);
+    }
+    areaPts.forEach((p) => {
+      const c = worldToCanvas(p.x, p.y);
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 4, 0, 2 * Math.PI);
+      mapCtx.fill();
+    });
   }
 }
 
@@ -417,8 +435,13 @@ const goalPub = new ROSLIB.Topic({
   ros, name: '/goal_pose', messageType: 'geometry_msgs/msg/PoseStamped',
 });
 mapCanvas.addEventListener('click', (ev) => {
-  if (suppressGoalClick) { suppressGoalClick = false; return; }
-  if (boxMode || !grid) return;
+  if (!grid) return;
+  if (areaMode) {
+    areaPts.push(canvasToWorld(ev));
+    areaBtn.textContent = 'Finish (' + areaPts.length + ')';
+    drawMap();
+    return;
+  }
   const r = mapCanvas.getBoundingClientRect();
   const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
   const cy = (ev.clientY - r.top) * (mapCanvas.height / r.height);
@@ -499,16 +522,17 @@ new ROSLIB.Topic({
     ? 'idle · ' + parts[1] + ' wp' : parts[0] + ' ' + parts[2];
 });
 
-// --- coverage box select ---------------------------------------------------------
-// 'Select area' arms one drag on the map canvas; the box goes to /coverage_box
-// (map frame) and patrol_capture replies on /patrol_status with 'plan|...'.
+// --- coverage area select (click-to-place polygon) --------------------------------
+// 'Select area' arms point placement: each map tap adds a vertex, the outline
+// draws live, and the button (now 'Finish (N)') closes the polygon and sends
+// it to /coverage_box (map frame). patrol_capture replies on /patrol_status
+// with 'plan|...'. Click-to-place instead of drag: touch drags scroll the page.
 const coverageBoxPub = new ROSLIB.Topic({
   ros, name: '/coverage_box', messageType: 'geometry_msgs/msg/PolygonStamped',
 });
 const areaBtn = document.getElementById('patrol-area');
-let boxMode = false;
-let boxSel = null;   // {x0, y0, x1, y1} in map coords while dragging
-let suppressGoalClick = false;  // a box drag must not also fire a nav goal
+let areaMode = false;
+let areaPts = [];   // [{x, y}] map-frame vertices
 
 function canvasToWorld(ev) {
   const r = mapCanvas.getBoundingClientRect();
@@ -522,47 +546,35 @@ function canvasToWorld(ev) {
   };
 }
 
-areaBtn.addEventListener('click', () => {
-  boxMode = !boxMode;
-  areaBtn.classList.toggle('selected', boxMode);
-  patrolResult.textContent = boxMode
-    ? 'Drag a box on the map to plan coverage.' : 'Area select cancelled.';
-});
-
-mapCanvas.addEventListener('pointerdown', (ev) => {
-  if (!boxMode || !grid) return;
-  mapCanvas.setPointerCapture(ev.pointerId);
-  const w = canvasToWorld(ev);
-  boxSel = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
-  ev.preventDefault();
-});
-mapCanvas.addEventListener('pointermove', (ev) => {
-  if (!boxSel) return;
-  const w = canvasToWorld(ev);
-  boxSel.x1 = w.x;
-  boxSel.y1 = w.y;
-  drawMap();
-});
-mapCanvas.addEventListener('pointerup', () => {
-  if (!boxSel) return;
-  suppressGoalClick = true;
-  const b = boxSel;
-  boxSel = null;
-  boxMode = false;
+function areaReset(msg) {
+  areaMode = false;
+  areaPts = [];
+  areaBtn.textContent = 'Select area';
   areaBtn.classList.remove('selected');
+  if (msg) patrolResult.textContent = msg;
   drawMap();
-  if (Math.abs(b.x1 - b.x0) < 0.3 || Math.abs(b.y1 - b.y0) < 0.3) {
-    patrolResult.textContent = 'Box too small — drag a larger area.';
+}
+
+areaBtn.addEventListener('click', () => {
+  if (!areaMode) {
+    areaMode = true;
+    areaPts = [];
+    areaBtn.textContent = 'Finish (0)';
+    areaBtn.classList.add('selected');
+    patrolResult.textContent =
+      'Tap the map to outline the area (3+ points), then press Finish.';
+    return;
+  }
+  // Finish pressed
+  if (areaPts.length < 3) {
+    areaReset('Area select cancelled (needs 3+ points).');
     return;
   }
   coverageBoxPub.publish(new ROSLIB.Message({
     header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
-    polygon: { points: [
-      { x: Math.min(b.x0, b.x1), y: Math.min(b.y0, b.y1), z: 0 },
-      { x: Math.max(b.x0, b.x1), y: Math.max(b.y0, b.y1), z: 0 },
-    ] },
+    polygon: { points: areaPts.map((p) => ({ x: p.x, y: p.y, z: 0 })) },
   }));
-  patrolResult.textContent = 'Planning coverage…';
+  areaReset('Planning coverage…');
 });
 
 // --- camera view ----------------------------------------------------------------------

@@ -141,10 +141,13 @@ class PatrolCapture(Node):
         pts = msg.polygon.points
         if len(pts) < 2:
             return
-        xs = [p.x for p in pts]
-        ys = [p.y for p in pts]
+        if len(pts) == 2:   # two corners = axis-aligned box
+            poly = [(pts[0].x, pts[0].y), (pts[1].x, pts[0].y),
+                    (pts[1].x, pts[1].y), (pts[0].x, pts[1].y)]
+        else:
+            poly = [(p.x, p.y) for p in pts]
         try:
-            route = self._plan_coverage(min(xs), min(ys), max(xs), max(ys))
+            route = self._plan_coverage(poly)
         except Exception as exc:  # noqa: BLE001 — a bad box must not kill the node
             self._plan_feedback('coverage failed: %s' % exc)
             return
@@ -170,13 +173,26 @@ class PatrolCapture(Node):
         msg.data = 'plan|%s' % text
         self._status_pub.publish(msg)
 
-    def _plan_coverage(self, x0, y0, x1, y1):
-        """Serpentine stripes over free/unknown cells inside the box.
+    @staticmethod
+    def _scanline(poly, wy):
+        """Sorted [(xa, xb), ...] where the horizontal line y=wy is inside poly."""
+        xs = []
+        n = len(poly)
+        for i in range(n):
+            (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % n]
+            if (y1 <= wy < y2) or (y2 <= wy < y1):
+                xs.append(x1 + (wy - y1) * (x2 - x1) / (y2 - y1))
+        xs.sort()
+        return [(xs[i], xs[i + 1]) for i in range(0, len(xs) - 1, 2)]
+
+    def _plan_coverage(self, poly):
+        """Serpentine stripes over free/unknown cells inside the polygon.
 
         Occupied cells (>=50) are inflated by coverage_inflation; unknown
         (-1) counts as coverable — mapping unexplored space is the point,
-        and nav2 plans through unknown (allow_unknown). Stripes are split
-        at obstacles; nav2 routes between segment endpoints on its own.
+        and nav2 plans through unknown (allow_unknown). Stripes are clipped
+        to the polygon by scanline, then split at obstacles; nav2 routes
+        between segment endpoints on its own.
         """
         info = self._grid.info
         res = info.resolution
@@ -197,26 +213,32 @@ class PatrolCapture(Node):
         def cell_y(wy):
             return int((wy - info.origin.position.y) / res)
 
-        cx0 = max(0, cell_x(x0))
-        cx1 = min(info.width - 1, cell_x(x1))
         min_run = max(2, int(round(0.45 / res)))   # skip slivers < robot length
+        y0 = min(p[1] for p in poly)
+        y1 = max(p[1] for p in poly)
         route = []
         flip = False
         wy = y0 + self._cov_spacing / 2.0
         while wy < y1:
             iy = cell_y(wy)
-            if 0 <= iy < info.height and cx1 > cx0:
-                open_row = ~blocked[iy, cx0:cx1 + 1]
-                # runs of consecutive open cells
-                idx = np.flatnonzero(np.diff(np.concatenate(
-                    ([0], open_row.view(np.int8), [0]))))
-                segs = [(idx[i], idx[i + 1] - 1) for i in range(0, len(idx), 2)
-                        if idx[i + 1] - idx[i] >= min_run]
+            if 0 <= iy < info.height:
+                segs = []
+                for xa, xb in self._scanline(poly, wy):
+                    ca = max(0, cell_x(xa))
+                    cb = min(info.width - 1, cell_x(xb))
+                    if cb - ca < min_run:
+                        continue
+                    open_row = ~blocked[iy, ca:cb + 1]
+                    idx = np.flatnonzero(np.diff(np.concatenate(
+                        ([0], open_row.view(np.int8), [0]))))
+                    segs.extend((ca + idx[i], ca + idx[i + 1] - 1)
+                                for i in range(0, len(idx), 2)
+                                if idx[i + 1] - idx[i] >= min_run)
                 if flip:
                     segs = [(b, a) for a, b in reversed(segs)]
                 for a, b in segs:
-                    wxa = info.origin.position.x + (cx0 + a + 0.5) * res
-                    wxb = info.origin.position.x + (cx0 + b + 0.5) * res
+                    wxa = info.origin.position.x + (a + 0.5) * res
+                    wxb = info.origin.position.x + (b + 0.5) * res
                     yaw = 0.0 if wxb >= wxa else math.pi
                     route.append({'x': round(wxa, 3), 'y': round(wy, 3),
                                   'yaw': round(yaw, 3)})

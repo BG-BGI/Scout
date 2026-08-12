@@ -103,8 +103,14 @@ class ClutterMapper(Node):
             % (self._res, self._band_lo, self._band_hi, len(self._cells)))
 
     # --- persistence -----------------------------------------------------------
+    # ⚠ Marks are anchored in the MAP frame, so persistence is only sound when
+    # the map itself persists (slam localization/continue mode). Under
+    # mode:=new every boot resets the map frame and a loaded clutter file
+    # paints phantom lethal cells at wrong coordinates — seen 2026-08-12 as
+    # nav2 'failed to create plan' + recovery thrash. An empty `file` param
+    # disables load/save entirely.
     def _load(self):
-        if not os.path.exists(self._file):
+        if not self._file or not os.path.exists(self._file):
             return
         try:
             data = np.load(self._file)

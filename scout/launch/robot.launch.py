@@ -147,6 +147,11 @@ def generate_launch_description():
             package='scout',
             executable='clutter_mapper',
             output='screen',
+            # Persistence off: slam runs mode:=new, so the map frame resets
+            # every boot and a loaded clutter file paints phantom obstacles
+            # at wrong coordinates (poisons nav2 planning). Restore the file
+            # path once slam runs localization/continue on a saved map.
+            parameters=[{'file': ''}],
         ),
 
         # Waypoint patrol + pose-stamped photo capture (progress docs).
