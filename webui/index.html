@@ -15,8 +15,23 @@
 </header>
 
 <main>
-  <!-- Drive pad -->
+  <!-- Map: the primary surface — nav goals, area select, live pose -->
+  <section id="nav">
+    <div class="map-head">
+      <h2>Map</h2>
+      <span id="nav-state" class="dim">no map</span>
+      <button id="cancel-goal">Cancel Goal</button>
+    </div>
+    <div id="map-frame">
+      <canvas id="map-canvas" width="300" height="300"></canvas>
+    </div>
+    <div class="dim map-hint">Tap the map to send a nav goal — the robot drives
+      itself. Select area in Patrol to outline a coverage zone.</div>
+  </section>
+
+  <!-- Manual drive: STOP + touch stick -->
   <section id="drive">
+    <button id="stop">STOP</button>
     <div id="pad">
       <div id="stick"></div>
     </div>
@@ -26,31 +41,25 @@
     </div>
   </section>
 
-  <!-- Map + tap-to-navigate (needs slam + nav2 services running) -->
-  <section id="nav" class="panel">
-    <h2>Map <span id="nav-state" class="dim">no map</span></h2>
-    <canvas id="map-canvas" width="300" height="300"></canvas>
-    <button id="cancel-goal">Cancel Goal</button>
-    <div class="dim">Tap the map to send a nav goal. Robot drives itself.</div>
-  </section>
-
   <aside>
-    <button id="stop">STOP</button>
-
     <section class="panel">
-      <h2>Speed</h2>
-      <label>Linear <output id="lin-out">0.35</output> m/s
-        <input type="range" id="lin" min="0.05" max="1.0" step="0.05" value="0.35">
-      </label>
-      <label>Turn speed <output id="ang-out">1.5</output> rad/s
-        <input type="range" id="ang" min="0.5" max="3.0" step="0.1" value="1.5">
-      </label>
+      <h2>Patrol <span id="patrol-state" class="dim">idle</span></h2>
+      <div class="grid">
+        <button id="patrol-mark">Mark waypoint</button>
+        <button id="patrol-clear">Clear route</button>
+        <button id="patrol-area">Select area</button>
+        <button id="patrol-start" class="primary">Start patrol</button>
+        <button id="patrol-stop">Stop patrol</button>
+      </div>
+      <div id="patrol-result" class="dim">Drive to a vantage point and Mark,
+        or Select area and tap out a shape on the map. Start drives the route
+        and photographs each stop.</div>
     </section>
 
     <section class="panel">
       <h2>Follow Me <span id="follow-state" class="dim">idle</span></h2>
       <div class="grid">
-        <button id="follow-start">Follow</button>
+        <button id="follow-start" class="primary">Follow</button>
         <button id="follow-stop">Stop Following</button>
       </div>
       <div class="dim">Chases the nearest object in front (0.7 m standoff).
@@ -58,28 +67,24 @@
     </section>
 
     <section class="panel">
-      <h2>Patrol <span id="patrol-state" class="dim">idle</span></h2>
-      <div class="grid">
-        <button id="patrol-mark">Mark waypoint</button>
-        <button id="patrol-clear">Clear route</button>
-        <button id="patrol-area">Select area</button>
-        <button id="patrol-start">Start patrol</button>
-        <button id="patrol-stop">Stop patrol</button>
-      </div>
-      <div id="patrol-result" class="dim">Drive to a vantage point, Mark, repeat;
-        Start replays the route and photographs each stop. Or Select area and
-        drag a box on the map for an auto-generated coverage route.</div>
-    </section>
-
-    <section class="panel">
       <h2>Camera <span id="cam-state" class="dim">off</span></h2>
-      <img id="cam-img" alt="camera view" style="width:100%;display:none;border-radius:6px">
+      <img id="cam-img" alt="camera view">
       <button id="cam-toggle">Show camera</button>
     </section>
 
     <section class="panel">
-      <h2>Tricks <span id="trick-state" class="dim">idle</span></h2>
-      <div id="tricks" class="grid">
+      <h2>Speed</h2>
+      <label>Linear <output id="lin-out">0.35</output> m/s
+        <input type="range" id="lin" min="0.05" max="1.0" step="0.05" value="0.35">
+      </label>
+      <label>Turn <output id="ang-out">1.5</output> rad/s
+        <input type="range" id="ang" min="0.5" max="3.0" step="0.1" value="1.5">
+      </label>
+    </section>
+
+    <details class="panel">
+      <summary><h2>Tricks <span id="trick-state" class="dim">idle</span></h2></summary>
+      <div id="tricks" class="grid tight">
         <button data-trick="spin">Spin</button>
         <button data-trick="wiggle">Wiggle</button>
         <button data-trick="figure8">Figure-8</button>
@@ -95,11 +100,11 @@
         <button data-trick="disco">Disco</button>
         <button data-trick="burnout">Burnout</button>
       </div>
-    </section>
+    </details>
 
-    <section class="panel">
-      <h2>Lights</h2>
-      <div class="grid" id="led-modes">
+    <details class="panel">
+      <summary><h2>Lights</h2></summary>
+      <div class="grid tight" id="led-modes">
         <button data-mode="off">Off</button>
         <button data-mode="solid">Solid</button>
         <button data-mode="blink">Blink</button>
@@ -115,7 +120,7 @@
         <input type="range" id="led-speed" min="0.2" max="4" step="0.2" value="1.0">
       </label>
       <div id="led-result" class="dim"></div>
-    </section>
+    </details>
   </aside>
 </main>
 

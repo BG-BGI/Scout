@@ -353,10 +353,11 @@ function drawMap() {
   navState.textContent = robotPose ? 'live' : 'map only';
   // Fit the canvas backing store to the grid aspect (CSS scales to width).
   const aspect = grid.height / grid.width;
-  const W = 480;
+  const W = 960;  // backing store; CSS scales to fit the stage
   if (mapCanvas.width !== W || mapCanvas.height !== Math.round(W * aspect)) {
     mapCanvas.width = W;
     mapCanvas.height = Math.round(W * aspect);
+    mapCanvas.style.aspectRatio = W + ' / ' + mapCanvas.height;
   }
   mapCtx.imageSmoothingEnabled = false;
   mapCtx.save();
@@ -598,9 +599,9 @@ function camStart() {
   });
   camTopic.subscribe((msg) => {
     camImg.src = 'data:image/jpeg;base64,' + msg.data;
+    camImg.style.display = 'block';   // only once real pixels exist
     camState.textContent = 'live';
   });
-  camImg.style.display = 'block';
   camState.textContent = 'waiting…';
   camToggle.textContent = 'Hide camera';
 }
