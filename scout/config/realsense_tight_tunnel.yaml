@@ -6,9 +6,12 @@ enable_infra: false
 enable_infra1: false
 enable_infra2: false
 
-# 5 FPS is the lowest D455 profile at 640x480 (probed: 5/15/30/60 — no 6).
+# 5 FPS is the lowest D455 profile (probed: 5/15/30/60 — no 6). Depth profile
+# mirrors realsense.yaml (inert here, depth off). No json_file_path here on
+# purpose: no advanced-mode device touching next to the Motion-Module hazard
+# when depth is disabled anyway.
 rgb_camera.color_profile: '640x480x5'
-depth_module.depth_profile: '640x480x5'
+depth_module.depth_profile: '848x480x5'
 
 # Untextured XYZ from depth for Nav2 local costmap (under-lidar band). stream_filter 1
 # = RS2_STREAM_DEPTH. Decimation x4 ~1/16 points before the NEON cloud — required so
