@@ -37,7 +37,7 @@ from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PolygonStamped, PoseStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
@@ -92,6 +92,9 @@ class PatrolCapture(Node):
         self.create_subscription(PolygonStamped, 'coverage_box',
                                  self._on_coverage_box, 1)
         self._status_pub = self.create_publisher(String, 'patrol_status', 10)
+        # Route republished at 1 Hz so the web UI can draw waypoints over the
+        # map (late subscribers via rosbridge miss latched topics).
+        self._route_pub = self.create_publisher(Path, 'patrol_route', 10)
 
         self.create_service(Trigger, 'patrol/mark', self._on_mark)
         self.create_service(Trigger, 'patrol/clear', self._on_clear)
@@ -428,6 +431,15 @@ class PatrolCapture(Node):
 
     # --- status -------------------------------------------------------------------
     def _publish_status(self):
+        path = Path()
+        path.header.frame_id = 'map'
+        for wp in self._route:
+            ps = PoseStamped()
+            ps.header.frame_id = 'map'
+            ps.pose.position.x = float(wp['x'])
+            ps.pose.position.y = float(wp['y'])
+            path.poses.append(ps)
+        self._route_pub.publish(path)
         msg = String()
         if self._state == 'idle':
             msg.data = 'idle|%d' % len(self._route)

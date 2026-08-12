@@ -387,6 +387,32 @@ function drawMap() {
     mapCtx.stroke();
   }
 
+  if (patrolRoute.length) {
+    mapCtx.strokeStyle = 'rgba(64, 160, 255, 0.45)';
+    mapCtx.lineWidth = 1.5;
+    mapCtx.beginPath();
+    patrolRoute.forEach((p, i) => {
+      const c = worldToCanvas(p.x, p.y);
+      i ? mapCtx.lineTo(c.x, c.y) : mapCtx.moveTo(c.x, c.y);
+    });
+    mapCtx.stroke();
+    patrolRoute.forEach((p, i) => {
+      const c = worldToCanvas(p.x, p.y);
+      const wp = i + 1;   // status index is 1-based
+      let color = '#5a6a7a';                       // pending
+      let r = 3;
+      if (patrolProg.active && wp < patrolProg.i) color = '#00c878';   // visited
+      if (patrolProg.active && wp === patrolProg.i) {                  // current
+        color = '#ffa028';
+        r = 5;
+      }
+      mapCtx.fillStyle = color;
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, r, 0, 2 * Math.PI);
+      mapCtx.fill();
+    });
+  }
+
   if (robotPose) {
     const c = worldToCanvas(robotPose.x, robotPose.y);
     mapCtx.save();
@@ -510,6 +536,11 @@ document.getElementById('patrol-mark').addEventListener('click', patrolMark);
 document.getElementById('patrol-clear').addEventListener('click', patrolSrv('clear'));
 document.getElementById('patrol-start').addEventListener('click', patrolSrv('start'));
 document.getElementById('patrol-stop').addEventListener('click', patrolStop);
+let patrolRoute = [];   // [{x, y}] map-frame waypoints, drawn over the map
+let patrolProg = { active: false, i: 0, n: 0 };
+const patrolBar = document.getElementById('patrol-bar');
+const patrolBarFill = document.getElementById('patrol-bar-fill');
+
 new ROSLIB.Topic({
   ros, name: '/patrol_status', messageType: 'std_msgs/msg/String',
 }).subscribe((msg) => {
@@ -519,8 +550,33 @@ new ROSLIB.Topic({
     patrolResult.textContent = parts.slice(1).join('|');
     return;
   }
-  patrolState.textContent = parts[0] === 'idle'
-    ? 'idle · ' + parts[1] + ' wp' : parts[0] + ' ' + parts[2];
+  const wasActive = patrolProg.active;
+  if (parts[0] === 'idle') {
+    patrolProg = { active: false, i: 0, n: parseInt(parts[1], 10) || 0 };
+    patrolState.textContent = 'idle · ' + parts[1] + ' wp';
+    patrolBar.style.display = 'none';
+  } else {
+    const [i, n] = (parts[2] || '0/0').split('/').map((v) => parseInt(v, 10));
+    patrolProg = { active: true, i: i || 0, n: n || 0 };
+    patrolState.textContent = parts[0] + ' ' + parts[2];
+    patrolBar.style.display = 'block';
+    patrolBarFill.style.width =
+      (patrolProg.n ? Math.round(100 * (patrolProg.i - 1) / patrolProg.n) : 0) + '%';
+  }
+  if (wasActive !== patrolProg.active) drawMap();
+});
+
+new ROSLIB.Topic({
+  ros, name: '/patrol_route', messageType: 'nav_msgs/msg/Path',
+  throttle_rate: 2000, queue_length: 1,
+}).subscribe((msg) => {
+  const pts = msg.poses.map((ps) => ({
+    x: ps.pose.position.x, y: ps.pose.position.y,
+  }));
+  if (JSON.stringify(pts) !== JSON.stringify(patrolRoute)) {
+    patrolRoute = pts;
+    drawMap();
+  }
 });
 
 // --- coverage area select (click-to-place polygon) --------------------------------
