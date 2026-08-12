@@ -160,7 +160,10 @@ class PatrolCapture(Node):
                                 % (len(route), self._cov_max_wp))
             return
         self._route = route
-        self._save_route()
+        try:
+            self._save_route()
+        except Exception as exc:  # noqa: BLE001 — saving must not kill the node
+            self._plan_feedback('coverage route not saved: %s' % exc)
         dist = sum(math.hypot(route[i + 1]['x'] - route[i]['x'],
                               route[i + 1]['y'] - route[i]['y'])
                    for i in range(len(route) - 1))
@@ -237,12 +240,14 @@ class PatrolCapture(Node):
                 if flip:
                     segs = [(b, a) for a, b in reversed(segs)]
                 for a, b in segs:
-                    wxa = info.origin.position.x + (a + 0.5) * res
-                    wxb = info.origin.position.x + (b + 0.5) * res
+                    # plain floats: numpy scalars blow up yaml.safe_dump in
+                    # _save_route (RepresenterError) — this killed the node
+                    wxa = float(info.origin.position.x + (a + 0.5) * res)
+                    wxb = float(info.origin.position.x + (b + 0.5) * res)
                     yaw = 0.0 if wxb >= wxa else math.pi
-                    route.append({'x': round(wxa, 3), 'y': round(wy, 3),
+                    route.append({'x': round(wxa, 3), 'y': round(float(wy), 3),
                                   'yaw': round(yaw, 3)})
-                    route.append({'x': round(wxb, 3), 'y': round(wy, 3),
+                    route.append({'x': round(wxb, 3), 'y': round(float(wy), 3),
                                   'yaw': round(yaw, 3)})
             flip = not flip
             wy += self._cov_spacing

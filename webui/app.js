@@ -530,6 +530,9 @@ new ROSLIB.Topic({
 const coverageBoxPub = new ROSLIB.Topic({
   ros, name: '/coverage_box', messageType: 'geometry_msgs/msg/PolygonStamped',
 });
+// Advertise at load: a publish on a just-advertised topic races DDS discovery
+// and is silently dropped — the first Finish press would vanish.
+ros.on('connection', () => coverageBoxPub.advertise());
 const areaBtn = document.getElementById('patrol-area');
 let areaMode = false;
 let areaPts = [];   // [{x, y}] map-frame vertices
