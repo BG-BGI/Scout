@@ -87,6 +87,14 @@ class FollowMe(Node):
         self._reacq_window = float(p('reacquire_window', 10.0).value)
         self._reacq_motion = float(p('reacquire_motion', 0.12).value)
         self._reacq_track_gate = float(p('reacquire_track_gate', 0.3).value)
+        # Seek: after `seek_delay` of fruitless searching, drive to the loss
+        # anchor (standoff short of it, same corridor gates as following) and
+        # pivot toward the target's inferred direction of travel — the person
+        # who walked behind a shelf is found by rounding the shelf, not by
+        # waiting. Gives up when reacquire_window expires (passive search).
+        self._seek_delay = float(p('seek_delay', 1.2).value)
+        self._seek_vx = float(p('seek_vx', 0.35).value)
+        self._seek_wz = float(p('seek_wz', 1.2).value)
         publish_hz = float(p('publish_hz', 20.0).value)
         # Obstacle avoidance: forward corridor gating + repulsive steering.
         # Half-width 0.30 covers the 0.238 m circumscribed radius while the
@@ -149,6 +157,7 @@ class FollowMe(Node):
         self._target_trail = []        # [(stamp, x_odom, y_odom)] of the target
         self._lost_anchor = None       # (stamp, x_odom, y_odom) of the last fix
         self._search_tracks = []       # [[ox, oy, first_ox, first_oy, last_seen]]
+        self._lost_heading = None      # odom yaw the target was moving along
         self._depth_corridor_min = math.inf
         self._depth_stamp = 0.0
         self._last_depth_proc = 0.0
@@ -180,6 +189,7 @@ class FollowMe(Node):
         self._rear_log = []
         self._obstacle_mem = {}
         self._lost_anchor = None
+        self._lost_heading = None
         self._search_tracks = []
         self._vx_out = 0.0
         self._set_status('searching')
@@ -203,6 +213,7 @@ class FollowMe(Node):
         self._clearance_log = []
         self._rear_log = []
         self._lost_anchor = None
+        self._lost_heading = None
         self._search_tracks = []
         self._vx_out = 0.0
         self._set_status('idle')
@@ -220,6 +231,7 @@ class FollowMe(Node):
             if best is None:
                 return  # reacquire window: no qualifying mover yet
             self._lost_anchor = None
+            self._lost_heading = None
             self._search_tracks = []
         else:
             # Re-associate: nearest to the last position, gated.
@@ -536,6 +548,15 @@ class FollowMe(Node):
                     tx, ty = self._target
                     self._lost_anchor = (now, ox + tx * c - ty * s,
                                          oy + tx * s + ty * c)
+                # Direction the target was moving, from its odom trail —
+                # where to look after reaching the loss point.
+                self._lost_heading = None
+                recent = [t for t in self._target_trail if now - t[0] <= 1.5]
+                if len(recent) >= 2:
+                    dx_t, dy_t = (recent[-1][1] - recent[0][1],
+                                  recent[-1][2] - recent[0][2])
+                    if math.hypot(dx_t, dy_t) >= 0.15:
+                        self._lost_heading = math.atan2(dy_t, dx_t)
                 self._search_tracks = []
                 self._target = None
                 self._set_status('searching')
@@ -601,8 +622,74 @@ class FollowMe(Node):
                     self._wz_avoid, twist.linear.x, twist.angular.z,
                     ' BLOCKED' if blocked else ''),
                 throttle_duration_sec=1.0)
+        elif self._active and self._lost_anchor is not None:
+            self._seek(now, dt)
         elif self._stop_until > now:
             self._pub.publish(Twist())
+
+    def _seek(self, now, dt):
+        """Lost-target pursuit: drive to the loss anchor, face the inferred
+        direction of travel, keep scanning. Same corridor gates as following;
+        forward only. Reacquire (motion-gated, in _on_scan) can take over at
+        any tick; the reacquire window expiring ends the pursuit."""
+        age = now - self._lost_anchor[0]
+        if age < self._seek_delay:
+            if self._stop_until > now:
+                self._pub.publish(Twist())
+            return
+        if age > self._reacq_window:
+            if self._status == 'seeking':
+                self._set_status('searching')
+                self._stop_until = now + STOP_GRACE
+                self._vx_out = 0.0
+            if self._stop_until > now:
+                self._pub.publish(Twist())
+            return
+        pose = self._odom_pose()
+        if pose is None:
+            return
+        if self._status != 'seeking':
+            self._set_status('seeking')
+        ox, oy, oyaw = pose
+        ci, si = math.cos(-oyaw), math.sin(-oyaw)
+        dx, dy = self._lost_anchor[1] - ox, self._lost_anchor[2] - oy
+        bx = dx * ci - dy * si
+        by = dx * si + dy * ci
+        dist = math.hypot(bx, by)
+        bearing = math.atan2(by, bx)
+        corridor = self._held_clearance(now)
+        vx = 0.0
+        if dist > self._standoff + 0.08:
+            # Approach the loss point, stopping standoff short of it.
+            vx = min(self._seek_vx, self._kp_lin * (dist - self._standoff))
+            zone = self._avoid_lookahead - self._avoid_hard_stop
+            free = corridor - self._avoid_hard_stop
+            scale = max(0.0, min(1.0, free / zone)) if zone > 0 else 1.0
+            vx *= scale
+            if vx != 0.0 and vx < self._min_vx:
+                vx = self._min_vx
+            wz = self._kp_ang * bearing + self._wz_avoid
+        else:
+            # Arrived: face where the target was headed and hold there.
+            want = self._lost_heading
+            if want is None:
+                want = math.atan2(dy, dx) if dist > 0.2 else oyaw
+            err = self._wrap(want - oyaw)
+            wz = self._kp_ang * err if abs(err) > 0.12 else 0.0
+        step = self._max_accel * max(dt, 0.0)
+        delta = vx - self._vx_out
+        lim = 4.0 * step if vx < self._vx_out else step
+        self._vx_out += max(-lim, min(lim, delta))
+        self._vx_out = max(0.0, self._vx_out)
+        twist = Twist()
+        twist.linear.x = self._vx_out
+        twist.angular.z = max(-self._seek_wz, min(self._seek_wz, wz))
+        self._pub.publish(twist)
+        self.get_logger().info(
+            'SEEK anchor %.2f m @ %+.0f° age %.1f s | corr held %.2f | '
+            'vx %.2f wz %+.2f' % (dist, math.degrees(bearing), age, corridor,
+                                  twist.linear.x, twist.angular.z),
+            throttle_duration_sec=1.0)
 
     def _set_status(self, s):
         self._status = s
