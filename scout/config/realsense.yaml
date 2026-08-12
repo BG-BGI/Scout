@@ -23,9 +23,10 @@ depth_module.depth_profile: '848x480x5'
 # Bind-mount path, same resolution trick as robot.launch.py's config_file.
 json_file_path: /ros_ws/src/scout/config/d455_scout_preset.json
 
-# 240 mW (default 150, max 360, step 30): denser returns on the low-texture
-# floor band that depth_mark/clutter actually consume. Indoor use.
-depth_module.laser_power: 240.0   # must be float — int is rejected with a type error
+# Laser power is NOT settable here — rs_launch.py's config parser rejects the
+# key ("Parameter ... not supported"). It is set by the preset JSON instead
+# (controls-laserpower: 240 — default 150, max 360; denser low-texture floor
+# returns for the depth_mark/clutter band).
 depth_module.enable_auto_exposure: true
 
 # Untextured XYZ from depth for Nav2 local costmap (under-lidar band). stream_filter 1
