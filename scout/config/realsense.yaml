@@ -45,14 +45,13 @@ decimation_filter.filter_magnitude: 4
 # IMU: gyro + accel united into one sensor_msgs/Imu on /camera/camera/imu.
 # 200 Hz is the rate measured clean on this camera (199 Hz delivered).
 #
-# ⚠ If the log shows "Hardware Notification:Motion Module force pause", the IMU
-# is dead for that whole session and so is color — depth keeps running, so the
-# node looks healthy. Seen once in three starts, on the first start after the
-# camera had sat idle since boot. The device stays wedged afterwards: even an
-# IMU-only open returns nothing until it is hardware-reset or replugged.
-# Remedy is `initial_reset: true` below, which resets the device at launch (adds
-# ~10 s and a USB re-enumeration). Left off because the fault would not
-# reproduce on demand, so it is untested against an actual force pause.
+# ⚠ "Hardware Notification:Motion Module force pause" — UPDATE 2026-08-12: with
+# wrapper 4.57.7 this fired on two separate starts and the IMU kept publishing
+# at 200 Hz both times (the wrapper's stop/start of the Motion Module right
+# after recovers it). The old "dead for the whole session" behaviour has not
+# recurred; treat the warning as check-don't-panic: verify /camera/camera/imu
+# rate before trusting or fearing it. `initial_reset: true` remains the remedy
+# if a wedged session ever reappears (adds ~10 s and a USB re-enumeration).
 # initial_reset: true
 enable_gyro: true
 enable_accel: true
