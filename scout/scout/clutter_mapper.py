@@ -61,7 +61,9 @@ class ClutterMapper(Node):
         self._res = float(p('resolution', 0.05).value)
         self._band_lo = float(p('band_low', 0.05).value)
         self._band_hi = float(p('band_high', 0.25).value)
-        self._min_range = float(p('min_range', 0.3).value)
+        # 0.25: bench-measured camera MinZ is 0.30 (disparity shift 12), so
+        # returns down to ~0.30 are real; below that the camera is blind.
+        self._min_range = float(p('min_range', 0.25).value)
         self._max_range = float(p('max_range', 2.0).value)
         self._half_fov = math.radians(float(p('half_fov_deg', 40.0).value))
         self._period = float(p('process_period', 0.3).value)

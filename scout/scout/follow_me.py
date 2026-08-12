@@ -101,7 +101,8 @@ class FollowMe(Node):
         self._mem_clear_radius = float(p('memory_clear_radius', 0.15).value)
         self._trail_ttl = float(p('trail_ttl', 4.0).value)
         self._trail_radius = float(p('trail_radius', 0.45).value)
-        self._clear_min_range = float(p('clear_min_range', 0.5).value)
+        # 0.35 = bench-measured camera MinZ 0.30 (disparity shift 12) + margin.
+        self._clear_min_range = float(p('clear_min_range', 0.35).value)
         self._clear_half_fov = math.radians(float(p('clear_half_fov_deg', 35.0).value))
         self._avoid_radius = float(p('avoid_radius', 1.0).value)
         self._k_avoid = float(p('k_avoid', 0.35).value)
