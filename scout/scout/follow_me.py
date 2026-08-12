@@ -5,7 +5,8 @@ Lidar tracks the target: each scan, beams inside the search sector and range
 window are clustered (consecutive beams whose ranges differ < cluster_gap);
 the tracked target is the cluster centroid nearest the previous target (gated),
 or the nearest cluster overall while acquiring. A P-loop drives range error to
-`standoff` and bearing to zero. Follows anything — a person's legs, a box on a
+`standoff` and bearing to zero — forward when too far, reverse (slower, rear
+corridor gated by lidar only) when the target closes inside the standoff. Follows anything — a person's legs, a box on a
 string — which is the point. No ML.
 
 The D455 depth cloud guards the corridor: the lidar plane sits 24 cm up, so
@@ -63,6 +64,15 @@ class FollowMe(Node):
         self._kp_ang = float(p('kp_ang', 1.5).value)
         self._max_vx = float(p('max_vx', 0.6).value)
         self._max_wz = float(p('max_wz', 1.5).value)
+        # Reverse: back away when the target closes inside the standoff.
+        # Slower than forward — the camera cannot see behind, only the lidar
+        # plane (24 cm up) guards the rear corridor, so under-lidar obstacles
+        # behind the robot are invisible while reversing.
+        self._max_vx_rev = float(p('max_vx_reverse', 0.3).value)
+        # RoboClaw velocity-loop floor is ~300-500 counts/s (~0.05-0.08 m/s);
+        # commands below it stall, worse with the flat tire's drag. Any
+        # nonzero vx is pushed to at least this.
+        self._min_vx = float(p('min_vx', 0.09).value)
         self._cluster_gap = float(p('cluster_gap', 0.15).value)
         self._min_beams = int(p('min_cluster_beams', 3).value)
         self._assoc_gate = float(p('association_gate', 0.5).value)
@@ -119,8 +129,10 @@ class FollowMe(Node):
         self._stop_until = 0.0
         self._status = 'idle'
         self._corridor_min = math.inf  # nearest non-target return in the corridor
+        self._rear_min = math.inf      # nearest return in the reverse corridor
         self._wz_avoid = 0.0           # repulsive steering from side obstacles
         self._clearance_log = []       # (stamp, clearance) ring for the min-hold
+        self._rear_log = []            # same min-hold for the rear corridor
         self._vx_out = 0.0             # slew-limited forward command
         self._last_tick = time.monotonic()
         self._obstacle_mem = {}   # {(vx_odom, vy_odom): [hits, first, last]}
@@ -153,6 +165,7 @@ class FollowMe(Node):
         self._active = True
         self._target = None
         self._clearance_log = []
+        self._rear_log = []
         self._obstacle_mem = {}
         self._vx_out = 0.0
         self._set_status('searching')
@@ -174,6 +187,7 @@ class FollowMe(Node):
         self._target = None
         self._stop_until = time.monotonic() + STOP_GRACE
         self._clearance_log = []
+        self._rear_log = []
         self._vx_out = 0.0
         self._set_status('idle')
 
@@ -252,6 +266,7 @@ class FollowMe(Node):
         gate and the corridor gate fight each other and the robot never moves.
         """
         corridor_min = math.inf
+        rear_min = math.inf
         left_prox = 0.0    # y > 0
         right_prox = 0.0   # y < 0
         inv_r = 1.0 / self._avoid_radius
@@ -263,10 +278,14 @@ class FollowMe(Node):
                 continue
             bearing = self._wrap(msg.angle_min + i * msg.angle_increment
                                  + self._yaw_offset)
-            if abs(bearing) > math.pi / 2:
-                continue  # behind the beam of travel; irrelevant while following
             x = r * math.cos(bearing)
             y = r * math.sin(bearing)
+            # Rear corridor guards reversing (lidar only back there).
+            if (x < 0.0 and -x <= self._avoid_lookahead
+                    and abs(y) <= self._corridor_half_width):
+                rear_min = min(rear_min, -x)
+            if abs(bearing) > math.pi / 2:
+                continue  # behind the beam of travel; steering ignores it
             if tx is not None and math.hypot(x - tx, y - ty) < self._target_exclusion:
                 continue
             if 0.0 < x <= self._avoid_lookahead and abs(y) <= self._corridor_half_width:
@@ -278,6 +297,7 @@ class FollowMe(Node):
                 else:
                     right_prox = max(right_prox, w)
         self._corridor_min = corridor_min
+        self._rear_min = rear_min
         # Obstacle on the right pushes left (+z CCW) and vice versa.
         self._wz_avoid = self._k_avoid * (right_prox - left_prox)
 
@@ -439,6 +459,13 @@ class FollowMe(Node):
         self._clearance_log = [(t, c) for t, c in self._clearance_log if t >= cutoff]
         return min(c for _, c in self._clearance_log)
 
+    def _held_rear(self, now):
+        """Min-held rear corridor clearance (lidar only — no camera back there)."""
+        self._rear_log.append((now, self._rear_min))
+        cutoff = now - self._clearance_hold
+        self._rear_log = [(t, c) for t, c in self._rear_log if t >= cutoff]
+        return min(c for _, c in self._rear_log)
+
     def _tick(self):
         now = time.monotonic()
         dt = now - self._last_tick
@@ -452,26 +479,45 @@ class FollowMe(Node):
             dist = math.hypot(*self._target)
             bearing = math.atan2(self._target[1], self._target[0])
             corridor = self._held_clearance(now)
+            rear = self._held_rear(now)
             twist = Twist()
-            if dist > self._stop_dist:
-                vx = self._kp_lin * (dist - self._standoff)
-                # Follow only, never reverse toward the thing behind the error.
-                vx = max(0.0, min(self._max_vx, vx))
+            err = dist - self._standoff
+            zone = self._avoid_lookahead - self._avoid_hard_stop
+            blocked = False
+            # ±0.08 m deadband around the standoff so the vx floor below
+            # cannot make the robot hunt back and forth across it.
+            if err > 0.08 and dist > self._stop_dist:
+                vx = min(self._max_vx, self._kp_lin * err)
                 # Corridor gate: scale to zero as the path ahead closes down,
                 # against the min-held clearance so one blank scan can't
                 # un-see an obstacle.
-                zone = self._avoid_lookahead - self._avoid_hard_stop
                 free = corridor - self._avoid_hard_stop
                 scale = max(0.0, min(1.0, free / zone)) if zone > 0 else 1.0
                 vx *= scale
-                blocked = (scale == 0.0 and vx == 0.0 and dist > self._standoff)
+                blocked = (scale == 0.0)
+            elif err < -0.08:
+                # Target inside the standoff: back away. Same gate shape, on
+                # the rear corridor — lidar only, the camera faces forward,
+                # hence the lower reverse speed cap.
+                vx = max(-self._max_vx_rev, self._kp_lin * err)
+                free = rear - self._avoid_hard_stop
+                scale = max(0.0, min(1.0, free / zone)) if zone > 0 else 1.0
+                vx *= scale
+                blocked = (scale == 0.0)
             else:
                 vx = 0.0
-                blocked = False
-            # Slew-limit vx so a reopened corridor ramps instead of stepping.
+            # Push any nonzero command over the RoboClaw velocity-loop floor —
+            # below it the wheels quantization-stall and the robot sits still
+            # while cmd_vel streams (seen at 0.083 m/s near the standoff).
+            if vx != 0.0 and abs(vx) < self._min_vx:
+                vx = math.copysign(self._min_vx, vx)
+            # Slew-limit vx so a reopened corridor ramps instead of stepping;
+            # decel/toward-zero is 4x faster than accel, sign-crossing safe.
             step = self._max_accel * max(dt, 0.0)
-            self._vx_out += max(-4 * step, min(step, vx - self._vx_out))
-            self._vx_out = max(0.0, self._vx_out)
+            delta = vx - self._vx_out
+            toward_zero = abs(vx) < abs(self._vx_out) or vx * self._vx_out < 0.0
+            lim = 4.0 * step if toward_zero else step
+            self._vx_out += max(-lim, min(lim, delta))
             twist.linear.x = self._vx_out
             twist.angular.z = max(-self._max_wz, min(
                 self._max_wz, self._kp_ang * bearing + self._wz_avoid))
@@ -483,10 +529,10 @@ class FollowMe(Node):
             depth_fresh = now - self._depth_stamp < self._depth_stale
             self.get_logger().info(
                 'dist %.2f brg %.0f° | corr lidar %.2f depth %s held %.2f '
-                'mem %d | wz_avoid %+.2f | vx %.2f wz %+.2f%s' % (
+                'rear %.2f mem %d | wz_avoid %+.2f | vx %+.2f wz %+.2f%s' % (
                     dist, math.degrees(bearing), self._corridor_min,
                     ('%.2f' % self._depth_corridor_min) if depth_fresh else 'stale',
-                    corridor, len(self._obstacle_mem),
+                    corridor, rear, len(self._obstacle_mem),
                     self._wz_avoid, twist.linear.x, twist.angular.z,
                     ' BLOCKED' if blocked else ''),
                 throttle_duration_sec=1.0)
