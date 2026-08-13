@@ -2,23 +2,30 @@
 
 Task-level companion to the generic ros-mcp container: where that exposes raw
 ROS primitives, this exposes skills — the map as an image a vision model can
-read, non-blocking navigation, and YOLO object detection fused with D455
-aligned depth into map-frame positions. All ROS access rides the rosbridge
-websocket on 127.0.0.1:9090 (host networking), so this image carries no
-ROS/DDS. ⚠ No auth — LAN-trust only, same caveat as ros_mcp.
+read, non-blocking navigation, named waypoints ("go to the kitchen"),
+closed-loop relative motion (move/rotate, Nav2 bypassed), and YOLO object
+detection fused with D455 aligned depth into map-frame positions. All ROS
+access rides the rosbridge websocket on 127.0.0.1:9090 (host networking), so
+this image carries no ROS/DDS. ⚠ No auth — LAN-trust only, same caveat as
+ros_mcp.
 
-Nav model: go_to publishes a map-framed /goal_pose and RETURNS. It never
-blocks a tool call on a drive — ros-mcp's send_action_goal blocks until
-result/timeout and a timed-out call leaves the goal RUNNING. Poll nav_status;
-nav_cancel clears every active goal (the same CancelGoal call as the webui's
-cancel button). A goal outliving its client is still the standing hazard:
-killing the MCP client, the chat, or this container does NOT stop the robot.
+Nav model: go_to / go_to_waypoint publish a map-framed /goal_pose and RETURN.
+They never block a tool call on a drive — ros-mcp's send_action_goal blocks
+until result/timeout and a timed-out call leaves the goal RUNNING. Poll
+nav_status; nav_cancel clears every active goal (the same CancelGoal call as
+the webui's cancel button). A goal outliving its client is still the standing
+hazard: killing the MCP client, the chat, or this container does NOT stop the
+robot. move/rotate are the opposite trade: they BLOCK for the (short,
+capped) drive and stream /cmd_vel themselves, so their motion dies with the
+call — but they skip Nav2's costmaps entirely.
 """
 
 import asyncio
 import base64
 import json
 import math
+import os
+from datetime import datetime, timezone
 
 import numpy as np
 from fastmcp import FastMCP
@@ -26,6 +33,7 @@ from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
 
 from detect import annotate, detect
+from motion import MAX_MOVE_M, MAX_ROTATE_RAD, run_move, run_rotate
 from render import render_map
 from rosbridge import RosBridge
 from tf import TfTree
@@ -119,13 +127,7 @@ async def get_map() -> list:
     return [json.dumps(meta), Image(data=png, format="png")]
 
 
-@mcp.tool
-async def go_to(x: float, y: float, yaw: float | None = None) -> dict:
-    """Send Scout driving to a map-frame coordinate (meters; use get_map for
-    the frame). Returns IMMEDIATELY while the robot drives — poll nav_status,
-    stop with nav_cancel. yaw (radians) defaults to facing the direction of
-    travel. Nav2 stops within its 0.15 m goal tolerance, so expect arrival
-    ~0.13 m short of the exact point."""
+async def _dispatch_goal(x: float, y: float, yaw: float | None) -> dict:
     async with RosBridge() as rb:
         robot = await _robot_pose(rb)
         if yaw is None:
@@ -163,6 +165,146 @@ async def go_to(x: float, y: float, yaw: float | None = None) -> dict:
             else "goal publish not confirmed — check nav_status before resending"
         ),
     }
+
+
+@mcp.tool
+async def go_to(x: float, y: float, yaw: float | None = None) -> dict:
+    """Send Scout driving to a map-frame coordinate (meters; use get_map for
+    the frame). Returns IMMEDIATELY while the robot drives — poll nav_status,
+    stop with nav_cancel. yaw (radians) defaults to facing the direction of
+    travel. Nav2 stops within its 0.15 m goal tolerance, so expect arrival
+    ~0.13 m short of the exact point."""
+    return await _dispatch_goal(x, y, yaw)
+
+
+# --- named waypoints ---------------------------------------------------------
+#
+# name → map-frame pose, persisted to the ./maps bind mount so they survive
+# container rebuilds and sit beside the posegraphs they belong to. Waypoints
+# are only meaningful on the map they were saved on — a remap invalidates them.
+
+WAYPOINTS_PATH = os.environ.get("WAYPOINTS_PATH", "/maps/waypoints.json")
+
+
+def _load_waypoints() -> dict:
+    try:
+        with open(WAYPOINTS_PATH) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def _store_waypoints(wp: dict) -> None:
+    tmp = WAYPOINTS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(wp, f, indent=1, sort_keys=True)
+    os.replace(tmp, WAYPOINTS_PATH)
+
+
+@mcp.tool
+async def save_waypoint(name: str) -> dict:
+    """Save the robot's CURRENT map-frame pose under a name ("kitchen",
+    "dock"), so go_to_waypoint can return here later. Drive the robot to the
+    spot first. Overwrites an existing name. Waypoints belong to the current
+    map — remapping invalidates them."""
+    async with RosBridge() as rb:
+        robot = await _robot_pose(rb)
+    if robot is None:
+        raise ToolError(
+            "robot pose unknown (/pose silent) — slam/localization not running"
+        )
+    wp = _load_waypoints()
+    wp[name] = robot | {
+        "saved": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    }
+    _store_waypoints(wp)
+    return {"saved": {name: wp[name]}, "waypoint_count": len(wp)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_waypoints() -> dict:
+    """Named waypoints usable with go_to_waypoint (map-frame poses saved with
+    save_waypoint). Only valid on the map they were saved on."""
+    wp = _load_waypoints()
+    return {"waypoints": wp, "count": len(wp)}
+
+
+@mcp.tool
+async def delete_waypoint(name: str) -> dict:
+    """Delete a named waypoint."""
+    wp = _load_waypoints()
+    if name not in wp:
+        raise ToolError(f"no waypoint {name!r} — have: {sorted(wp) or 'none'}")
+    del wp[name]
+    _store_waypoints(wp)
+    return {"deleted": name, "remaining": sorted(wp)}
+
+
+@mcp.tool
+async def go_to_waypoint(name: str) -> dict:
+    """Send Scout driving to a named waypoint saved earlier with
+    save_waypoint (arrives in its saved orientation). Same semantics as
+    go_to: returns immediately, poll nav_status, stop with nav_cancel."""
+    wp = _load_waypoints()
+    if name not in wp:
+        raise ToolError(f"no waypoint {name!r} — have: {sorted(wp) or 'none'}")
+    target = wp[name]
+    result = await _dispatch_goal(target["x"], target["y"], target["yaw"])
+    return {"waypoint": name} | result
+
+
+# --- relative motion (bypasses Nav2) -----------------------------------------
+
+
+async def _require_motion_idle():
+    """Refuse to stream /cmd_vel on top of another commander. The status
+    topic only re-publishes on transitions, so also sniff /cmd_vel itself —
+    a live Nav2 drive means ~30 Hz of smoother output."""
+    async with RosBridge() as rb:
+        status = await _nav_status(rb, timeout=1.0)
+        if status is not None and status["status"] in (
+            "accepted",
+            "driving",
+            "canceling",
+        ):
+            raise ToolError(
+                f"Nav2 goal is {status['status']} — nav_cancel before relative motion"
+            )
+        tw = await rb.subscribe_once(
+            "/cmd_vel", "geometry_msgs/msg/Twist", timeout=0.7
+        )
+    if tw is not None and (
+        abs(tw["linear"]["x"]) > 1e-3 or abs(tw["angular"]["z"]) > 1e-3
+    ):
+        raise ToolError(
+            "something is already streaming non-zero /cmd_vel (Nav2 or teleop)"
+        )
+
+
+@mcp.tool
+async def move(distance_m: float, speed: float = 0.3) -> dict:
+    """Drive straight distance_m meters (negative = reverse), closed-loop on
+    wheel odometry. BYPASSES Nav2 — no obstacle avoidance, so check the path
+    is clear (camera_snapshot/detect_objects) before reversing or moving
+    blind. BLOCKS until done (~distance/speed seconds). speed clamps to
+    0.05–1.0 m/s; |distance| ≤ 5 m — for anything longer use go_to."""
+    if not distance_m or abs(distance_m) > MAX_MOVE_M:
+        raise ToolError(f"distance_m must be non-zero and ≤ {MAX_MOVE_M} m")
+    await _require_motion_idle()
+    return await run_move(distance_m, speed)
+
+
+@mcp.tool
+async def rotate(angle_rad: float, speed: float = 2.5) -> dict:
+    """Rotate in place angle_rad radians (positive = counterclockwise/left),
+    closed-loop on the fused gyro yaw. BLOCKS until done. speed clamps to
+    0.35–3.0 rad/s; |angle| ≤ 2π. Keep speed ≥ 2.5 unless precision demands
+    less — below that the flat front-left tire drags during pivots (wear,
+    not accuracy)."""
+    if not angle_rad or abs(angle_rad) > MAX_ROTATE_RAD:
+        raise ToolError(f"angle_rad must be non-zero and ≤ {MAX_ROTATE_RAD:.3f}")
+    await _require_motion_idle()
+    return await run_rotate(angle_rad, speed)
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -302,6 +444,25 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
         "notes": notes or "position_map feeds go_to directly",
     }
     return [json.dumps(meta), Image(data=png, format="png")]
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def camera_snapshot() -> Image:
+    """Scout's current camera view (D455 color) as an image, unprocessed —
+    for reading the scene directly: text, signage, layout, anything outside
+    detect_objects' 80 COCO classes. Costs no YOLO inference."""
+    async with RosBridge() as rb:
+        color = await rb.subscribe_once(
+            COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=5.0
+        )
+    if color is None:
+        raise ToolError(
+            f"no frame on {COLOR_TOPIC} within 5 s — is the robot service up?"
+        )
+    rgb = _img_to_np(color)
+    # annotate() with no detections is just the PNG encoder.
+    png = await asyncio.to_thread(annotate, rgb, [])
+    return Image(data=png, format="png")
 
 
 @mcp.tool

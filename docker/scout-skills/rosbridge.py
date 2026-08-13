@@ -103,6 +103,46 @@ class RosBridge:
         await self._send({"op": "unsubscribe", "id": sid, "topic": topic})
         return msgs
 
+    async def advertise(self, topic: str, msg_type: str):
+        """Persistent advertise for streaming publishers (cmd_vel loops).
+        Caller waits ADVERTISE_SETTLE_S before the first publish_raw; the
+        socket close tears the publisher down."""
+        await self._send(
+            {
+                "op": "advertise",
+                "id": f"adv:{next(_ids)}",
+                "topic": topic,
+                "type": msg_type,
+            }
+        )
+
+    async def publish_raw(self, topic: str, msg: dict):
+        """Publish on an already-advertised topic. No settle, no teardown."""
+        await self._send({"op": "publish", "topic": topic, "msg": msg})
+
+    async def subscribe(self, topic: str, msg_type: str) -> str:
+        """Persistent subscription; drain with recv_msg. queue_length 1 keeps
+        only the latest sample, which is what a control loop wants."""
+        sid = f"sub:{next(_ids)}"
+        await self._send(
+            {
+                "op": "subscribe",
+                "id": sid,
+                "topic": topic,
+                "type": msg_type,
+                "queue_length": 1,
+            }
+        )
+        return sid
+
+    async def recv_msg(self, topic: str, timeout: float):
+        """Next message on a persistent subscription, or None on timeout."""
+        frame = await self._recv_until(
+            lambda f: f.get("op") == "publish" and f.get("topic") == topic,
+            timeout,
+        )
+        return frame["msg"] if frame else None
+
     async def publish(self, topic: str, msg_type: str, msg: dict):
         await self._send(
             {

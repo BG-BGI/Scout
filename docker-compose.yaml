@@ -130,7 +130,11 @@ services:
   # only standalone design as ros_mcp, but exposes skills instead of raw
   # primitives: get_map (occupancy grid rendered as an image, robot pose
   # marked), go_to (map-framed /goal_pose, returns immediately), nav_status,
-  # nav_cancel (zeroed CancelGoal = the webui cancel button), detect_objects
+  # nav_cancel (zeroed CancelGoal = the webui cancel button), named waypoints
+  # (save/list/delete/go_to_waypoint — JSON in ./maps, per-map validity),
+  # move/rotate (closed-loop relative motion on /odom, streams /cmd_vel
+  # directly — BYPASSES Nav2 costmaps, blocks for the drive, refuses while a
+  # nav goal is active), camera_snapshot (raw D455 color frame), detect_objects
   # (YOLO11n on CPU + aligned depth → map-frame positions; needs
   # align_depth.enable in realsense.yaml), explore_resume/pause/status
   # (pause/resume a running explore_lite — never container lifecycle).
@@ -141,6 +145,8 @@ services:
     image: scout-skills:latest
     network_mode: host
     restart: unless-stopped
+    volumes:
+      - ./maps:/maps
 
 volumes:
   ros_ws_build:
