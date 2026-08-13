@@ -110,22 +110,20 @@ services:
   # MCP endpoint for Magnus (http://<pi>:9000/mcp, streamable-http). ros-mcp
   # speaks only the rosbridge websocket — its hardcoded default target is
   # 127.0.0.1:9090, which host networking makes exactly right — so it gets a
-  # tiny standalone image instead of scout:latest (no ROS, no 13-min
-  # librealsense layer). Version pinned; the uv cache volume keeps restarts
-  # working offline after the first pull.
+  # tiny standalone image (see docker/ros-mcp/Dockerfile) instead of
+  # scout:latest: no ROS, no 13-min librealsense layer. Tool baked at build
+  # time, so container start needs no network.
   # ⚠ No auth — LAN-trust only. send_action_goal BLOCKS until result/timeout,
   # and a timed-out call leaves the goal RUNNING (same latched-goal semantics
   # as nav2 above); clients must poll get_action_status or cancel.
   ros_mcp:
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    build: docker/ros-mcp
+    image: scout-ros-mcp:latest
     network_mode: host
     restart: unless-stopped
-    volumes:
-      - uv_cache:/root/.cache/uv
-    command: uvx ros-mcp==3.1.0 --transport streamable-http --host 0.0.0.0 --port 9000
+    command: ros-mcp --transport streamable-http --host 0.0.0.0 --port 9000
 
 volumes:
   ros_ws_build:
   ros_ws_log:
   ros_overlay_install:
-  uv_cache:
