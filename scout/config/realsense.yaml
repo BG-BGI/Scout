@@ -61,7 +61,11 @@ unite_imu_method: 2   # 0-none, 1-copy, 2-linear_interpolation
 
 # Left off on purpose — each costs CPU on the Pi for nothing Nav2 needs here.
 enable_rgbd: false
-align_depth.enable: false
+# Aligned depth for scout_skills detect_objects: depth resampled into the color
+# frame so a detection box indexes depth directly (color intrinsics deproject).
+# The align path is per-subscriber lazy like JPEG, so the always-on cost is
+# zero; the resample runs only while a detect_objects call is subscribed.
+align_depth.enable: true
 colorizer.enable: false
 
 # Spatial runs AFTER decimation in the wrapper pipeline, so it filters the

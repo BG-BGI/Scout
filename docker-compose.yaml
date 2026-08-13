@@ -77,6 +77,9 @@ services:
   # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
   # starts it. Start after robot+slam+nav2 look healthy:
   #   docker compose --profile explore up -d explore
+  # Once running, scout_skills exposes pause/resume (via /explore/resume) to MCP
+  # clients — deliberately NOT container start/stop (no docker socket in a
+  # no-auth LAN endpoint).
   # Kill switch (stop alone leaves Nav2 driving — deactivate bt_navigator to clear the goal):
   #   docker compose --profile explore stop explore
   #   docker compose exec -T robot ros2 lifecycle set /bt_navigator deactivate
@@ -122,6 +125,22 @@ services:
     network_mode: host
     restart: unless-stopped
     command: ros-mcp --transport streamable-http --host 0.0.0.0 --port 9000
+
+  # Task-level MCP endpoint for Magnus (http://<pi>:9001/mcp). Same rosbridge-
+  # only standalone design as ros_mcp, but exposes skills instead of raw
+  # primitives: get_map (occupancy grid rendered as an image, robot pose
+  # marked), go_to (map-framed /goal_pose, returns immediately), nav_status,
+  # nav_cancel (zeroed CancelGoal = the webui cancel button), detect_objects
+  # (YOLO11n on CPU + aligned depth → map-frame positions; needs
+  # align_depth.enable in realsense.yaml), explore_resume/pause/status
+  # (pause/resume a running explore_lite — never container lifecycle).
+  # ⚠ No auth — LAN-trust only. go_to never blocks on the drive, so the
+  # latched-goal semantics still apply: poll nav_status, stop with nav_cancel.
+  scout_skills:
+    build: docker/scout-skills
+    image: scout-skills:latest
+    network_mode: host
+    restart: unless-stopped
 
 volumes:
   ros_ws_build:
