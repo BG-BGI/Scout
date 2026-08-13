@@ -13,8 +13,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 \
     && rm -rf /var/lib/apt/lists/*
 RUN uv pip install --system --no-cache ultralytics onnx
-# Downloads yolo11n.pt (~5 MB) and writes yolo11n.onnx beside it.
-RUN yolo export model=yolo11n.pt format=onnx imgsz=640 && mv yolo11n.onnx /yolo11n.onnx
+# Downloads yolo11n.pt (~5 MB) and writes yolo11n.onnx beside it — cwd is /,
+# so the artifact IS /yolo11n.onnx (an mv onto itself fails the layer).
+RUN yolo export model=yolo11n.pt format=onnx imgsz=640 && test -f /yolo11n.onnx
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # numpy/pillow/onnxruntime all ship aarch64 wheels; nothing here compiles.
