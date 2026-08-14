@@ -589,11 +589,13 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
             DEPTH_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
         )
         tree = TfTree()
-        static_msg = await rb.subscribe_once(
-            "/tf_static", "tf2_msgs/msg/TFMessage", timeout=2.0
-        )
-        if static_msg is not None:
-            tree.add_message(static_msg)
+        # Collect, don't subscribe_once: /tf_static has multiple latched
+        # publishers (camera internals + URDF chain) and one message is not
+        # the whole tree — the cause of silently missing map positions.
+        for m in await rb.subscribe_collect(
+            "/tf_static", "tf2_msgs/msg/TFMessage", duration=1.0
+        ):
+            tree.add_message(m)
         for m in await rb.subscribe_collect(
             "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
         ):
@@ -699,10 +701,13 @@ async def _scan_tags(update_waypoints: bool = True):
         tree = TfTree()
         child_frames: set[str] = set()
         if dets:
-            static_msg = await rb.subscribe_once(
-                "/tf_static", "tf2_msgs/msg/TFMessage", timeout=2.0
-            )
-            tf_msgs = ([static_msg] if static_msg else []) + await rb.subscribe_collect(
+            # ⚠ /tf_static has MULTIPLE latched publishers (realsense's
+            # camera-internal chain AND robot_state_publisher's URDF chain);
+            # subscribe_once would take only the first replay and the tree
+            # would dead-end between camera_link and base_link. Collect them.
+            tf_msgs = await rb.subscribe_collect(
+                "/tf_static", "tf2_msgs/msg/TFMessage", duration=1.0
+            ) + await rb.subscribe_collect(
                 "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
             )
             for m in tf_msgs:
