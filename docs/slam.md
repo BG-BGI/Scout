@@ -97,11 +97,13 @@ compounding failures, all instructive.**
    goal latched — no software stop exists at that point (bt_navigator replans
    and streams cmd_vel locally, forever). Operator physically recovered it.
 
-**Safety rule derived: do not send autonomous goals toward known WiFi dead
-zones until an on-robot link-loss watchdog exists** (e.g. cancel nav goals
-when rosbridge has had zero clients for N seconds — design open: conflicts
-with wanting offline autonomy later). Redo this protocol inside coverage, on
-a fresh map, after the front/rear differential tire-pressure experiment.
+**Mitigation shipped same day: `link_watchdog` node** (in `robot.launch.py`) —
+gateway unreachable 5 s → cancel + stash active nav goals; link back within
+2 min → re-dispatch; longer → forget. Live-tested to the pause deadline
+(fake-dead link via `gateway_override`); the stash/resume leg is exercised
+only in code review — the first test goal arrived before the 5 s deadline and
+the operator waived a retest. Redo the drift protocol inside coverage, on a
+fresh map, after the front/rear differential tire-pressure experiment.
 
 **⚠ Measured lesson (2026-08-14): do NOT point-drive during active mapping.**
 A graph optimization mid-goal rotated the entire map frame ~40°; goals held
