@@ -672,7 +672,8 @@ async def camera_snapshot() -> Image:
 
 # --- AprilTags ---------------------------------------------------------------
 #
-# Registry (sqlite, /maps/tags.db) + detection (dt-apriltags) live in tags.py.
+# Registry (sqlite, /maps/tags.db) + standoff geometry live in tags.py;
+# detection itself is the apriltag_ros node (robot service) via /detections.
 # A sighting of a registered tag refreshes a waypoint named after it at a
 # 0.5 m standoff in front of the tag face — so go_to_waypoint("doghouse")
 # is "go home", and the waypoint self-heals in whatever map frame is live.
