@@ -80,8 +80,18 @@ run` container on the Pi during navigation starves the stack and aborts goals
 |---|---|---|---|
 | map→odom correction over loop | 0.30 m / 2.1° per ~17 m | TBD | TBD |
 | Stationary relocalization | 1 mm | TBD | TBD |
-| Return-to-mark error | — (never measured) | TBD | TBD |
-| Loop closures per loop | — | TBD | TBD |
+| Return-to-mark error | — (never measured) | 15–30 cm total per ~15–20 m, ≈14 cm of it the xy_goal_tolerance stop-short → **2–16 cm real** (2026-08-14, deflated tires, INCLUDING a mid-drive graph re-solve; start reconstructed through odom) | TBD |
+| Loop closures per loop | — | ≥1 (whole-map ~40° re-solve mid-drive) | TBD |
+
+**⚠ Measured lesson (2026-08-14): do NOT point-drive during active mapping.**
+A graph optimization mid-goal rotated the entire map frame ~40°; goals held
+their (now-wrong) coordinates, the planner chased teleporting targets
+(distance_remaining oscillating 10→32 m on a 7 m route, poses never
+"passed"), and only nav_cancel ended it. For LLM/Magnus point-coordinate
+operation, run slam in `localization` mode on a saved map; `new`/`continue`
+sessions are for exploring. If mapping is unavoidable, re-fetch map+pose
+immediately before each dispatch and keep routes short — the frame can still
+move mid-goal.
 
 ## 4. Tuning recommendations (apply only what §3's numbers justify)
 
