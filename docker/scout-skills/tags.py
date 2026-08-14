@@ -27,8 +27,13 @@ DB_PATH = os.environ.get("TAGS_DB", "/maps/tags.db")
 DEFAULT_FAMILY = "tag36h11"
 STANDOFF_M = 0.5
 
-_detector = None
-_detector_families: frozenset | None = None
+# ⚠ dt-apriltags traps, both measured 2026-08-14:
+#  - A multi-family Detector ("tag36h11 tagStandard52h13") SILENTLY detects
+#    nothing — frames that decode fine single-family return zero.
+#  - Destroying Detector instances corrupts malloc ("mismatching
+#    next->prev_size"). So: one persistent Detector per family, created once,
+#    NEVER dropped, and detection loops families sequentially.
+_detectors: dict[str, object] = {}
 
 
 # --- registry -----------------------------------------------------------------
@@ -93,32 +98,34 @@ def record_sighting(family: str, tag_id: int, map_pose: tuple | None) -> None:
 
 # --- detection ------------------------------------------------------------------
 
-def _get_detector(families: frozenset):
-    """One Detector, rebuilt only when the registered-family set changes."""
-    global _detector, _detector_families
-    if _detector is None or families != _detector_families:
+def _get_detector(family: str):
+    if family not in _detectors:
         from dt_apriltags import Detector  # deferred: loads the C lib
 
-        _detector = Detector(families=" ".join(sorted(families)), nthreads=2)
-        _detector_families = families
-    return _detector
+        _detectors[family] = Detector(families=family, nthreads=2)
+    return _detectors[family]
 
 
 def registered_families() -> frozenset:
-    fams = {DEFAULT_FAMILY} | {t["family"] for t in all_tags()}
-    return frozenset(fams)
+    """Families of registered tags; the default only while the DB is empty
+    (so scanning does something before the first registration)."""
+    fams = {t["family"] for t in all_tags()}
+    return frozenset(fams or {DEFAULT_FAMILY})
 
 
 def detect(gray: np.ndarray, camera_params: tuple | None) -> list[dict]:
     """Detections with unit-size pose (scale pose_t by the real tag size).
     camera_params = (fx, fy, cx, cy) or None for detection without pose."""
-    det = _get_detector(registered_families())
-    raw = det.detect(
-        gray,
-        estimate_tag_pose=camera_params is not None,
-        camera_params=camera_params,
-        tag_size=1.0,
-    )
+    raw = []
+    for family in sorted(registered_families()):
+        raw.extend(
+            _get_detector(family).detect(
+                gray,
+                estimate_tag_pose=camera_params is not None,
+                camera_params=camera_params,
+                tag_size=1.0,
+            )
+        )
     out = []
     for r in raw:
         fam = r.tag_family.decode() if isinstance(r.tag_family, bytes) else str(r.tag_family)
