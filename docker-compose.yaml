@@ -138,8 +138,11 @@ services:
   # move/rotate (closed-loop relative motion on /odom, streams /cmd_vel
   # directly — BYPASSES Nav2 costmaps, blocks for the drive, refuses while a
   # nav goal is active), explore_for (time-budgeted frontier exploration,
-  # auto-pause timer lives in this server), camera_snapshot (raw D455 color
-  # frame), detect_objects
+  # auto-pause timer lives in this server), AprilTags (detect_tags/
+  # register_tag/list_tags/delete_tag/tag_watch — sqlite registry in
+  # ./maps/tags.db, passive 2 s watcher on by default, sightings refresh a
+  # standoff waypoint named after the tag; "doghouse" role=home is the dock),
+  # camera_snapshot (raw D455 color frame), detect_objects
   # (YOLO11n on CPU + aligned depth → map-frame positions; needs
   # align_depth.enable in realsense.yaml), explore_resume/pause/status
   # (pause/resume a running explore_lite — never container lifecycle).

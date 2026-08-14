@@ -27,18 +27,36 @@ import math
 import os
 from datetime import datetime, timezone
 
+from contextlib import asynccontextmanager
+
 import numpy as np
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
 
+import tags as tagdb
 from detect import annotate, detect
 from motion import MAX_MOVE_M, MAX_ROTATE_RAD, run_move, run_rotate
 from render import render_map
 from rosbridge import RosBridge
 from tf import TfTree
 
-mcp = FastMCP("scout-skills")
+TAG_WATCH_PERIOD_S = 2.0
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    # Passive tag watcher, on by default: "the robot knows it's home when it
+    # sees the doghouse tag" without anyone calling a tool. Dies with the
+    # container; restart: unless-stopped brings it back.
+    task = asyncio.create_task(_tag_watch_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+mcp = FastMCP("scout-skills", lifespan=_lifespan)
 
 # action_msgs/msg/GoalStatus values.
 NAV_STATUS = {
@@ -648,6 +666,184 @@ async def camera_snapshot() -> Image:
     # annotate() with no detections is just the PNG encoder.
     png = await asyncio.to_thread(annotate, rgb, [])
     return Image(data=png, format="png")
+
+
+# --- AprilTags ---------------------------------------------------------------
+#
+# Registry (sqlite, /maps/tags.db) + detection (dt-apriltags) live in tags.py.
+# A sighting of a registered tag refreshes a waypoint named after it at a
+# 0.5 m standoff in front of the tag face — so go_to_waypoint("doghouse")
+# is "go home", and the waypoint self-heals in whatever map frame is live.
+
+_tag_watch_enabled = True
+_tag_watch_last: dict = {"at": None, "seen": []}
+
+
+async def _scan_tags(update_waypoints: bool = True):
+    """One camera frame → tag detections joined with the registry. Returns
+    (results, rgb) — rgb None when no frame arrived (camera down)."""
+    async with RosBridge() as rb:
+        color = await rb.subscribe_once(
+            COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
+        )
+        if color is None:
+            return None, None
+        info = await rb.subscribe_once(
+            CAMERA_INFO_TOPIC, "sensor_msgs/msg/CameraInfo", timeout=2.0
+        )
+        tree = TfTree()
+        static_msg = await rb.subscribe_once(
+            "/tf_static", "tf2_msgs/msg/TFMessage", timeout=2.0
+        )
+        if static_msg is not None:
+            tree.add_message(static_msg)
+        for m in await rb.subscribe_collect(
+            "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
+        ):
+            tree.add_message(m)
+
+    rgb = _img_to_np(color)
+    gray = np.ascontiguousarray(rgb.mean(axis=2).astype(np.uint8))
+    cam_params = None
+    cam_frame = None
+    if info is not None:
+        k = info["k"]
+        cam_params = (k[0], k[4], k[2], k[5])  # fx, fy, cx, cy
+        cam_frame = info["header"]["frame_id"]
+
+    dets = await asyncio.to_thread(tagdb.detect, gray, cam_params)
+    registry = {(t["family"], t["tag_id"]): t for t in tagdb.all_tags()}
+    results = []
+    for d in dets:
+        entry = registry.get((d["family"], d["tag_id"]))
+        out = {
+            "family": d["family"],
+            "tag_id": d["tag_id"],
+            "center_px": d["center_px"],
+            "registered": entry is not None,
+        }
+        size_m = entry["size_m"] if entry else 0.16
+        if cam_frame is not None:
+            out |= tagdb.map_geometry(d, size_m, tree, cam_frame)
+        if entry:
+            out["name"] = entry["name"]
+            if entry["role"]:
+                out["role"] = entry["role"]
+                if entry["role"] == "home":
+                    out["home"] = True
+            pose = out.get("standoff")
+            tagdb.record_sighting(
+                d["family"], d["tag_id"],
+                tuple(out["position_map"]) + (pose["yaw"],) if pose and "position_map" in out else None,
+            )
+            if update_waypoints and pose:
+                wp = _load_waypoints()
+                wp[entry["name"]] = pose | {
+                    "saved": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M UTC"
+                    )
+                }
+                _store_waypoints(wp)
+                out["waypoint_refreshed"] = entry["name"]
+        # keep the annotated-image inputs
+        out["_box"] = [
+            min(c[0] for c in d["corners_px"]), min(c[1] for c in d["corners_px"]),
+            max(c[0] for c in d["corners_px"]), max(c[1] for c in d["corners_px"]),
+        ]
+        results.append(out)
+    return results, rgb
+
+
+async def _tag_watch_loop():
+    global _tag_watch_last
+    while True:
+        await asyncio.sleep(TAG_WATCH_PERIOD_S)
+        if not _tag_watch_enabled:
+            continue
+        try:
+            results, _ = await _scan_tags(update_waypoints=True)
+        except Exception:
+            continue  # camera/rosbridge hiccup — try again next period
+        if results is not None:
+            _tag_watch_last = {
+                "at": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
+                "seen": [
+                    r.get("name", f'{r["family"]}:{r["tag_id"]}') for r in results
+                ],
+            }
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def detect_tags() -> list:
+    """Scan the current camera view for AprilTags. Registered tags come back
+    with their name/role ("doghouse" is home), distance, map position, and a
+    standoff pose 0.5 m in front of the tag — each sighting also refreshes a
+    waypoint named after the tag, so go_to_waypoint(name) drives there.
+    Returns detection JSON, then the camera frame with tags boxed."""
+    results, rgb = await _scan_tags(update_waypoints=True)
+    if results is None:
+        raise ToolError(
+            f"no frame on {COLOR_TOPIC} within 4 s — is the robot service up?"
+        )
+    boxes = [
+        {
+            "box": r.pop("_box"),
+            "label": r.get("name", f'{r["family"]}:{r["tag_id"]}'),
+            "confidence": 1.0,
+            "distance_m": r.get("distance_m"),
+        }
+        for r in results
+    ]
+    png = await asyncio.to_thread(annotate, rgb, boxes)
+    meta = {"tags": results, "count": len(results)}
+    return [json.dumps(meta), Image(data=png, format="png").to_image_content()]
+
+
+@mcp.tool
+async def register_tag(
+    name: str,
+    tag_id: int,
+    family: str = "tag36h11",
+    role: str = "",
+    size_m: float = 0.16,
+) -> dict:
+    """Register (or update) an AprilTag: name it ("doghouse"), give it a role
+    ("home" marks the robot's home), and record the printed BLACK-SQUARE edge
+    length in meters (pose accuracy scales directly with this — measure the
+    print). Detection of registered families starts immediately."""
+    if not (0.01 <= size_m <= 2.0):
+        raise ToolError("size_m implausible — meters, black square edge only")
+    return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_tags() -> dict:
+    """Registered AprilTags with last-seen info, plus the passive watcher
+    state (scans every 2 s and refreshes tag waypoints when the camera is
+    up)."""
+    return {
+        "tags": tagdb.all_tags(),
+        "watcher": {"enabled": _tag_watch_enabled, "last_scan": _tag_watch_last},
+    }
+
+
+@mcp.tool
+async def delete_tag(name: str) -> dict:
+    """Remove a tag from the registry (its waypoint, if any, stays until
+    delete_waypoint)."""
+    if not tagdb.delete(name):
+        raise ToolError(f"no tag named {name!r}")
+    return {"deleted": name}
+
+
+@mcp.tool
+async def tag_watch(enabled: bool) -> dict:
+    """Turn the passive AprilTag watcher on/off (on by default). Off saves
+    ~2-4% of a core and stops waypoint auto-refresh; detect_tags still works
+    on demand."""
+    global _tag_watch_enabled
+    _tag_watch_enabled = enabled
+    return {"watcher_enabled": enabled}
 
 
 @mcp.tool
