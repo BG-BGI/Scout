@@ -686,19 +686,24 @@ DETECTIONS_TOPIC = "/detections"
 
 
 async def _scan_tags(update_waypoints: bool = True):
-    """Latest apriltag_ros detections joined with the registry + TF geometry.
-    Returns a result list, or None when /detections is silent (apriltag node
-    or camera down). Cheap: no image transfer — the node streams detections
-    continuously."""
+    """apriltag_ros detections joined with the registry + TF geometry.
+    Returns a result list, or None when /detections is silent (apriltag
+    nodes or camera down). One node per FAMILY publishes here at 2 fps, so
+    collect a window and merge — a single message is one family's view only.
+    Cheap: no image transfer."""
     async with RosBridge() as rb:
-        msg = await rb.subscribe_once(
+        msgs = await rb.subscribe_collect(
             DETECTIONS_TOPIC,
             "apriltag_msgs/msg/AprilTagDetectionArray",
-            timeout=1.5,
+            duration=1.2,
         )
-        if msg is None:
+        if not msgs:
             return None
-        dets = msg.get("detections", [])
+        merged: dict[tuple, dict] = {}
+        for m in msgs:
+            for d in m.get("detections", []):
+                merged[(d["family"], d["id"])] = d
+        dets = list(merged.values())
         tree = TfTree()
         child_frames: set[str] = set()
         if dets:

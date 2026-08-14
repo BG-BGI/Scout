@@ -141,6 +141,7 @@ RUN apt-get update && apt-get install -y \
 # apt layer above.
 RUN apt-get update && apt-get install -y \
     ros-humble-apriltag-ros \
+    ros-humble-topic-tools \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

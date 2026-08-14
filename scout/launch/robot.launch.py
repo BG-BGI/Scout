@@ -186,19 +186,42 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # Official AprilTag detector (apriltag_ros): /detections + a TF frame
-        # per tag off the D455 color stream. Tag MEANING (names/roles/home)
-        # lives in scout-skills' registry; coverage config in apriltag.yaml.
+        # Official AprilTag detection (apriltag_ros), ALL families at once.
+        # The node detects one family per instance, so: throttle the color
+        # stream to 2 fps and fan out one node per family, all publishing to
+        # /detections (scout-skills merges a collection window) and all
+        # adding TF frames "<family>:<id>". Tag MEANING (names/roles/home)
+        # lives in scout-skills' registry; shared params in apriltag.yaml.
         Node(
-            package='apriltag_ros',
-            executable='apriltag_node',
-            name='apriltag',
+            package='topic_tools',
+            executable='throttle',
+            name='apriltag_throttle',
             output='screen',
-            parameters=[os.path.join(config, 'apriltag.yaml')],
-            remappings=[
-                ('image_rect', '/camera/camera/color/image_raw'),
-                ('camera_info', '/camera/camera/color/camera_info'),
-                ('detections', '/detections'),
+            arguments=[
+                'messages', '/camera/camera/color/image_raw', '2.0',
+                '/apriltag/image_rect',
             ],
         ),
+        *[
+            Node(
+                package='apriltag_ros',
+                executable='apriltag_node',
+                name=f'apriltag_{fam.lower()}',
+                output='screen',
+                parameters=[
+                    os.path.join(config, 'apriltag.yaml'),
+                    {'family': fam},
+                ],
+                remappings=[
+                    ('image_rect', '/apriltag/image_rect'),
+                    ('camera_info', '/camera/camera/color/camera_info'),
+                    ('detections', '/detections'),
+                ],
+            )
+            for fam in (
+                '16h5', '25h9', '36h11',
+                'Circle21h9', 'Circle49h12',
+                'Custom48h12', 'Standard41h12', 'Standard52h13',
+            )
+        ],
     ])
