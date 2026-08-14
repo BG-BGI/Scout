@@ -74,12 +74,24 @@ async def _robot_pose(rb: RosBridge) -> dict | None:
     )
 
 
-async def _nav_status(rb: RosBridge, timeout: float = 2.5) -> dict | None:
-    """Latest GoalStatusArray entry, or None if nothing arrived in the window
-    (idle, or no goal since nav2 start — the status topic only re-publishes on
-    transitions unless rosbridge matched its transient_local durability)."""
+# Both bt_navigator actions; single-goal go_to rides the first, go_through/
+# patrol ride the second. Feedback message types stream ~10 Hz while driving.
+NAV_ACTIONS = ("/navigate_to_pose", "/navigate_through_poses")
+FEEDBACK_TYPES = {
+    "/navigate_to_pose": "nav2_msgs/action/NavigateToPose_FeedbackMessage",
+    "/navigate_through_poses": "nav2_msgs/action/NavigateThroughPoses_FeedbackMessage",
+}
+
+
+async def _nav_status(
+    rb: RosBridge, timeout: float = 2.5, action: str = "/navigate_to_pose"
+) -> dict | None:
+    """Latest GoalStatusArray entry for one nav action, or None if nothing
+    arrived in the window (idle, or no goal since nav2 start — the status
+    topic only re-publishes on transitions unless rosbridge matched its
+    transient_local durability)."""
     msg = await rb.subscribe_once(
-        "/navigate_to_pose/_action/status",
+        f"{action}/_action/status",
         "action_msgs/msg/GoalStatusArray",
         timeout=timeout,
     )
@@ -87,9 +99,30 @@ async def _nav_status(rb: RosBridge, timeout: float = 2.5) -> dict | None:
         return None
     latest = msg["status_list"][-1]
     return {
+        "action": action.lstrip("/"),
         "status": NAV_STATUS.get(latest["status"], str(latest["status"])),
         "goal_stamp": latest["goal_info"]["stamp"]["sec"],
     }
+
+
+async def _nav_feedback(rb: RosBridge, window: float = 0.8) -> dict | None:
+    """Live drive telemetry: whichever nav action is streaming feedback right
+    now (they publish ~10 Hz only while a goal runs — presence IS liveness,
+    unlike the transition-only status topic)."""
+    for action in NAV_ACTIONS:
+        msg = await rb.subscribe_once(
+            f"{action}/_action/feedback", FEEDBACK_TYPES[action], timeout=window
+        )
+        if msg is None:
+            continue
+        fb = msg["feedback"]
+        out = {"action": action.lstrip("/")}
+        if fb.get("distance_remaining") is not None:
+            out["distance_remaining_m"] = round(fb["distance_remaining"], 2)
+        if fb.get("number_of_poses_remaining") is not None:
+            out["poses_remaining"] = fb["number_of_poses_remaining"]
+        return out
+    return None
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
@@ -127,6 +160,23 @@ async def get_map() -> list:
     return [json.dumps(meta), Image(data=png, format="png")]
 
 
+def _stamped_pose(x: float, y: float, yaw: float) -> dict:
+    # Always map-framed: an odom-framed goal works ~10 s then fails on every
+    # replan once its stamp ages out of tf.
+    return {
+        "header": {"frame_id": "map", "stamp": {"sec": 0, "nanosec": 0}},
+        "pose": {
+            "position": {"x": x, "y": y, "z": 0.0},
+            "orientation": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": math.sin(yaw / 2),
+                "w": math.cos(yaw / 2),
+            },
+        },
+    }
+
+
 async def _dispatch_goal(x: float, y: float, yaw: float | None) -> dict:
     async with RosBridge() as rb:
         robot = await _robot_pose(rb)
@@ -135,20 +185,7 @@ async def _dispatch_goal(x: float, y: float, yaw: float | None) -> dict:
         await rb.publish(
             "/goal_pose",
             "geometry_msgs/msg/PoseStamped",
-            {
-                # Always map-framed: an odom-framed goal works ~10 s then
-                # fails on every replan once its stamp ages out of tf.
-                "header": {"frame_id": "map", "stamp": {"sec": 0, "nanosec": 0}},
-                "pose": {
-                    "position": {"x": x, "y": y, "z": 0.0},
-                    "orientation": {
-                        "x": 0.0,
-                        "y": 0.0,
-                        "z": math.sin(yaw / 2),
-                        "w": math.cos(yaw / 2),
-                    },
-                },
-            },
+            _stamped_pose(x, y, yaw),
         )
         # The accept transition republishes the status topic, so this window
         # confirms delivery regardless of durability matching.
@@ -171,10 +208,101 @@ async def _dispatch_goal(x: float, y: float, yaw: float | None) -> dict:
 async def go_to(x: float, y: float, yaw: float | None = None) -> dict:
     """Send Scout driving to a map-frame coordinate (meters; use get_map for
     the frame). Returns IMMEDIATELY while the robot drives — poll nav_status,
-    stop with nav_cancel. yaw (radians) defaults to facing the direction of
-    travel. Nav2 stops within its 0.15 m goal tolerance, so expect arrival
-    ~0.13 m short of the exact point."""
+    stop with nav_cancel. Sending a new go_to mid-drive smoothly RE-ROUTES
+    (preemption), so chain goals without waiting for arrival; for several
+    points at once use go_through, which never stops in between. yaw (radians)
+    defaults to facing the direction of travel. Nav2 stops within its 0.15 m
+    goal tolerance, so expect arrival ~0.13 m short of the exact point."""
     return await _dispatch_goal(x, y, yaw)
+
+
+async def _dispatch_through(points: list[list[float]], final_yaw: float | None) -> dict:
+    """Shared NavigateThroughPoses dispatch for go_through/patrol. Poses face
+    the next point; the last takes final_yaw or the incoming heading."""
+    poses = []
+    for i, (x, y) in enumerate(points):
+        if i < len(points) - 1:
+            nx, ny = points[i + 1]
+            yaw = math.atan2(ny - y, nx - x)
+        elif final_yaw is not None:
+            yaw = final_yaw
+        else:
+            px, py = points[i - 1]
+            yaw = math.atan2(y - py, x - px)
+        poses.append(_stamped_pose(x, y, yaw))
+
+    action = "/navigate_through_poses"
+    async with RosBridge() as rb:
+        # Subscribe BEFORE sending so the accept transition cannot race in
+        # ahead of the subscription.
+        await rb.subscribe(
+            f"{action}/_action/status", "action_msgs/msg/GoalStatusArray"
+        )
+        await rb.send_action_goal(
+            action,
+            "nav2_msgs/action/NavigateThroughPoses",
+            {"poses": poses, "behavior_tree": ""},
+        )
+        status = None
+        msg = await rb.recv_msg(f"{action}/_action/status", timeout=3.0)
+        if msg and msg["status_list"]:
+            latest = msg["status_list"][-1]
+            status = {
+                "action": action.lstrip("/"),
+                "status": NAV_STATUS.get(latest["status"], str(latest["status"])),
+                "goal_stamp": latest["goal_info"]["stamp"]["sec"],
+            }
+
+    accepted = status is not None and status["status"] in ("accepted", "driving")
+    return {
+        "points": len(points),
+        "nav": status or "no status transition seen",
+        "accepted": accepted,
+        "note": (
+            "driving through the points without stopping; poll nav_status "
+            "(poses_remaining counts down), stop with nav_cancel"
+            if accepted
+            else "goal not confirmed — check nav_status before resending"
+        ),
+    }
+
+
+@mcp.tool
+async def go_through(points: list[list[float]], final_yaw: float | None = None) -> dict:
+    """Drive fluidly THROUGH a series of map-frame [x, y] points WITHOUT
+    stopping at any of them — the right way to cover several rooms or sweep an
+    area in one command (get_map for the frame; 2–20 points). Returns
+    IMMEDIATELY; poll nav_status (poses_remaining counts down), stop with
+    nav_cancel. final_yaw (radians) sets the arrival heading."""
+    if not (2 <= len(points) <= 20):
+        raise ToolError("need 2–20 [x, y] points (one point → use go_to)")
+    if any(len(p) != 2 for p in points):
+        raise ToolError("each point must be [x, y] in map-frame meters")
+    return await _dispatch_through([list(map(float, p)) for p in points], final_yaw)
+
+
+@mcp.tool
+async def patrol(names: list[str], loops: int = 1) -> dict:
+    """Visit saved waypoints in order, fluidly (no stop at intermediate ones),
+    optionally looping the circuit — one call covers a whole patrol round.
+    loops 1–10, total ≤ 50 poses. Arrives in the last waypoint's saved
+    orientation. Returns IMMEDIATELY; poll nav_status, stop with nav_cancel."""
+    wp = _load_waypoints()
+    missing = [n for n in names if n not in wp]
+    if missing:
+        raise ToolError(f"unknown waypoints {missing} — have: {sorted(wp) or 'none'}")
+    if not names:
+        raise ToolError("names is empty")
+    loops = min(max(int(loops), 1), 10)
+    circuit = [[wp[n]["x"], wp[n]["y"]] for n in names] * loops
+    if len(circuit) > 50:
+        raise ToolError(f"{len(circuit)} poses > 50 — fewer waypoints or loops")
+    final_yaw = wp[names[-1]]["yaw"]
+    if len(circuit) == 1:
+        result = await _dispatch_goal(circuit[0][0], circuit[0][1], final_yaw)
+    else:
+        result = await _dispatch_through(circuit, final_yaw)
+    return {"patrol": names, "loops": loops} | result
 
 
 # --- named waypoints ---------------------------------------------------------
@@ -258,18 +386,20 @@ async def go_to_waypoint(name: str) -> dict:
 
 async def _require_motion_idle():
     """Refuse to stream /cmd_vel on top of another commander. The status
-    topic only re-publishes on transitions, so also sniff /cmd_vel itself —
+    topics only re-publish on transitions, so also sniff /cmd_vel itself —
     a live Nav2 drive means ~30 Hz of smoother output."""
     async with RosBridge() as rb:
-        status = await _nav_status(rb, timeout=1.0)
-        if status is not None and status["status"] in (
-            "accepted",
-            "driving",
-            "canceling",
-        ):
-            raise ToolError(
-                f"Nav2 goal is {status['status']} — nav_cancel before relative motion"
-            )
+        for action in NAV_ACTIONS:
+            status = await _nav_status(rb, timeout=1.0, action=action)
+            if status is not None and status["status"] in (
+                "accepted",
+                "driving",
+                "canceling",
+            ):
+                raise ToolError(
+                    f"{status['action']} goal is {status['status']} — "
+                    "nav_cancel before relative motion"
+                )
         tw = await rb.subscribe_once(
             "/cmd_vel", "geometry_msgs/msg/Twist", timeout=0.7
         )
@@ -283,11 +413,13 @@ async def _require_motion_idle():
 
 @mcp.tool
 async def move(distance_m: float, speed: float = 0.3) -> dict:
-    """Drive straight distance_m meters (negative = reverse), closed-loop on
-    wheel odometry. BYPASSES Nav2 — no obstacle avoidance, so check the path
-    is clear (camera_snapshot/detect_objects) before reversing or moving
+    """SMALL PRECISE ADJUSTMENTS ONLY (dock nudges, lining up a photo) — for
+    any real travel use go_to/go_through/patrol, which avoid obstacles and
+    flow. Drives straight distance_m meters (negative = reverse), closed-loop
+    on wheel odometry. BYPASSES Nav2 — no obstacle avoidance, so check the
+    path is clear (camera_snapshot/detect_objects) before reversing or moving
     blind. BLOCKS until done (~distance/speed seconds). speed clamps to
-    0.05–1.0 m/s; |distance| ≤ 5 m — for anything longer use go_to."""
+    0.05–1.0 m/s; |distance| ≤ 5 m."""
     if not distance_m or abs(distance_m) > MAX_MOVE_M:
         raise ToolError(f"distance_m must be non-zero and ≤ {MAX_MOVE_M} m")
     await _require_motion_idle()
@@ -296,11 +428,10 @@ async def move(distance_m: float, speed: float = 0.3) -> dict:
 
 @mcp.tool
 async def rotate(angle_rad: float, speed: float = 2.5) -> dict:
-    """Rotate in place angle_rad radians (positive = counterclockwise/left),
-    closed-loop on the fused gyro yaw. BLOCKS until done. speed clamps to
-    0.35–3.0 rad/s; |angle| ≤ 2π. Keep speed ≥ 2.5 unless precision demands
-    less — below that the flat front-left tire drags during pivots (wear,
-    not accuracy)."""
+    """SMALL PRECISE ADJUSTMENTS ONLY (facing a target for a photo) — for
+    travel let go_to/go_through handle heading. Rotates in place angle_rad
+    radians (positive = counterclockwise/left), closed-loop on the fused gyro
+    yaw. BLOCKS until done. speed clamps to 0.35–3.0 rad/s; |angle| ≤ 2π."""
     if not angle_rad or abs(angle_rad) > MAX_ROTATE_RAD:
         raise ToolError(f"angle_rad must be non-zero and ≤ {MAX_ROTATE_RAD:.3f}")
     await _require_motion_idle()
@@ -310,15 +441,25 @@ async def rotate(angle_rad: float, speed: float = 2.5) -> dict:
 @mcp.tool(annotations={"readOnlyHint": True})
 async def nav_status() -> dict:
     """Current navigation state (accepted/driving/canceling/arrived/canceled/
-    aborted) and the robot's map-frame pose. 'no recent status traffic' means
-    idle or no goal since nav2 started. ⚠ 'aborted' does NOT mean stopped —
-    already-dispatched recovery behaviors keep the robot moving after the
-    abort; nav_cancel if it must stop."""
+    aborted) across both nav actions (go_to and go_through/patrol), live drive
+    telemetry (distance/poses remaining — present only while driving), and the
+    robot's map-frame pose. 'no recent status traffic' means idle or no goal
+    since nav2 started. ⚠ 'aborted' does NOT mean stopped — already-dispatched
+    recovery behaviors keep the robot moving after the abort; nav_cancel if it
+    must stop."""
     async with RosBridge() as rb:
-        status = await _nav_status(rb)
+        # Feedback first: it streams continuously while driving, so it is the
+        # honest liveness signal; the status topics only show transitions.
+        driving = await _nav_feedback(rb)
+        statuses = [
+            s
+            for a in NAV_ACTIONS
+            if (s := await _nav_status(rb, timeout=1.2, action=a)) is not None
+        ]
         robot = await _robot_pose(rb)
     return {
-        "nav": status or "no recent status traffic (idle, or no goal yet)",
+        "nav": statuses or "no recent status traffic (idle, or no goal yet)",
+        "driving": driving or False,
         "robot": robot or "unknown (/pose silent)",
     }
 
@@ -471,23 +612,28 @@ async def nav_cancel() -> dict:
     cancel-all). The software e-stop — a goal survives its client dying, so
     this is the only way to clear one short of restarting nav2. Deceleration
     is a coast, not a brake (200 ms deadman, free-wheeling idle)."""
+    canceling = 0
+    codes = {}
     async with RosBridge() as rb:
-        values = await rb.call_service(
-            "/navigate_to_pose/_action/cancel_goal",
-            "action_msgs/srv/CancelGoal",
-            {
-                "goal_info": {
-                    "goal_id": {"uuid": [0] * 16},
-                    "stamp": {"sec": 0, "nanosec": 0},
-                }
-            },
-        )
+        for action in NAV_ACTIONS:
+            values = await rb.call_service(
+                f"{action}/_action/cancel_goal",
+                "action_msgs/srv/CancelGoal",
+                {
+                    "goal_info": {
+                        "goal_id": {"uuid": [0] * 16},
+                        "stamp": {"sec": 0, "nanosec": 0},
+                    }
+                },
+            )
+            codes[action.lstrip("/")] = values.get("return_code")
+            canceling += len(values.get("goals_canceling", []))
         status = await _nav_status(rb, timeout=2.0)
     # return_code 0 = none active (nothing to cancel), which still means "not
     # driving" — report it as success with the detail visible.
     return {
-        "return_code": values.get("return_code"),
-        "goals_canceling": len(values.get("goals_canceling", [])),
+        "return_codes": codes,
+        "goals_canceling": canceling,
         "nav": status or "no status transition seen",
     }
 
@@ -502,6 +648,29 @@ async def nav_cancel() -> dict:
 # the node is up at all.
 
 EXPLORE_RESUME_TOPIC = "/explore/resume"
+
+# explore_for's auto-pause. Module-level: one budget at a time; a new
+# explore_for replaces it. ⚠ Dies with this server — if the container is
+# killed mid-window the pause never fires and explore keeps driving until
+# paused manually (same hazard as a manual resume today).
+_explore_timer: asyncio.Task | None = None
+_explore_deadline: float | None = None
+
+
+def _cancel_explore_timer():
+    global _explore_timer, _explore_deadline
+    if _explore_timer is not None and not _explore_timer.done():
+        _explore_timer.cancel()
+    _explore_timer = None
+    _explore_deadline = None
+
+
+async def _auto_pause(delay_s: float):
+    await asyncio.sleep(delay_s)
+    try:
+        await _set_explore(False)
+    except Exception:
+        pass  # explore node already gone — nothing left to pause
 
 
 async def _explore_running(rb: RosBridge) -> bool:
@@ -535,16 +704,36 @@ async def _set_explore(active: bool) -> dict:
 async def explore_resume() -> dict:
     """START/RESUME autonomous frontier exploration — the robot drives itself
     to unexplored map frontiers until none remain (then returns to its start).
-    The explore node must already be running (operator-started); this only
-    un-pauses it. Pause with explore_pause; a Nav2 goal already dispatched
-    also needs nav_cancel to actually stop the robot."""
+    Prefer explore_for, which auto-pauses on a time budget. The explore node
+    must already be running (operator-started); this only un-pauses it. Pause
+    with explore_pause; a Nav2 goal already dispatched also needs nav_cancel
+    to actually stop the robot."""
+    _cancel_explore_timer()
     return await _set_explore(True)
 
 
 @mcp.tool
+async def explore_for(minutes: float) -> dict:
+    """Explore autonomously for a time budget, then auto-pause — 'go explore
+    for 5 minutes' in one call, no babysitting. Clamped 0.5–30 min; a new call
+    replaces the running budget. Stop early with explore_pause + nav_cancel.
+    ⚠ The pause timer lives in this server: if it dies mid-window, explore
+    keeps driving until paused manually."""
+    global _explore_timer, _explore_deadline
+    minutes = min(max(minutes, 0.5), 30.0)
+    result = await _set_explore(True)
+    _cancel_explore_timer()
+    _explore_timer = asyncio.create_task(_auto_pause(minutes * 60))
+    _explore_deadline = asyncio.get_event_loop().time() + minutes * 60
+    return result | {"auto_pause_in_min": minutes}
+
+
+@mcp.tool
 async def explore_pause() -> dict:
-    """Pause autonomous exploration. ⚠ Pausing stops NEW frontier goals, not
-    the current drive — follow with nav_cancel to actually stop the robot."""
+    """Pause autonomous exploration (also cancels an explore_for budget).
+    ⚠ Pausing stops NEW frontier goals, not the current drive — follow with
+    nav_cancel to actually stop the robot."""
+    _cancel_explore_timer()
     return await _set_explore(False)
 
 
@@ -567,6 +756,11 @@ async def explore_status() -> dict:
                 frontiers = len(markers.get("markers", []))
         status = await _nav_status(rb)
         robot = await _robot_pose(rb)
+    remaining = None
+    if _explore_deadline is not None and _explore_timer and not _explore_timer.done():
+        remaining = round(
+            max(0.0, _explore_deadline - asyncio.get_event_loop().time()) / 60, 1
+        )
     return {
         "explore_node_running": running,
         "frontier_markers": (
@@ -576,6 +770,7 @@ async def explore_status() -> dict:
             if running
             else None
         ),
+        "auto_pause_remaining_min": remaining,
         "nav": status or "no recent status traffic",
         "robot": robot or "unknown (/pose silent)",
     }

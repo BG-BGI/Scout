@@ -143,6 +143,25 @@ class RosBridge:
         )
         return frame["msg"] if frame else None
 
+    async def send_action_goal(self, action: str, action_type: str, args: dict):
+        """Fire-and-forget ROS action goal (op: send_action_goal), no wait for
+        action_result. rosbridge's SendActionGoal capability has no finish(),
+        so the goal keeps running after this socket closes — the deliberate
+        goal-outlives-client contract the nav tools use. Cancel from any
+        socket via the action's _action/cancel_goal service. Callers confirm
+        acceptance on the action's _action/status topic (subscribe FIRST,
+        then send, so the accept transition cannot race the subscription)."""
+        await self._send(
+            {
+                "op": "send_action_goal",
+                "id": f"act:{next(_ids)}",
+                "action": action,
+                "action_type": action_type,
+                "args": args,
+                "feedback": False,
+            }
+        )
+
     async def publish(self, topic: str, msg_type: str, msg: dict):
         await self._send(
             {

@@ -129,12 +129,17 @@ services:
   # Task-level MCP endpoint for Magnus (http://<pi>:9001/mcp). Same rosbridge-
   # only standalone design as ros_mcp, but exposes skills instead of raw
   # primitives: get_map (occupancy grid rendered as an image, robot pose
-  # marked), go_to (map-framed /goal_pose, returns immediately), nav_status,
-  # nav_cancel (zeroed CancelGoal = the webui cancel button), named waypoints
+  # marked), go_to (map-framed /goal_pose, returns immediately), go_through/
+  # patrol (NavigateThroughPoses via rosbridge send_action_goal — fluid
+  # multi-point drives with no stop at intermediate points), nav_status (both
+  # actions + live feedback distance/poses remaining), nav_cancel (zeroed
+  # CancelGoal on both actions = the webui cancel button), named waypoints
   # (save/list/delete/go_to_waypoint — JSON in ./maps, per-map validity),
   # move/rotate (closed-loop relative motion on /odom, streams /cmd_vel
   # directly — BYPASSES Nav2 costmaps, blocks for the drive, refuses while a
-  # nav goal is active), camera_snapshot (raw D455 color frame), detect_objects
+  # nav goal is active), explore_for (time-budgeted frontier exploration,
+  # auto-pause timer lives in this server), camera_snapshot (raw D455 color
+  # frame), detect_objects
   # (YOLO11n on CPU + aligned depth → map-frame positions; needs
   # align_depth.enable in realsense.yaml), explore_resume/pause/status
   # (pause/resume a running explore_lite — never container lifecycle).
