@@ -83,6 +83,26 @@ run` container on the Pi during navigation starves the stack and aborts goals
 | Return-to-mark error | — (never measured) | 15–30 cm total per ~15–20 m, ≈14 cm of it the xy_goal_tolerance stop-short → **2–16 cm real** (2026-08-14, deflated tires, INCLUDING a mid-drive graph re-solve; start reconstructed through odom) | TBD |
 | Loop closures per loop | — | ≥1 (whole-map ~40° re-solve mid-drive) | TBD |
 
+**Run 1 of the closed-loop protocol (2026-08-14 office/hallway): INVALID — three
+compounding failures, all instructive.**
+1. **Mislocalization in the corridor**: map-frame yaw flipped ±3 rad between
+   5 s samples and the pose teleported (12.2,−1.3)↔(9.8,−7.9) while driving a
+   long glass-walled hallway — classic corridor aliasing plus a map already
+   distorted by the day's clutter churn.
+2. **Rear-stall/front-spin regime** (operator observed, recurring): in high-
+   torque phases the weighted rear wheel stalls, the velocity loop winds duty
+   to max, and the unloaded soft front freewheels fast. Wheel odometry is
+   garbage exactly then, which feeds failure 1.
+3. **WiFi dead zone ended the run**: the robot drove out of coverage with a
+   goal latched — no software stop exists at that point (bt_navigator replans
+   and streams cmd_vel locally, forever). Operator physically recovered it.
+
+**Safety rule derived: do not send autonomous goals toward known WiFi dead
+zones until an on-robot link-loss watchdog exists** (e.g. cancel nav goals
+when rosbridge has had zero clients for N seconds — design open: conflicts
+with wanting offline autonomy later). Redo this protocol inside coverage, on
+a fresh map, after the front/rear differential tire-pressure experiment.
+
 **⚠ Measured lesson (2026-08-14): do NOT point-drive during active mapping.**
 A graph optimization mid-goal rotated the entire map frame ~40°; goals held
 their (now-wrong) coordinates, the planner chased teleporting targets
