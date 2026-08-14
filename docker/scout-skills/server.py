@@ -679,52 +679,63 @@ _tag_watch_enabled = True
 _tag_watch_last: dict = {"at": None, "seen": []}
 
 
+DETECTIONS_TOPIC = "/detections"
+
+
 async def _scan_tags(update_waypoints: bool = True):
-    """One camera frame → tag detections joined with the registry. Returns
-    (results, rgb) — rgb None when no frame arrived (camera down)."""
+    """Latest apriltag_ros detections joined with the registry + TF geometry.
+    Returns a result list, or None when /detections is silent (apriltag node
+    or camera down). Cheap: no image transfer — the node streams detections
+    continuously."""
     async with RosBridge() as rb:
-        color = await rb.subscribe_once(
-            COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
+        msg = await rb.subscribe_once(
+            DETECTIONS_TOPIC,
+            "apriltag_msgs/msg/AprilTagDetectionArray",
+            timeout=1.5,
         )
-        if color is None:
-            return None, None
-        info = await rb.subscribe_once(
-            CAMERA_INFO_TOPIC, "sensor_msgs/msg/CameraInfo", timeout=2.0
-        )
+        if msg is None:
+            return None
+        dets = msg.get("detections", [])
         tree = TfTree()
-        static_msg = await rb.subscribe_once(
-            "/tf_static", "tf2_msgs/msg/TFMessage", timeout=2.0
-        )
-        if static_msg is not None:
-            tree.add_message(static_msg)
-        for m in await rb.subscribe_collect(
-            "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
-        ):
-            tree.add_message(m)
+        child_frames: set[str] = set()
+        if dets:
+            static_msg = await rb.subscribe_once(
+                "/tf_static", "tf2_msgs/msg/TFMessage", timeout=2.0
+            )
+            tf_msgs = ([static_msg] if static_msg else []) + await rb.subscribe_collect(
+                "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
+            )
+            for m in tf_msgs:
+                tree.add_message(m)
+                child_frames |= {t["child_frame_id"] for t in m["transforms"]}
+            robot = await _robot_pose(rb)
+        else:
+            robot = None
 
-    rgb = _img_to_np(color)
-    gray = np.ascontiguousarray(rgb.mean(axis=2).astype(np.uint8))
-    cam_params = None
-    cam_frame = None
-    if info is not None:
-        k = info["k"]
-        cam_params = (k[0], k[4], k[2], k[5])  # fx, fy, cx, cy
-        cam_frame = info["header"]["frame_id"]
-
-    dets = await asyncio.to_thread(tagdb.detect, gray, cam_params)
-    registry = {(t["family"], t["tag_id"]): t for t in tagdb.all_tags()}
     results = []
     for d in dets:
-        entry = registry.get((d["family"], d["tag_id"]))
+        family, tag_id = d["family"], d["id"]
+        entry = tagdb.lookup(family, tag_id)
         out = {
-            "family": d["family"],
-            "tag_id": d["tag_id"],
-            "center_px": d["center_px"],
+            "family": family,
+            "tag_id": tag_id,
+            "center_px": [round(d["centre"]["x"], 1), round(d["centre"]["y"], 1)],
             "registered": entry is not None,
         }
-        size_m = entry["size_m"] if entry else 0.16
-        if cam_frame is not None:
-            out |= tagdb.map_geometry(d, size_m, tree, cam_frame)
+        # apriltag_ros publishes the tag's TF child frame as "<family>:<id>"
+        # (frame-name flavor varies by config) — find it by suffix + family.
+        nf = tagdb.norm_family(family)
+        frame = next(
+            (
+                f for f in child_frames
+                if f.endswith(f":{tag_id}")
+                and tagdb.norm_family(f.rsplit(":", 1)[0]) == nf
+            ),
+            None,
+        )
+        if frame:
+            robot_xy = (robot["x"], robot["y"]) if robot else None
+            out |= tagdb.map_geometry(tree, frame, robot_xy)
         if entry:
             out["name"] = entry["name"]
             if entry["role"]:
@@ -733,8 +744,10 @@ async def _scan_tags(update_waypoints: bool = True):
                     out["home"] = True
             pose = out.get("standoff")
             tagdb.record_sighting(
-                d["family"], d["tag_id"],
-                tuple(out["position_map"]) + (pose["yaw"],) if pose and "position_map" in out else None,
+                family, tag_id,
+                tuple(out["position_map"]) + (pose["yaw"],)
+                if pose and "position_map" in out
+                else None,
             )
             if update_waypoints and pose:
                 wp = _load_waypoints()
@@ -745,13 +758,12 @@ async def _scan_tags(update_waypoints: bool = True):
                 }
                 _store_waypoints(wp)
                 out["waypoint_refreshed"] = entry["name"]
-        # keep the annotated-image inputs
         out["_box"] = [
-            min(c[0] for c in d["corners_px"]), min(c[1] for c in d["corners_px"]),
-            max(c[0] for c in d["corners_px"]), max(c[1] for c in d["corners_px"]),
+            min(c["x"] for c in d["corners"]), min(c["y"] for c in d["corners"]),
+            max(c["x"] for c in d["corners"]), max(c["y"] for c in d["corners"]),
         ]
         results.append(out)
-    return results, rgb
+    return results
 
 
 async def _tag_watch_loop():
@@ -761,9 +773,9 @@ async def _tag_watch_loop():
         if not _tag_watch_enabled:
             continue
         try:
-            results, _ = await _scan_tags(update_waypoints=True)
+            results = await _scan_tags(update_waypoints=True)
         except Exception:
-            continue  # camera/rosbridge hiccup — try again next period
+            continue  # apriltag node/rosbridge hiccup — try again next period
         if results is not None:
             _tag_watch_last = {
                 "at": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
@@ -775,16 +787,23 @@ async def _tag_watch_loop():
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def detect_tags() -> list:
-    """Scan the current camera view for AprilTags. Registered tags come back
-    with their name/role ("doghouse" is home), distance, map position, and a
-    standoff pose 0.5 m in front of the tag — each sighting also refreshes a
-    waypoint named after the tag, so go_to_waypoint(name) drives there.
-    Returns detection JSON, then the camera frame with tags boxed."""
-    results, rgb = await _scan_tags(update_waypoints=True)
+    """Current AprilTag detections (from the apriltag_ros node watching the
+    camera). Registered tags come back with their name/role ("doghouse" is
+    home), map position, and a standoff pose 0.5 m in front of the tag —
+    each sighting also refreshes a waypoint named after the tag, so
+    go_to_waypoint(name) drives there. Returns detection JSON, then the
+    camera frame with tags boxed."""
+    results = await _scan_tags(update_waypoints=True)
     if results is None:
         raise ToolError(
-            f"no frame on {COLOR_TOPIC} within 4 s — is the robot service up?"
+            f"nothing on {DETECTIONS_TOPIC} within 1.5 s — apriltag node or "
+            "camera down (robot service up?)"
         )
+    async with RosBridge() as rb:
+        color = await rb.subscribe_once(
+            COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
+        )
+    rgb = _img_to_np(color) if color else np.zeros((8, 8, 3), np.uint8)
     boxes = [
         {
             "box": r.pop("_box"),
@@ -807,10 +826,12 @@ async def register_tag(
     role: str = "",
     size_m: float = 0.16,
 ) -> dict:
-    """Register (or update) an AprilTag: name it ("doghouse"), give it a role
-    ("home" marks the robot's home), and record the printed BLACK-SQUARE edge
-    length in meters (pose accuracy scales directly with this — measure the
-    print). Detection of registered families starts immediately."""
+    """Register (or update) an AprilTag's MEANING: name it ("doghouse"), give
+    it a role ("home" marks the robot's home), record its printed size.
+    ⚠ Detection coverage is separate: the apriltag_ros node detects the
+    family/size configured in scout/config/apriltag.yaml (robot-service
+    restart to change) — registering here names tags that node can already
+    see."""
     if not (0.01 <= size_m <= 2.0):
         raise ToolError("size_m implausible — meters, black square edge only")
     return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}

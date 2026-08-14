@@ -135,6 +135,15 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# apriltag_ros (christianrauch's ROS 2 port of the official AprilRobotics
+# wrapper): continuous AprilTag detection as a native node — /detections +
+# a TF frame per tag. Own RUN layer so adding it never invalidates the big
+# apt layer above.
+RUN apt-get update && apt-get install -y \
+    ros-humble-apriltag-ros \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # explore_lite (frontier exploration) — no Humble apt package; build into $OVERLAY.
 # Repo is a multi-package workspace; only lift explore + explore_lite_msgs into src.
 # Wipe ros_overlay_install after rebuild so the volume re-seeds with this package.

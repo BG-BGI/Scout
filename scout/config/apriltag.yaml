@@ -1,0 +1,28 @@
+# apriltag_ros (ros-humble-apriltag-ros 3.4.0): continuous AprilTag detection
+# on the D455 color stream. Publishes /detections (apriltag_msgs/
+# AprilTagDetectionArray) and a TF frame per detected tag.
+#
+# ⚠ Detection COVERAGE lives here (family + sizes need a node restart);
+# tag MEANING (names, roles, home, waypoints) lives in scout-skills' sqlite
+# registry at /maps/tags.db. One detector family per node — run a second
+# node instance if a second family is ever needed.
+#
+# The physical doghouse print: 200 mm page, 20 mm cells → the pose reference
+# square for tagStandard52h13 is 120 mm. Pose accuracy scales directly with
+# this number; re-measure if the tag is ever reprinted at another scale.
+apriltag:
+  ros__parameters:
+    image_transport: raw
+    family: Standard52h13
+    size: 0.12
+    max_hamming: 0
+    detector:
+      threads: 2
+      # Half-resolution quad detection: the decode still runs at full res.
+      # 1280x720@30 undecimated would eat a Pi core for no accuracy gain at
+      # room scale.
+      decimate: 2.0
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false

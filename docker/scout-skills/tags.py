@@ -1,19 +1,14 @@
-"""AprilTag detection + sqlite tag registry.
+"""AprilTag registry + map geometry. Detection itself runs in apriltag_ros
+(official wrapper, `apriltag` node in robot.launch.py) which publishes
+/detections and a TF frame per tag — this module only owns MEANING: the
+sqlite registry (name/role/size, "doghouse" = home) and the standoff math
+that turns a tag's TF frame into a waypoint.
 
 Registry lives at /maps/tags.db (the ./maps bind mount — same persistence
-story as waypoints.json): one row per physical tag, keyed (family, tag_id),
-with a human name ("doghouse"), a role ("home"), the printed black-square
-edge length, and the last place it was seen in the map frame.
-
-Detection is dt-apriltags (bundled C lib, aarch64 wheel — pupil-apriltags
-ships none). Pose trick: the detector takes ONE tag_size for a frame, but
-pose_t is linear in tag size, so we detect with tag_size=1.0 and scale each
-detection by its registered size afterwards.
-
-Tag-frame convention safety: rather than trusting which way the library
-points the tag's +z, the face normal is taken as whichever of ±(R @ z) points
-back toward the camera (negative z in the optical frame). The standoff point
-sits STANDOFF_M in front of the face along that normal.
+story as waypoints.json). Detection coverage (family, sizes) is configured
+in scout/config/apriltag.yaml and needs a robot-service restart to change;
+registering a tag here is instant but only names what the node can already
+see.
 """
 
 import math
@@ -24,16 +19,13 @@ import time
 import numpy as np
 
 DB_PATH = os.environ.get("TAGS_DB", "/maps/tags.db")
-DEFAULT_FAMILY = "tag36h11"
 STANDOFF_M = 0.5
 
-# ⚠ dt-apriltags traps, both measured 2026-08-14:
-#  - A multi-family Detector ("tag36h11 tagStandard52h13") SILENTLY detects
-#    nothing — frames that decode fine single-family return zero.
-#  - Destroying Detector instances corrupts malloc ("mismatching
-#    next->prev_size"). So: one persistent Detector per family, created once,
-#    NEVER dropped, and detection loops families sequentially.
-_detectors: dict[str, object] = {}
+
+def norm_family(fam: str) -> str:
+    """'tagStandard52h13' / 'Standard52h13' / '36h11' → comparable form."""
+    f = fam.lower()
+    return f[3:] if f.startswith("tag") else f
 
 
 # --- registry -----------------------------------------------------------------
@@ -58,6 +50,14 @@ def _connect() -> sqlite3.Connection:
 def all_tags() -> list[dict]:
     with _connect() as db:
         return [dict(r) for r in db.execute("SELECT * FROM tags ORDER BY name")]
+
+
+def lookup(family: str, tag_id: int) -> dict | None:
+    nf = norm_family(family)
+    for t in all_tags():
+        if t["tag_id"] == tag_id and norm_family(t["family"]) == nf:
+            return t
+    return None
 
 
 def upsert(name: str, tag_id: int, family: str, role: str, size_m: float) -> dict:
@@ -96,75 +96,33 @@ def record_sighting(family: str, tag_id: int, map_pose: tuple | None) -> None:
             )
 
 
-# --- detection ------------------------------------------------------------------
+# --- geometry -----------------------------------------------------------------
 
-def _get_detector(family: str):
-    if family not in _detectors:
-        from dt_apriltags import Detector  # deferred: loads the C lib
-
-        _detectors[family] = Detector(families=family, nthreads=2)
-    return _detectors[family]
-
-
-def registered_families() -> frozenset:
-    """Families of registered tags; the default only while the DB is empty
-    (so scanning does something before the first registration)."""
-    fams = {t["family"] for t in all_tags()}
-    return frozenset(fams or {DEFAULT_FAMILY})
-
-
-def detect(gray: np.ndarray, camera_params: tuple | None) -> list[dict]:
-    """Detections with unit-size pose (scale pose_t by the real tag size).
-    camera_params = (fx, fy, cx, cy) or None for detection without pose."""
-    raw = []
-    for family in sorted(registered_families()):
-        raw.extend(
-            _get_detector(family).detect(
-                gray,
-                estimate_tag_pose=camera_params is not None,
-                camera_params=camera_params,
-                tag_size=1.0,
-            )
-        )
-    out = []
-    for r in raw:
-        fam = r.tag_family.decode() if isinstance(r.tag_family, bytes) else str(r.tag_family)
-        d = {
-            "family": fam,
-            "tag_id": int(r.tag_id),
-            "center_px": [round(float(c), 1) for c in r.center],
-            "corners_px": [[float(x), float(y)] for x, y in r.corners],
-            "decision_margin": round(float(r.decision_margin), 1),
-        }
-        if camera_params is not None and r.pose_t is not None:
-            d["pose_t_unit"] = np.asarray(r.pose_t).flatten()
-            d["pose_R"] = np.asarray(r.pose_R)
-        out.append(d)
-    return out
-
-
-def map_geometry(det: dict, size_m: float, tree, cam_frame: str) -> dict:
-    """distance + map-frame tag position and standoff pose for one detection.
-    Returns {} when pose or TF is unavailable."""
-    if "pose_t_unit" not in det:
+def map_geometry(tree, tag_frame: str, robot_xy: tuple | None) -> dict:
+    """Tag's map position + a floor-level standoff pose STANDOFF_M in front
+    of its face, from the TF frame apriltag_ros publishes. The face normal is
+    the tag frame's z-axis, disambiguated toward the robot (conventions
+    differ on which way z points; the robot is by definition on the visible
+    side). Returns {} when the TF chain is incomplete."""
+    origin = tree.to_ancestor(np.zeros(3), tag_frame, "map")
+    z_tip = tree.to_ancestor(np.array([0.0, 0.0, 1.0]), tag_frame, "map")
+    if origin is None or z_tip is None:
         return {}
-    t_cam = det["pose_t_unit"] * size_m
-    out = {"distance_m": round(float(np.linalg.norm(t_cam)), 2)}
-    normal = det["pose_R"] @ np.array([0.0, 0.0, 1.0])
-    # Face normal points back toward the camera (−z in the optical frame),
-    # whichever way the library's tag frame is handed.
-    if normal[2] > 0:
-        normal = -normal
-    standoff_cam = t_cam + normal * STANDOFF_M
-    tag_map = tree.to_ancestor(t_cam, cam_frame, "map")
-    standoff_map = tree.to_ancestor(standoff_cam, cam_frame, "map")
-    if tag_map is None or standoff_map is None:
-        return out
-    yaw = math.atan2(tag_map[1] - standoff_map[1], tag_map[0] - standoff_map[0])
-    out["position_map"] = [round(float(c), 3) for c in tag_map[:2]]
+    normal = np.asarray(z_tip[:2]) - np.asarray(origin[:2])  # floor projection
+    n = np.linalg.norm(normal)
+    out = {"position_map": [round(float(c), 3) for c in origin[:2]]}
+    if n < 0.2:
+        return out  # tag lying flat — no meaningful approach direction
+    normal /= n
+    if robot_xy is not None:
+        to_robot = np.array([robot_xy[0] - origin[0], robot_xy[1] - origin[1]])
+        if float(normal @ to_robot) < 0:
+            normal = -normal
+    standoff = np.asarray(origin[:2]) + normal * STANDOFF_M
+    yaw = math.atan2(origin[1] - standoff[1], origin[0] - standoff[0])
     out["standoff"] = {
-        "x": round(float(standoff_map[0]), 3),
-        "y": round(float(standoff_map[1]), 3),
+        "x": round(float(standoff[0]), 3),
+        "y": round(float(standoff[1]), 3),
         "yaw": round(yaw, 3),
     }
     return out

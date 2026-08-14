@@ -185,4 +185,20 @@ def generate_launch_description():
             executable='link_watchdog',
             output='screen',
         ),
+
+        # Official AprilTag detector (apriltag_ros): /detections + a TF frame
+        # per tag off the D455 color stream. Tag MEANING (names/roles/home)
+        # lives in scout-skills' registry; coverage config in apriltag.yaml.
+        Node(
+            package='apriltag_ros',
+            executable='apriltag_node',
+            name='apriltag',
+            output='screen',
+            parameters=[os.path.join(config, 'apriltag.yaml')],
+            remappings=[
+                ('image_rect', '/camera/camera/color/image_raw'),
+                ('camera_info', '/camera/camera/color/camera_info'),
+                ('detections', '/detections'),
+            ],
+        ),
     ])

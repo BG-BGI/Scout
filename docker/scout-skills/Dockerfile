@@ -19,9 +19,11 @@ RUN yolo export model=yolo11n.pt format=onnx imgsz=640 && test -f /yolo11n.onnx
 
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # numpy/pillow/onnxruntime all ship aarch64 wheels; nothing here compiles.
-# dt-apriltags: the AprilTag detector with an actual aarch64 wheel (bundled C
-# lib via ctypes). pupil-apriltags ships none — do not swap.
-RUN uv pip install --system --no-cache "fastmcp>=2.10,<3" "websockets>=13" numpy pillow onnxruntime dt-apriltags
+# AprilTag detection runs in apriltag_ros (robot container) — this image only
+# consumes /detections over rosbridge, so no detector library here. (dt-
+# apriltags was tried and dropped: multi-family silently detects nothing and
+# Detector destruction corrupts malloc.)
+RUN uv pip install --system --no-cache "fastmcp>=2.10,<3" "websockets>=13" numpy pillow onnxruntime
 COPY --from=yolo-export /yolo11n.onnx /app/yolo11n.onnx
 COPY *.py /app/
 CMD ["python", "/app/server.py"]
