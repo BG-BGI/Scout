@@ -67,11 +67,35 @@ def _pose_of(msg: dict | None) -> dict | None:
 
 
 async def _robot_pose(rb: RosBridge) -> dict | None:
-    return _pose_of(
+    """Map-frame pose. /pose first, but slam only publishes it per PROCESSED
+    scan — a stationary robot goes silent (keyframe gating). Fall back to
+    composing map→odom (slam, 50 Hz) ∘ odom→base_link (EKF, 30 Hz) from /tf,
+    which never stops."""
+    pose = _pose_of(
         await rb.subscribe_once(
             "/pose", "geometry_msgs/msg/PoseWithCovarianceStamped", timeout=1.5
         )
     )
+    if pose is not None:
+        return pose
+    tfs: dict[str, tuple] = {}
+    for m in await rb.subscribe_collect("/tf", "tf2_msgs/msg/TFMessage", duration=1.0):
+        for t in m["transforms"]:
+            tr, q = t["transform"]["translation"], t["transform"]["rotation"]
+            tfs[t["header"]["frame_id"]] = (
+                tr["x"], tr["y"], 2 * math.atan2(q["z"], q["w"])
+            )
+        if {"map", "odom"} <= tfs.keys():
+            break
+    if not ({"map", "odom"} <= tfs.keys()):
+        return None
+    mx, my, myaw = tfs["map"]
+    ox, oy, oyaw = tfs["odom"]
+    return {
+        "x": round(mx + ox * math.cos(myaw) - oy * math.sin(myaw), 3),
+        "y": round(my + ox * math.sin(myaw) + oy * math.cos(myaw), 3),
+        "yaw": round(math.atan2(math.sin(myaw + oyaw), math.cos(myaw + oyaw)), 3),
+    }
 
 
 # Both bt_navigator actions; single-goal go_to rides the first, go_through/
