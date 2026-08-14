@@ -31,13 +31,16 @@ docker stop <container>             # ends cmd_vel; deadman free-wheels within 2
 
 That is a **coast, not a brake** (idle mode is Free Wheeling). There is no hardware e-stop; S3 is still free for one.
 
-## Known fault: front-left tire is flat (found 2026-07-30, repair deferred)
+## Tire state: ALL FOUR DELIBERATELY DEFLATED (2026-08-14, operator's traction fix)
 
-- It is the entire explanation for direction-dependent pivot dragging. The old diagnostic ladder — high-resistance motor connection, bearing/gearbox drag, hub slip — is retired. No time should go into it.
-- **Mitigation: keep in-place rotations at or above ~2.5 rad/s.** Above that the motor overcomes the flat tire's fixed drag torque and scrubbing disappears. This is a wear limit, not an accuracy one.
-- **Odometry is unaffected.** `/odom` yaw comes from the gyro through the EKF, never the encoders. The tire costs wear and command fidelity only, which is why it is tolerable.
-- **The driver cannot see it, and will not see the next one either.** Two motors per side are paralleled on one channel with **only the rear encoders wired**, so the velocity loop closes on the rear wheel. Paralleled DC motors share terminal voltage, not speed — the front can stall while the rear spins normally and neither the PID nor the encoders notice. **Watch that all four wheels actually turn during a pivot** before trusting rotation behaviour.
-- **"Firm by feel" is not good enough.** Tires inflated and judged firm by hand still showed full asymmetry an hour later, so a slow leak is implied and re-inflating alone will not hold. On repair, record a **gauge reading** and the **axle-centre height to the floor under load** — the height marker re-checks without a gauge.
+Soft tires are the operating condition, not a fault. The old flat-front-left story (2026-07-30) and its 2.5 rad/s stall floor are RETIRED — measurements below supersede everything from the inflated era.
+
+- **wheel_radius is 0.0780** (re-verified by 2 m out-and-back tape test: wheels under-report +0.70% deflated; robot returned to the mark within 0.5 in). Re-run the tape test after any pressure change.
+- **Pivots scrub enormously but nothing stalls.** wheel/gyro yaw ratio at 1.5 rad/s: **1.93 CCW / 1.60 CW** (all four wheels visibly turning, at different rates — normal for voltage-sharing paralleled fronts). A ~20% direction asymmetry persists; it costs nothing because yaw is gyro-fused.
+- **Pivot walk is the real cost, and speed is the mitigation: ~10 cm/rev at 1.5 rad/s vs ~2.5 cm/rev at 2.5 rad/s.** So 2.5 stays the *recommended* pivot rate where position matters (tight spaces, scout-skills `rotate` default, tight-tunnel profile) — as a walk minimizer, not a stall floor. The hard clamps were removed from joystick_teleop and trick_player.
+- **Straight-line behavior is unaffected**: out-and-back legs matched to 0.3%, net drift 1.3 cm over 4 m.
+- **The paralleled-front blindness still applies**: only rear encoders are wired, fronts share voltage not speed — watch all four wheels during any new pivot diagnosis.
+- **Duty/motor-volt tables elsewhere in this file predate deflation** (straight-line ~15 V/m/s, pivot duty ceilings, carpet numbers). Soft tires drag more; re-measure before leaning on those numbers for margin calculations.
 
 ## Hardware
 
@@ -160,7 +163,7 @@ Forward-side motor volts to hold a commanded in-place spin (155 mm wheels, ~19.2
 
 Tuned so far: velocity PID (NVM), `max_angular_velocity: 3.0`, `max_linear_velocity: 1.0`, `accel: 20000`.
 
-- **`wheel_radius: 0.0775` is VERIFIED on hard floor post-inflation — do not change it.** A 2 m drive measured 81 in (2.0574 m) by tape vs 2.0464 m reported (+0.54%), which implies 0.0779 but sits *inside* the ±0.5 in tape precision. Effective rolling radius ≈ the 155 mm nominal, so tires barely deflect. Note this only exercised the **rear** pair and says nothing about the front. Method: drive out and back, compare tape against **net displacement**, not path length
+- **`wheel_radius: 0.0780` — re-verified 2026-08-14 on DEFLATED tires** (tape 2.0066 m vs wheel odom 1.9896/1.9958 per leg → +0.70%; the inflated-era 0.0775 measured +0.54% the same way). Tires barely deflect even soft. Only exercises the **rear** pair. Method: drive out and back, compare tape against **net displacement**, not path length; re-run after any pressure change
 - **`wheel_separation: 0.278` is the URDF geometric track and is deliberately NOT calibrated.** A skid-steer pivot scrubs by definition, so the chassis always rotates less than the wheels imply and **encoder-only yaw is untrustworthy at any value** — which is why yaw is fused from the IMU. Also: only the rear encoders are wired, so front-wheel scrub is invisible to the very sensors that would measure it; and scrub depends on speed and surface, so no single constant is correct. Calibrating it would buy **command fidelity** (a commanded ω under-produces yaw) but nothing for odometry
 - **Straight-line quality after inflation is excellent:** forward vs reverse displacement agreed to 0.02% and heading changed ≤0.1° over 2 m
 - **⚠ Two traps when reading wheel positions out of the URDF.** The wheel joints are children of `chassis_link`, and `base_link_to_chassis` carries a **90° yaw**, so chassis-frame axes are swapped relative to the robot's — the lateral offset is the `0.111` component, not `0.089606`. And a joint origin sits at the **inboard hub face**, not the tire centreline: `wheel_link.STL` spans `0 … 0.0562` along its rotation axis at radius 0.079. Skip either correction and the geometry is wrong by tens of percent

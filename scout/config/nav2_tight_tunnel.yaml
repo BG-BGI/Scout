@@ -1,6 +1,7 @@
 # Nav2: tight-tunnel / pipe profile. Copy of nav2.yaml retuned for corridors barely
-# wider than the chassis, fast in-place pivots (>= 2.5 rad/s for the flat tire), reverse
-# for dead ends, and lidar-only local costmap (no depth OA).
+# wider than the chassis, fast in-place pivots (>= 2.5 rad/s minimizes pivot walk on the
+# deflated tires — ~2.5 cm/rev vs ~10 at 1.5, and walk IS position error in a pipe),
+# reverse for dead ends, and lidar-only local costmap (no depth OA).
 #
 # Launch: ros2 launch nav2_bringup navigation_launch.py \
 #           params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false
@@ -168,7 +169,8 @@ controller_server:
       # 0.5 m default because the whole robot is only 0.337 m long, so 0.5 m reaches past
       # the first turn in tight quarters and would aim at the wrong thing.
       forward_sampling_distance: 0.2
-      # Flat-tire scrub floor: pivots must be >= ~2.5 rad/s or the front-left drags.
+      # 2.5 rad/s minimizes pivot walk on the deflated tires (2026-08-14: ~2.5 cm/rev
+      # vs ~10 at 1.5 rad/s). In a pipe, walk is lateral position error — keep it fast.
       rotate_to_heading_angular_vel: 2.5
       max_angular_accel: 5.0
       # Refuse the pivot if the footprint would sweep into something within 1 s.

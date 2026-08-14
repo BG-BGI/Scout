@@ -431,7 +431,10 @@ async def rotate(angle_rad: float, speed: float = 2.5) -> dict:
     """SMALL PRECISE ADJUSTMENTS ONLY (facing a target for a photo) — for
     travel let go_to/go_through handle heading. Rotates in place angle_rad
     radians (positive = counterclockwise/left), closed-loop on the fused gyro
-    yaw. BLOCKS until done. speed clamps to 0.35–3.0 rad/s; |angle| ≤ 2π."""
+    yaw. BLOCKS until done. speed clamps to 0.35–3.0 rad/s; |angle| ≤ 2π.
+    Keep the default 2.5 — slower pivots make the soft tires walk sideways
+    (~10 cm/rev at 1.5 vs ~2.5 cm at 2.5); the heading is accurate at any
+    speed (gyro-measured)."""
     if not angle_rad or abs(angle_rad) > MAX_ROTATE_RAD:
         raise ToolError(f"angle_rad must be non-zero and ≤ {MAX_ROTATE_RAD:.3f}")
     await _require_motion_idle()

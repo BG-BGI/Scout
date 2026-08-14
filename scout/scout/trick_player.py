@@ -10,9 +10,11 @@ joystick_teleop uses, so there is no mux and no stomping.
 
 Safety:
   * Segments are clamped to roboclaw.yaml's real caps (1.0 m/s, 3.0 rad/s).
-  * Pure pivots must command >= min_pivot_rate (2.5 rad/s) — below that the
-    flat front-left tire's drag torque wins and the robot scrubs in place.
-    Arcs (vx != 0) are exempt; the floor is a pivot phenomenon.
+  * Pure pivots must command >= min_pivot_rate (0.35 rad/s, the drivetrain's
+    velocity-loop tracking floor). The old 2.5 flat-tire stall floor is gone
+    (2026-08-14, tires deflated: all four wheels turn at any rate); fast
+    pivots still walk less (~2.5 cm/rev at 2.5 rad/s vs ~10 at 1.5), which
+    for tricks is cosmetic. Arcs (vx != 0) are exempt.
   * Tricks are refused below battery_floor_volts: they run at high duty and a
     sagging pack near the RoboClaw's 16.0 V Min Main trip would chatter.
 """
@@ -103,7 +105,7 @@ def _validate_tricks(min_pivot_rate):
                 raise ValueError('%s[%d]: |wz| %.2f > %.2f' % (name, i, wz, MAX_ANGULAR))
             if vx == 0.0 and wz != 0.0 and abs(wz) < min_pivot_rate:
                 raise ValueError(
-                    '%s[%d]: pivot at %.2f rad/s is under the %.2f flat-tire floor'
+                    '%s[%d]: pivot at %.2f rad/s is under the %.2f tracking floor'
                     % (name, i, wz, min_pivot_rate))
         if name not in TRICK_LED:
             raise ValueError('%s: missing TRICK_LED entry' % name)
@@ -116,7 +118,7 @@ class TrickPlayer(Node):
         super().__init__('trick_player')
 
         self.declare_parameter('publish_hz', 30.0)
-        self.declare_parameter('min_pivot_rate', 2.5)
+        self.declare_parameter('min_pivot_rate', 0.35)
         self.declare_parameter('battery_floor_volts', 17.0)
 
         publish_hz = float(self.get_parameter('publish_hz').value)
