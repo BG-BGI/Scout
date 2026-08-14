@@ -76,12 +76,22 @@ run` container on the Pi during navigation starves the stack and aborts goals
    (`docker compose logs slam | grep -ci loop`), CPU (`top` one shot).
 6. Repeat once. Repeatability matters more than any single number.
 
-| Metric | Baseline (2026-08-03, inflated tires) | Post-recal run 1 | Run 2 |
+| Metric | Baseline (2026-08-03, inflated tires) | Loop 1 (fresh 5-min map) | Loop 2 (same map, 10 min old) |
 |---|---|---|---|
-| map→odom correction over loop | 0.30 m / 2.1° per ~17 m | TBD | TBD |
-| Stationary relocalization | 1 mm | TBD | TBD |
-| Return-to-mark error | — (never measured) | 15–30 cm total per ~15–20 m, ≈14 cm of it the xy_goal_tolerance stop-short → **2–16 cm real** (2026-08-14, deflated tires, INCLUDING a mid-drive graph re-solve; start reconstructed through odom) | TBD |
-| Loop closures per loop | — | ≥1 (whole-map ~40° re-solve mid-drive) | TBD |
+| map→odom net correction over loop | 0.30 m / 2.1° per ~17 m | **0.66 m / 12.2°** (young-graph re-solve mid-run) | **0.05 m / 2.2°** — 10× calmer one loop later |
+| Return-to-mark error (tape) | — (never measured) | 20 cm total − ~14 cm tolerance stop-short ≈ **6 cm real** | **≈0 — dead on the marks** (tape precision) |
+| map→odom idle jitter | — | 0.0000 m / 0.000° over 30 s (measured same day) | — |
+| Loop closures per loop | — | ≥1 (−12° frame re-solve) | small (+2.2°) |
+
+Protocol completed 2026-08-14, both loops ~6 m in the office main room,
+deflated tires, 0.6 m/s cap. **Conclusions:** (a) fused localization returns
+the robot to a physical mark within tape precision once the pose graph has a
+few minutes of history; (b) a fresh map's frame swings hard (0.66 m/12°) for
+the first loops — one more reason not to point-drive a young map (see the
+lesson above); (c) deflated tires do not visibly degrade loop performance —
+gyro yaw + rear encoders carry it. Earlier same-day datum on the day's messy
+long-session map: 2–16 cm real return error per ~15–20 m including a ~40°
+re-solve. The 2026-08-03 baseline is matched or beaten.
 
 **Run 1 of the closed-loop protocol (2026-08-14 office/hallway): INVALID — three
 compounding failures, all instructive.**
