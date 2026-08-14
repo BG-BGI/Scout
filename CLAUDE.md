@@ -40,6 +40,7 @@ Soft tires are the operating condition, not a fault. The old flat-front-left sto
 - **Pivot walk is the real cost, and speed is the mitigation: ~10 cm/rev at 1.5 rad/s vs ~2.5 cm/rev at 2.5 rad/s.** So 2.5 stays the *recommended* pivot rate where position matters (tight spaces, scout-skills `rotate` default, tight-tunnel profile) — as a walk minimizer, not a stall floor. The hard clamps were removed from joystick_teleop and trick_player.
 - **Straight-line behavior is unaffected**: out-and-back legs matched to 0.3%, net drift 1.3 cm over 4 m.
 - **The paralleled-front blindness still applies**: only rear encoders are wired, fronts share voltage not speed — watch all four wheels during any new pivot diagnosis.
+- **"Front wheel screams, rear looks stopped" during pivots is NOT a fault (measured 2026-08-14).** During CCW pivots (the high-scrub direction) a front wheel breaks traction and freewheels fast at the shared channel voltage while the rear tracks its commanded ~0.6 rev/s — dramatic contrast that reads as a stalled rear. Instrumented: rear encoders never dropped below normal speed, channel currents 1.6–1.8 A mean / 2.7 A max (stall would be ~5 A, open rear circuit ~0.3 A). Electrically healthy; the costs are front tire wear and the 1.93/1.60 scrub asymmetry. Mitigation if ever needed: firmer front tires than rears.
 - **Duty/motor-volt tables elsewhere in this file predate deflation** (straight-line ~15 V/m/s, pivot duty ceilings, carpet numbers). Soft tires drag more; re-measure before leaning on those numbers for margin calculations.
 
 ## Hardware
