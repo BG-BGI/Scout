@@ -176,4 +176,13 @@ def generate_launch_description():
             output='screen',
             condition=IfCondition(enable_joystick),
         ),
+
+        # Link-loss watchdog: 5 s without gateway reachability cancels+stashes
+        # nav goals, link recovery within 2 min re-dispatches them, longer
+        # drops them. Born of the WiFi-dead-zone runaway (2026-08-14).
+        Node(
+            package='scout',
+            executable='link_watchdog',
+            output='screen',
+        ),
     ])

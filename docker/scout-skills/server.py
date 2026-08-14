@@ -260,6 +260,17 @@ async def _dispatch_through(points: list[list[float]], final_yaw: float | None) 
 
     action = "/navigate_through_poses"
     async with RosBridge() as rb:
+        # Mirror the route onto a plain topic for link_watchdog: action goals
+        # are not observable on the wire, and the watchdog needs the poses to
+        # re-dispatch after a link-loss pause.
+        await rb.publish(
+            "/route_poses",
+            "geometry_msgs/msg/PoseArray",
+            {
+                "header": {"frame_id": "map", "stamp": {"sec": 0, "nanosec": 0}},
+                "poses": [p["pose"] for p in poses],
+            },
+        )
         # Subscribe BEFORE sending so the accept transition cannot race in
         # ahead of the subscription.
         await rb.subscribe(

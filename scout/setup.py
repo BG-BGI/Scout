@@ -40,6 +40,7 @@ setup(
             'follow_me = scout.follow_me:main',
             'clutter_mapper = scout.clutter_mapper:main',
             'patrol_capture = scout.patrol_capture:main',
+            'link_watchdog = scout.link_watchdog:main',
         ],
     },
 )
