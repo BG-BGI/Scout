@@ -157,7 +157,10 @@ async def get_map() -> list:
             "world_y = origin_world[1] + ((image_height - py) / scale) * resolution"
         ),
     }
-    return [json.dumps(meta), Image(data=png, format="png")]
+    # .to_image_content(): fastmcp ≥2.14 JSON-serializes list items unless
+    # they are already MCP content blocks — a bare Image in a list raises
+    # "Unable to serialize unknown type".
+    return [json.dumps(meta), Image(data=png, format="png").to_image_content()]
 
 
 def _stamped_pose(x: float, y: float, yaw: float) -> dict:
@@ -587,7 +590,10 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
         "min_confidence": min_confidence,
         "notes": notes or "position_map feeds go_to directly",
     }
-    return [json.dumps(meta), Image(data=png, format="png")]
+    # .to_image_content(): fastmcp ≥2.14 JSON-serializes list items unless
+    # they are already MCP content blocks — a bare Image in a list raises
+    # "Unable to serialize unknown type".
+    return [json.dumps(meta), Image(data=png, format="png").to_image_content()]
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
