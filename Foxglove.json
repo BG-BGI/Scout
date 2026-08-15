@@ -326,6 +326,13 @@
       "buttonText": "Lights",
       "editingMode": true,
       "foxglovePanelTitle": "LED Mode"
+    },
+    "DiagnosticSummary!scout1": {
+      "minLevel": 0,
+      "pinnedIds": [],
+      "hardwareIdFilter": "",
+      "topicToRender": "/diagnostics",
+      "sortByLevel": true
     }
   },
   "globalVariables": {},
@@ -342,10 +349,15 @@
         "direction": "column"
       },
       "second": {
-        "first": "Gauge!2wgcbj6",
-        "second": "CallService!p1hfrr",
+        "first": {
+          "first": "Gauge!2wgcbj6",
+          "second": "CallService!p1hfrr",
+          "direction": "column",
+          "splitPercentage": 2
+        },
+        "second": "DiagnosticSummary!scout1",
         "direction": "column",
-        "splitPercentage": 2
+        "splitPercentage": 60
       },
       "direction": "column",
       "splitPercentage": 68.36159900037285

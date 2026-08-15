@@ -50,6 +50,13 @@ header h1 { font-size: 1.05rem; letter-spacing: 0.02em; margin-right: auto; }
 .badge.disconnected { border-color: var(--bad); color: var(--bad); }
 .badge.batt-warn { border-color: var(--warn); color: var(--warn); }
 .badge.batt-bad { border-color: var(--bad); color: var(--bad); }
+.badge.stale { border-color: var(--dim); color: var(--dim); }
+
+#health-list { list-style: none; padding: 0; margin: 0.4rem 0 0; }
+#health-list .health-item { padding: 0.15rem 0; }
+#health-list .batt-warn { color: var(--warn); }
+#health-list .batt-bad { color: var(--bad); }
+#health-list .stale { color: var(--dim); }
 
 /* --- app frame ------------------------------------------------------------------
    Phone (default): one scrolling column, teleop first: STOP+pad, map, panels.

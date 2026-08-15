@@ -262,6 +262,53 @@ batteryTopic.subscribe((msg) => {
      msg.voltage <= BATT_WARN_V ? ' batt-warn' : '');
 });
 
+// --- health strip (ADR-0014) ----------------------------------------------------------
+// health_monitor aggregates battery/tilt/drivetrain onto /diagnostics at 1 Hz
+// with a roll-up status named 'scout'. Badge shows the roll-up; the Health
+// panel lists every item. If /diagnostics itself goes quiet (robot service
+// down), the badge grays out — absence of data must not look like OK.
+const healthBadge = document.getElementById('health');
+const healthWorst = document.getElementById('health-worst');
+const healthList = document.getElementById('health-list');
+// DiagnosticStatus levels: 0 OK, 1 WARN, 2 ERROR, 3 STALE.
+const HEALTH_CLS = { 0: '', 1: ' batt-warn', 2: ' batt-bad', 3: ' stale' };
+const HEALTH_TXT = { 0: 'ok', 1: 'WARN', 2: 'ERROR', 3: 'STALE' };
+let healthLastMs = 0;
+
+new ROSLIB.Topic({
+  ros, name: '/diagnostics', messageType: 'diagnostic_msgs/msg/DiagnosticArray',
+  throttle_rate: 1000, queue_length: 1,
+}).subscribe((msg) => {
+  healthLastMs = performance.now();
+  // level is a byte field — rosbridge may deliver number or 1-char string.
+  const lvl = (s) => (typeof s.level === 'string' ? s.level.charCodeAt(0) : s.level);
+  const rollup = msg.status.find((s) => s.name === 'scout');
+  const items = msg.status.filter((s) => s.name !== 'scout');
+  const worst = rollup ? lvl(rollup)
+    : Math.max(0, ...items.map(lvl));
+  healthBadge.textContent = 'health ' + (HEALTH_TXT[worst] || worst);
+  healthBadge.className = 'badge' + (HEALTH_CLS[worst] || '');
+  const worstItem = items.filter((s) => lvl(s) === worst)[0];
+  healthWorst.textContent = worst === 0 ? 'ok'
+    : (worstItem ? worstItem.message : HEALTH_TXT[worst]);
+  healthList.innerHTML = '';
+  items.forEach((s) => {
+    const li = document.createElement('li');
+    li.textContent = (HEALTH_TXT[lvl(s)] || '?') + ' — ' + s.message;
+    li.className = 'health-item' + (HEALTH_CLS[lvl(s)] || '');
+    healthList.appendChild(li);
+  });
+});
+
+// Gray the badge when the aggregator itself goes silent (>3 s at its 1 Hz).
+setInterval(() => {
+  if (healthLastMs && performance.now() - healthLastMs > 3000) {
+    healthBadge.textContent = 'health —';
+    healthBadge.className = 'badge stale';
+    healthWorst.textContent = 'no /diagnostics';
+  }
+}, 1000);
+
 // --- tricks -------------------------------------------------------------------------
 const trickState = document.getElementById('trick-state');
 const trickButtons = document.querySelectorAll('#tricks button');

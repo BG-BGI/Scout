@@ -12,6 +12,7 @@
   <h1>Scout</h1>
   <div id="conn" class="badge disconnected">connecting…</div>
   <div id="battery" class="badge">— V</div>
+  <div id="health" class="badge stale">health —</div>
 </header>
 
 <main>
@@ -104,6 +105,11 @@
         <button data-trick="disco">Disco</button>
         <button data-trick="burnout">Burnout</button>
       </div>
+    </details>
+
+    <details class="panel">
+      <summary><h2>Health <span id="health-worst" class="dim">—</span></h2></summary>
+      <ul id="health-list" class="dim"></ul>
     </details>
 
     <details class="panel">

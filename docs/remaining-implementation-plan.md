@@ -592,9 +592,10 @@ levels in pure `scout.core.health`. ADR-0014. Landed: `scout/scout/health_monito
 - Confirm `diagnostic_msgs` is in the image (`ros2 interface show
   diagnostic_msgs/msg/DiagnosticArray`); if absent, add `ros-humble-diagnostic-msgs`
   *after* the librealsense RUN (image rebuild).
-- **webui health strip** (`webui/index.html`/`app.js`/`style.css`): subscribe
-  `/diagnostics` over rosbridge (roslibjs), colour by worst level. Browser-only
-  verification. **Foxglove:** add a Diagnostics panel to `Foxglove.json`.
+- ✅ **webui health strip** landed (header badge = 'scout' roll-up, Health
+  panel lists items, badge grays out if /diagnostics goes silent >3 s) +
+  **Foxglove.json DiagnosticSummary panel** added. Browser-vs-robot
+  verification still open.
 - **Later (needs on-hardware JSON):** add drivetrain temps + RoboClaw error flags
   once the `/roboclaw_status` keys past `main_battery`/`m1_speed`/`m2_speed` are
   read on the robot — do not guess field names (ADR-0014).
