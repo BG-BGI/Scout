@@ -1,0 +1,95 @@
+# Scout — domain context
+
+Orientation for the software architecture. **CLAUDE.md** stays the hardware +
+tuning log (measurements, PID, geometry); **docs/adr/** records the decisions.
+This file names the concepts and maps the running system.
+
+## Glossary
+
+- **deadman** — the RoboClaw stops the motors if it gets no valid packet for
+  `max_seconds_uncommanded_travel` (0.2 s). Idle mode is Free Wheeling, so this
+  is a *coast*, not a brake. Every cmd_vel producer must stream ≥5 Hz.
+- **zero-burst / STOP_GRACE** — a producer stops by publishing ~0.3 s of zero
+  Twists (a commanded stop) then going silent (handing cmd_vel to others).
+  Owned by `CmdVelSource`.
+- **cmd_vel arbiter (twist_mux)** — every motion source publishes its own
+  `/cmd_vel_*`; twist_mux forwards the highest-priority fresh one to
+  `/cmd_vel_out`, which the driver drives. See ADR-0001.
+- **software e-stop** — the `/estop` twist_mux lock + an active-brake burst on
+  `/cmd_vel_stop`. Latching; fail-safe (a dead estop node = locked). No hardware
+  e-stop exists. See ADR-0001.
+- **velocity-loop floor** — ~0.05 m/s linear / ~0.35 rad/s pivot; below it the
+  encoders quantization-stall. Advisory, not a clamp.
+- **scrub floor / recommended pivot (2.5 rad/s)** — a skid-steer pivot walks;
+  faster pivots walk less. A walk minimizer where position matters, NOT a stall
+  clamp (the old flat-tire clamp is retired — ADR-0008).
+- **under-lidar band (0.05–0.25 m)** — the height slice below the lidar's 24 cm
+  plane where the D455 depth cloud catches chair bases / shoes / thresholds.
+- **clutter** — persistent, map-frame memory of under-lidar obstacles
+  (`clutter_mapper`), vs the live per-scan obstacle gate inside `follow_me`.
+- **mover rejection / dwell / confirm window** — a grid cell only counts as a
+  real obstacle after being seen ≥N times across a time span; a walking foot
+  sweeps a cell too fast to confirm, so movers never stick.
+- **see-through clearing** — a marked cell is cleared when a live ray reaches
+  past it (the camera saw through where the mark was → it moved).
+- **waypoint / route / patrol run / mark** — a named map pose; an ordered list
+  of them; one execution of a route with photo capture; the act of recording
+  the current pose as a waypoint. See ADR-0011.
+- **coverage box** — a polygon dragged on the web map; planned into a serpentine
+  route (`scout.core.coverage`).
+- **standoff / seek / reacquire** — follow_me's target distance; its lost-target
+  pursuit to the loss anchor; its motion-gated re-lock after occlusion.
+- **tag registry vs detection coverage** — the AprilTag *meaning* (names, roles,
+  home) lives in scout-skills' sqlite; *which family/size is detected* lives in
+  `apriltag.yaml`. See ADR-0006.
+- **profile (default / tight_tunnel)** — a named set of nav2/slam/realsense
+  parameter deltas for a scenario. See ADR-0010.
+- **robot profile (robot_profile.yaml)** — the cross-surface SSOT for velocity
+  caps, floors, rates, topic names, LED modes, status names, thresholds. Read by
+  the ROS nodes, scout-skills, and the webui. Distinct from a *profile* above.
+- **overlay volume** — the `ros_overlay_install` named volume holding the built
+  workspace; seeds once from the image. See ADR-0005.
+
+## System map (nodes → topics/services)
+
+Core stack (`robot.launch.py`, compose `robot`):
+
+| node | in | out | srv |
+|---|---|---|---|
+| roboclaw_driver | `/cmd_vel_out` | `/wheel_odom`, `/roboclaw_status`, `/joint_states` | — |
+| twist_mux | `/cmd_vel_*` + `/estop` | `/cmd_vel_out` | — |
+| estop | — | `/estop`, `/cmd_vel_stop` | `/estop/engage`,`/estop/release` |
+| battery_monitor | `/roboclaw_status` | `/battery` | — |
+| gyro_calibrator | `/camera/camera/imu` | `/imu/data` | — |
+| ekf_filter_node | `/wheel_odom`,`/imu/data` | `/odom` (+ odom→base_link TF) | — |
+| led_node | — | (APA102 SPI) | `/set_led_mode` |
+| led_status | `/battery`,`/trick_status`,`/follow_status`,`/estop`,`/connected_clients` | → `/set_led_mode` | `/set_user_led` |
+| joystick_teleop | joydev, `/follow_status` | `/cmd_vel_joy` | — |
+| trick_player | `/battery` | `/cmd_vel_trick`,`/trick_status` | `/play_trick`,`/stop_trick` |
+| follow_me | `/scan`, depth cloud | `/cmd_vel_follow`,`/follow_status` | `/follow_me/start`,`/stop` |
+| clutter_mapper | depth cloud, TF | `/clutter_map`,`/clutter_points` | `/clutter/save`,`/clear` |
+| patrol_capture | color, `/battery`,`/map`,`/coverage_box` | `/cmd_vel`(via nav2),`/patrol_status`,`/patrol_route` | `/patrol/{mark,clear,start,stop}` |
+| link_watchdog | `/goal_pose`,`/route_poses`, action status | `/goal_pose`, cancels | — |
+| tilt_monitor | `/imu/data` | `/tilt_alarm`,`/explore/resume` | — |
+| apriltag | color | `/detections` + tag TF | — |
+
+Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
+(navigation_launch.py → `/cmd_vel` at lowest mux priority), `foxglove_bridge`,
+`rosbridge`, `webui`, `ros_mcp`, `scout_skills` (MCP over rosbridge :9001).
+
+## Files on the Pi (bind-mounted `./` into the container)
+
+- `maps/waypoints.json` — named waypoints + routes (ADR-0011); gitignored.
+- `maps/tags.db` — AprilTag registry (sqlite); gitignored.
+- `maps/*.posegraph`,`*.data` — slam_toolbox serialized maps; gitignored.
+- `maps/clutter.npz` — persistent clutter grid (only under slam localization).
+- `captures/<runstamp>/` — patrol photos + manifest.
+
+## Status wire formats (std_msgs/String, split on `|`)
+
+- `/trick_status`: `idle` | `name|#RRGGBB|mode`
+- `/follow_status`: `idle` | `searching` | `seeking` | `locked|dist|deg` | `blocked`
+- `/patrol_status`: `idle|<n>` | `<state>|<n>|<i>/<n>` | `plan|<text>`
+
+Kept as strings deliberately (ADR-0012); consumers on both sides of the
+rosbridge boundary parse them, so the formats are frozen by tests.
