@@ -8,27 +8,64 @@ Read this top to bottom once, then work a milestone at a time.
 
 ## 0. Current state — read first
 
-**Branch:** `web-ui`. Six commits landed, **nothing pushed**:
+**Branch:** `web-ui`, **nothing pushed.** All the software milestones are landed
+and pass the gate (`ruff check .` + `PYTHONPATH=scout pytest scout/test` — 57
+pass, 1 skip). M1–M3, M6-core, M8 (earlier), the ADR-0013 convention pass, then
+this session: **M7, M4, M5**. What's left is **verification you can only do on
+the Pi**, plus **one deliberately-unstarted code task (M6-5b)** — see the
+checklist below.
 
-```
-747312e M8: ADRs + CONTEXT.md
-da87c78 M6 (part 2): adopt geometry + TF helpers + run_node
-02867ce M6 (part 1): pure scout.core package + test suite
-61c887a M3: cmd_vel arbitration (twist_mux) + CmdVelSource + e-stop
-6f7f270 M2: robot profile — single source of truth
-0c9f120 M1: safety + bug sweep
-```
+### ✅ Done (code complete, gate-green)
+- **M1** safety + bug sweep · **M2** robot_profile SSOT · **M3** twist_mux + e-stop
+- **M6 core** `scout.core` (geometry/battery/coverage/colors/tricks/status) +
+  node adoption + tests · **M8** ADRs + CONTEXT.md
+- **ADR-0013** ruff + SC1–SC10 structural tests + CI (also finished M6-5a
+  battery adoption, 5c run_node-everywhere, 5d status formatters)
+- **M7** one waypoint/route store (`core/waypoints.py`, patrol_capture +
+  scout-skills v2, `scripts/migrate_waypoints.py`) — ADR-0011
+- **M4** config overlays + `SCOUT_PROFILE` knob (`overlays/tight_tunnel/*`,
+  `nav2.launch.py`, deep-merge in robot_profile; forks deleted, 0-diff verified)
+  — ADR-0010
+- **M5** overlay-volume stamp guard + `privileged`→robot-only + `build`→
+  build_package-only — ADR-0005
 
-**⚠ On top of those 7 commits, an UNCOMMITTED convention pass (ADR-0013) is in
-the working tree — commit it first.** It added ruff + structural convention
-tests (SC1–SC10) + CI, and while landing them it finished several M6 deferrals.
-Confirm with `git status` and land it before starting anything below. What it
-did (verified 2026-08-15): `scout.core.status` (status formatters — §5d), the
-`battery_monitor` → `scout.core.battery` adoption (§5a), `run_node` in every
-node (§5c), `scout/scout/qos.py` (`LATCHED_QOS` + the sensor-QoS convention),
-ruff replacing `ament_flake8` (`test_flake8.py` deleted), and moving config
-resolution into `robot_profile.py` (`resolve_config` / `resolve_config_dir`,
-SC6 — so **M4 does NOT create `launch_utils.py`**).
+### ☐ OPEN TASKS
+
+**A. On-Pi / on-bench verification (no code; operator gated). See the noted §.**
+1. **M3 on-blocks gate** (twist_mux) — MUST pass before any floor driving. §1.
+2. **M4 param-dump equivalence** — `ros2 param dump` default profile == baseline
+   (empty diff); tight_tunnel sentinels + coupling guard. §2.6.
+3. **M5 stamp guard** — rebuild, confirm it hard-fails on a stale volume then
+   `down -v` recovers. §3.
+4. **M7 migration + drive** — run `scripts/migrate_waypoints.py maps/`, then
+   mark→start→photo and skills `patrol(<route>)`. §4.
+
+**B. Needs network or a Pi image build (small, deferred from M5). §3.**
+5. Pin the 3 source forks (roboclaw_driver, rplidar_ros, m-explore-ros2) to
+   commit SHAs (`git ls-remote` for tips, then `checkout --detach`).
+6. Move the roboclaw layer below librealsense (layer-order rule → structural).
+7. Trim webui/foxglove bind mounts (webui/robot_profile.yaml is a git symlink
+   into scout/config — convert to an SC10-synced real copy first, then mount
+   only `./webui`).
+
+**C. The one remaining code task — DELIBERATELY NOT STARTED. §5b.**
+8. **M6-5b depth_grid + scan** extraction (the ~180-line under-lidar dedup).
+   NOT attempted offline: it is a safety-critical perception refactor (decides
+   whether the robot sees under-lidar obstacles), the two implementations
+   diverge in load-bearing ways (cell-key type, mark increment, confirm metric,
+   clear policy, expiry, follow-me's trail rejection), and **SC7 forbids landing
+   the core module unadopted** — so it is all-or-nothing and cannot be verified
+   without the robot or a recorded depth bag (the plan requires a rosbags
+   old-vs-new corridor-min diff before merge). Do it at the bench, per §5b.
+
+**Not doing** (unless asked): the optional `/nav_paused` link-loss/patrol fix
+(§4, new behavior); the prose comment-dedup pass (§6, low value — SC8 already
+test-enforces the profile-value slice).
+
+---
+
+_Sections below are the execution detail. §2/§3/§4 are now DONE — kept as the
+record of HOW, and as the spec for the on-Pi verification of each._
 
 **What already exists (don't rebuild it):**
 - `scout/config/robot_profile.yaml` — cross-surface SSOT (velocity caps/floors,
@@ -136,7 +173,7 @@ M4 (which restarts nav2 on top of it).
 
 ---
 
-## 2. M4 — config overlays + profile knob (Pi param-dump gated)
+## 2. M4 — config overlays + profile knob ✅ IMPLEMENTED (commit 905d4cd) — Pi param-dump verification still open
 
 **Goal:** replace the full-file `*_tight_tunnel.yaml` forks (~1,200 lines, ~23
 real deltas + drifted rationale) with base + delta overlays and a single
@@ -260,7 +297,7 @@ of overlays); (b) drop `camera_config` arg — recommend yes.
 
 ---
 
-## 3. M5 — deploy hardening (Pi rebuild gated)
+## 3. M5 — deploy hardening ✅ STAMP+COMPOSE IMPLEMENTED (commit 89c9603) — fork pins / layer reorder / mount trim + Pi rebuild verify still open
 
 Independent of M4; can go before or after. See ADR-0005.
 
@@ -318,7 +355,7 @@ and lists topics (proves DDS-over-loopback survives the trim).
 
 ---
 
-## 4. M7 — waypoint unification (Mac-testable core; Pi migration gated)
+## 4. M7 — waypoint unification ✅ IMPLEMENTED (commit aac39fc) — Pi migration + drive verification still open
 
 Two systems named "patrol" write `./maps` and can't see each other. Unify on one
 store. See ADR-0011. **The `scout.core.waypoints` module + tests are
