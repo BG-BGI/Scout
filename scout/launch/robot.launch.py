@@ -48,14 +48,37 @@ def generate_launch_description():
             ),
         ),
 
-        # Bare node: roboclaw_driver.launch.py cannot remap, and /odom belongs to the EKF.
+        # cmd_vel arbiter: every motion source publishes its own /cmd_vel_* topic;
+        # twist_mux forwards the highest-priority fresh one to /cmd_vel_out. Lives
+        # in this container so the whole motion chain (mux + driver) dies together.
+        # See scout/config/twist_mux.yaml and ADR-0001.
+        Node(
+            package='twist_mux',
+            executable='twist_mux',
+            name='twist_mux',
+            output='screen',
+            parameters=[os.path.join(config, 'twist_mux.yaml')],
+            remappings=[('cmd_vel_out', '/cmd_vel_out')],
+        ),
+
+        # Software e-stop: publishes the twist_mux /estop lock heartbeat (5 Hz,
+        # fail-safe) and active-brakes on /cmd_vel_stop when engaged.
+        # /estop/engage | /estop/release (Trigger).
+        Node(
+            package='scout',
+            executable='estop',
+            output='screen',
+        ),
+
+        # Bare node: roboclaw_driver.launch.py cannot remap, and /odom belongs to
+        # the EKF. Driven by the mux output, not raw /cmd_vel.
         Node(
             package='roboclaw_driver',
             executable='roboclaw_driver_node',
             name='roboclaw_driver',
             output='screen',
             parameters=[os.path.join(config, 'roboclaw.yaml')],
-            remappings=[('/odom', '/wheel_odom')],
+            remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_out')],
         ),
 
         Node(

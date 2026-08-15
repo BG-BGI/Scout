@@ -4,9 +4,9 @@
 Design mirrors led_node: the PlayTrick service only mutates target state and
 returns promptly; a fixed-rate timer is the SOLE cmd_vel writer, which keeps
 the 200 ms RoboClaw deadman fed (>= 20 Hz) from exactly one place. On finish
-or /stop_trick the node bursts zero Twists for STOP_GRACE seconds and then
-goes silent, handing /cmd_vel back to other sources — the same convention
-joystick_teleop uses, so there is no mux and no stomping.
+or /stop_trick the node bursts zero Twists for a short grace period and then
+goes silent, handing /cmd_vel back to other sources — the shared CmdVelSource
+contract (also used by joystick_teleop and follow_me).
 
 Safety:
   * Segments are clamped to roboclaw.yaml's real caps (1.0 m/s, 3.0 rad/s).
@@ -25,19 +25,19 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
-from geometry_msgs.msg import Twist
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from scout.cmd_vel_source import CmdVelSource
 from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import PlayTrick
 
-# Cross-surface caps + stop-burst live in robot_profile.yaml (SSOT).
+# Cross-surface caps live in robot_profile.yaml (SSOT). The stop-burst is now
+# owned by CmdVelSource (also profile-driven).
 _PROFILE = _load_profile()
 MAX_LINEAR = _PROFILE['linear_cap']     # m/s  (= roboclaw.yaml max_linear_velocity)
 MAX_ANGULAR = _PROFILE['angular_cap']   # rad/s (= roboclaw.yaml max_angular_velocity)
-STOP_GRACE = _PROFILE['stop_grace_s']   # s of explicit zeros after a trick, then silence
 
 # name: [(duration_s, vx m/s, wz rad/s[, '#RRGGBB' led override]), ...]
 # A (dur, 0, 0) segment is a deliberate hard stop (zeros keep the deadman fed).
@@ -130,7 +130,7 @@ class TrickPlayer(Node):
 
         _validate_tricks(self._min_pivot_rate)
 
-        self._pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self._cmd = CmdVelSource(self, 'trick', hz=publish_hz)
         self._status_pub = self.create_publisher(String, 'trick_status', 10)
 
         self._voltage = math.nan
@@ -140,7 +140,6 @@ class TrickPlayer(Node):
         self._trick = None          # name, or None when idle
         self._segments = []
         self._started = 0.0         # monotonic start of the trick
-        self._stop_until = 0.0      # monotonic end of the zero burst
         self._segment_color = None  # current segment's LED color override
 
         self.create_service(PlayTrick, 'play_trick', self._on_play)
@@ -178,7 +177,6 @@ class TrickPlayer(Node):
         self._trick = name
         self._segments = TRICKS[name]
         self._started = time.monotonic()
-        self._stop_until = 0.0
         self._segment_color = None
         self._publish_status()
 
@@ -190,49 +188,42 @@ class TrickPlayer(Node):
         return response
 
     def _on_stop(self, request, response):
-        if self._trick is None and self._stop_until <= time.monotonic():
+        if self._trick is None:
             response.success = True
             response.message = 'idle'
             return response
-        stopped = self._trick or 'zero burst'
+        stopped = self._trick
         self._finish()
         response.success = True
         response.message = "stopped '%s'" % stopped
         self.get_logger().info(response.message)
         return response
 
-    # --- timer (sole cmd_vel writer) -------------------------------------------
+    # --- timer (drives the segment list; CmdVelSource owns publishing) ---------
     def _tick(self):
-        now = time.monotonic()
-
-        if self._trick is not None:
-            elapsed = now - self._started
-            for seg in self._segments:
-                dur, vx, wz = seg[0], seg[1], seg[2]
-                if elapsed < dur:
-                    # Segments may override the trick's LED color mid-run.
-                    color = seg[3] if len(seg) > 3 else None
-                    if color != self._segment_color:
-                        self._segment_color = color
-                        self._publish_status()
-                    twist = Twist()
-                    # Publish-time clamp backs up the import-time validation.
-                    twist.linear.x = max(-MAX_LINEAR, min(MAX_LINEAR, vx))
-                    twist.angular.z = max(-MAX_ANGULAR, min(MAX_ANGULAR, wz))
-                    self._pub.publish(twist)
-                    return
-                elapsed -= dur
-            self._finish()  # walked past the last segment
-
-        if self._stop_until > now:
-            self._pub.publish(Twist())
+        if self._trick is None:
+            return  # idle / zero-burst: CmdVelSource handles it
+        elapsed = time.monotonic() - self._started
+        for seg in self._segments:
+            dur, vx, wz = seg[0], seg[1], seg[2]
+            if elapsed < dur:
+                # Segments may override the trick's LED color mid-run.
+                color = seg[3] if len(seg) > 3 else None
+                if color != self._segment_color:
+                    self._segment_color = color
+                    self._publish_status()
+                # CmdVelSource re-clamps to the caps (== MAX_LINEAR/MAX_ANGULAR).
+                self._cmd.command(vx, wz)
+                return
+            elapsed -= dur
+        self._finish()  # walked past the last segment
 
     def _finish(self):
         """End the active trick and start the zero burst."""
         self._trick = None
         self._segments = []
         self._segment_color = None
-        self._stop_until = time.monotonic() + STOP_GRACE
+        self._cmd.idle()
         self._publish_status()
 
     def _publish_status(self):
@@ -247,7 +238,7 @@ class TrickPlayer(Node):
         self._status_pub.publish(msg)
 
     def stop(self):
-        self._pub.publish(Twist())  # explicit stop on shutdown
+        self._cmd.stop_now()  # explicit stop on shutdown
 
 
 def main():

@@ -142,6 +142,7 @@ RUN apt-get update && apt-get install -y \
 RUN apt-get update && apt-get install -y \
     ros-humble-apriltag-ros \
     ros-humble-topic-tools \
+    ros-humble-twist-mux \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

@@ -277,7 +277,7 @@
       }
     },
     "Teleop!38o4jge": {
-      "topic": "/cmd_vel",
+      "topic": "/cmd_vel_web",
       "publishRate": 30,
       "autoSendStopOnRelease": true,
       "upButton": {

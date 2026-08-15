@@ -1,0 +1,57 @@
+# twist_mux: the cmd_vel arbiter. Every motion producer publishes to its own
+# per-source topic; twist_mux forwards the highest-priority input that is fresh
+# (published within its timeout) to /cmd_vel_out, which roboclaw_driver drives.
+#
+# Topology (see ADR-0001): nav2 keeps publishing plain /cmd_vel (velocity_smoother
+# AND behavior_server's direct output both land there) — that IS the nav input at
+# the lowest priority, so upstream nav2 needs no change and any legacy raw /cmd_vel
+# publisher still drives, just below everyone else. The per-source topic names are
+# mirrored in robot_profile.yaml (the publishers read them from there).
+#
+# Priorities: physical operator (joystick) > remote human (web/Foxglove) > the
+# autonomous behaviors (trick > follow > skills) > nav2. The `stop` input sits
+# ABOVE the estop lock so the estop node can actively brake through an engaged
+# lock (see the locks section + ADR-0001).
+twist_mux:
+  ros__parameters:
+    topics:
+      stop:
+        topic: /cmd_vel_stop
+        timeout: 0.5
+        priority: 255
+      joystick:
+        topic: /cmd_vel_joy
+        timeout: 0.5
+        priority: 100
+      web:
+        topic: /cmd_vel_web
+        timeout: 0.5
+        priority: 90
+      trick:
+        topic: /cmd_vel_trick
+        timeout: 0.5
+        priority: 60
+      follow:
+        topic: /cmd_vel_follow
+        timeout: 0.5
+        priority: 50
+      skills:
+        topic: /cmd_vel_skills
+        timeout: 0.5
+        priority: 40
+      nav:
+        topic: /cmd_vel
+        timeout: 0.5
+        priority: 10
+    locks:
+      # estop lock blocks every input BELOW priority 200 (joystick 100, web 90,
+      # ...), but the stop input at 255 stays above it so /cmd_vel_stop can pass
+      # for active braking while everything else is locked out.
+      #
+      # Fail-safe: the estop node publishes /estop at 5 Hz, so a 1.0 s timeout
+      # means a dead estop node (no heartbeat) goes stale = LOCKED and parks the
+      # robot rather than leaving it drivable.
+      estop:
+        topic: /estop
+        timeout: 1.0
+        priority: 200

@@ -32,7 +32,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import BatteryState
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import SetLedMode
@@ -51,6 +51,8 @@ PATTERN_READY = ('breathe', '#00FF00', 50, 0.7)
 PATTERN_CONNECT = ('blink', '#00FF00', 50, 2.0)
 PATTERN_DISCONNECT = ('blink', '#FF8000', 50, 1.0)
 PATTERN_OFF = ('off', '', 0, 1.0)
+# Solid red — outranks everything, and distinct from critical's red BLINK.
+PATTERN_ESTOP = ('solid', '#FF0000', 80, 1.0)
 
 VALID_MODES = tuple(_PROFILE['led_modes'])
 
@@ -77,6 +79,7 @@ class LedStatus(Node):
         self._disconnect_s = float(p('disconnect_seconds').value)
 
         # Stack inputs.
+        self._estop = False
         self._warn_active = False
         self._critical_active = False
         self._overlay = None            # (pattern, monotonic expiry)
@@ -96,6 +99,7 @@ class LedStatus(Node):
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
         self.create_subscription(String, 'trick_status', self._on_trick, 10)
         self.create_subscription(String, 'follow_status', self._on_follow, 10)
+        self.create_subscription(Bool, _PROFILE['topic_estop'], self._on_estop, 10)
         if ConnectedClients is not None:
             self.create_subscription(ConnectedClients, 'connected_clients',
                                      self._on_clients, 10)
@@ -153,6 +157,11 @@ class LedStatus(Node):
             self._follow = state
             self._resolve()
 
+    def _on_estop(self, msg: Bool):
+        if msg.data != self._estop:
+            self._estop = msg.data
+            self._resolve()
+
     def _on_user_led(self, request, response):
         mode = (request.mode or '').strip().lower()
         if mode not in VALID_MODES:
@@ -177,7 +186,9 @@ class LedStatus(Node):
         if self._overlay and self._overlay[1] <= time.monotonic():
             self._overlay = None
 
-        if self._critical_active:
+        if self._estop:
+            pattern = PATTERN_ESTOP
+        elif self._critical_active:
             pattern = PATTERN_CRITICAL
         elif self._warn_active:
             pattern = PATTERN_WARN

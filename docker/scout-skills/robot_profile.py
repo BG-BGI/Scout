@@ -19,7 +19,8 @@ _BAKED = {
     "linear_cap": 1.0,
     "angular_floor": 0.35,
     "angular_cap": 3.0,
-    "topic_cmd_vel_skills": "/cmd_vel",
+    "topic_cmd_vel_skills": "/cmd_vel_skills",
+    "topic_cmd_vel_out": "/cmd_vel_out",
     "goal_status_names": [
         "unknown", "accepted", "driving", "canceling",
         "arrived", "canceled", "aborted",

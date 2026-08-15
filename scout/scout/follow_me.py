@@ -44,9 +44,7 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-from scout.robot_profile import load as _load_profile
-
-STOP_GRACE = _load_profile()['stop_grace_s']
+from scout.cmd_vel_source import CmdVelSource
 
 
 class FollowMe(Node):
@@ -146,7 +144,6 @@ class FollowMe(Node):
         self._active = False
         self._target = None          # (x, y) in base_link, robot-forward = +x
         self._target_seen = 0.0
-        self._stop_until = 0.0
         self._status = 'idle'
         self._corridor_min = math.inf  # nearest non-target return in the corridor
         self._rear_min = math.inf      # nearest return in the reverse corridor
@@ -168,7 +165,7 @@ class FollowMe(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-        self._pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self._cmd = CmdVelSource(self, 'follow', hz=publish_hz)
         self._status_pub = self.create_publisher(String, 'follow_status', 10)
         self.create_subscription(LaserScan, 'scan', self._on_scan,
                                  qos_profile_sensor_data)
@@ -211,7 +208,7 @@ class FollowMe(Node):
     def _halt(self):
         self._active = False
         self._target = None
-        self._stop_until = time.monotonic() + STOP_GRACE
+        self._cmd.idle()
         self._clearance_log = []
         self._rear_log = []
         self._lost_anchor = None
@@ -562,7 +559,7 @@ class FollowMe(Node):
                 self._search_tracks = []
                 self._target = None
                 self._set_status('searching')
-                self._stop_until = now + STOP_GRACE
+                self._cmd.idle()
                 return
             dist = math.hypot(*self._target)
             bearing = math.atan2(self._target[1], self._target[0])
@@ -609,7 +606,7 @@ class FollowMe(Node):
             twist.linear.x = self._vx_out
             twist.angular.z = max(-self._max_wz, min(
                 self._max_wz, self._kp_ang * bearing + self._wz_avoid))
-            self._pub.publish(twist)
+            self._cmd.command(twist.linear.x, twist.angular.z)
             new_status = 'blocked' if blocked else 'locked'
             if self._status != new_status:
                 self._set_status(new_status)
@@ -626,8 +623,7 @@ class FollowMe(Node):
                 throttle_duration_sec=1.0)
         elif self._active and self._lost_anchor is not None:
             self._seek(now, dt)
-        elif self._stop_until > now:
-            self._pub.publish(Twist())
+        # Otherwise idle: CmdVelSource owns any residual zero burst.
 
     def _seek(self, now, dt):
         """Lost-target pursuit: drive to the loss anchor, face the inferred
@@ -636,16 +632,12 @@ class FollowMe(Node):
         any tick; the reacquire window expiring ends the pursuit."""
         age = now - self._lost_anchor[0]
         if age < self._seek_delay:
-            if self._stop_until > now:
-                self._pub.publish(Twist())
             return
         if age > self._reacq_window:
             if self._status == 'seeking':
                 self._set_status('searching')
-                self._stop_until = now + STOP_GRACE
+                self._cmd.idle()
                 self._vx_out = 0.0
-            if self._stop_until > now:
-                self._pub.publish(Twist())
             return
         pose = self._odom_pose()
         if pose is None:
@@ -686,7 +678,7 @@ class FollowMe(Node):
         twist = Twist()
         twist.linear.x = self._vx_out
         twist.angular.z = max(-self._seek_wz, min(self._seek_wz, wz))
-        self._pub.publish(twist)
+        self._cmd.command(twist.linear.x, twist.angular.z)
         self.get_logger().info(
             'SEEK anchor %.2f m @ %+.0f° age %.1f s | corr held %.2f | '
             'vx %.2f wz %+.2f' % (dist, math.degrees(bearing), age, corridor,
@@ -708,7 +700,7 @@ class FollowMe(Node):
         self._status_pub.publish(msg)
 
     def stop(self):
-        self._pub.publish(Twist())
+        self._cmd.stop_now()
 
 
 def main():

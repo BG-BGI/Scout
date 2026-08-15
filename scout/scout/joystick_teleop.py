@@ -2,15 +2,14 @@ import math
 import os
 import struct
 import threading
-import time
 
 import rclpy
 from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
-from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from scout.cmd_vel_source import CmdVelSource
 from scout.robot_profile import load as _load_profile
 
 # --- Xbox controller mapping (Linux joydev / xpad driver) --------------------
@@ -35,11 +34,10 @@ _JS_EVENT_BUTTON = 0x01
 _JS_INIT_FLAG = 0x80
 BTN_A = 0   # Xbox A, both xpad USB and stock Bluetooth HID mappings
 
-# Cross-surface cmd_vel contract + caps live in robot_profile.yaml (SSOT).
+# Cross-surface cmd_vel contract + caps live in robot_profile.yaml (SSOT). The
+# publish rate + stop-burst are now owned by CmdVelSource (also profile-driven).
 _PROFILE = _load_profile()
-PUBLISH_HZ = _PROFILE['publish_hz']   # > 1/deadman so the motor driver stays armed
-STOP_GRACE = _PROFILE['stop_grace_s']  # after release, briefly publish zeros, then go silent
-                           # so other cmd_vel sources (Foxglove, nav2) can drive
+PUBLISH_HZ = _PROFILE['publish_hz']   # compute cadence (CmdVelSource re-publishes)
 STICK_DEADZONE = 0.08      # ignore small left-stick noise so the robot tracks straight
 TURN_EXPO = 0.6            # turn-stick response curve: 0 = linear, 1 = pure cubic.
                            # Higher = gentler near center; full deflection still = max.
@@ -56,7 +54,7 @@ LINEAR_STEP, ANGULAR_STEP = 0.05, 0.5
 class JoystickTeleopNode(Node):
     def __init__(self):
         super().__init__('joystick_teleop')
-        self._pub = self.create_publisher(Twist, 'cmd_vel', 10)
+        self._cmd = CmdVelSource(self, 'joy', hz=PUBLISH_HZ)
 
         # Input state, updated by the reader thread, read by the publish timer.
         self._rt = 0.0          # forward throttle  0..1
@@ -66,7 +64,6 @@ class JoystickTeleopNode(Node):
         self._dpad_y = 0
         self._max_linear = LINEAR_DEFAULT
         self._max_angular = ANGULAR_DEFAULT
-        self._last_active = 0.0   # monotonic time of last live input; gates publishing
 
         # Follow-me toggle (D-pad up). Actual state tracked from /follow_status
         # so the toggle stays truthful if the mode was started/stopped elsewhere
@@ -216,12 +213,10 @@ class JoystickTeleopNode(Node):
                     'Mark: %s' % f.result().message))
             else:
                 self.get_logger().warn('patrol/mark not available')
-        # Only touch cmd_vel while the controller is actually driving, so idle
-        # zeros don't stomp other publishers (Foxglove, nav2).
+        # Drive only while the controller is active; CmdVelSource owns the
+        # release zero-burst and hands /cmd_vel back to other sources when idle.
         active = self._rt > 0.0 or self._lt > 0.0 or self._turn != 0.0
-        now = time.monotonic()
         if active:
-            self._last_active = now
             # RT forward, LT reverse; both can be read at once so they just sum.
             throttle = self._rt - self._lt
             # Left stick: push left -> turn left (CCW, +z per REP-103).
@@ -230,22 +225,17 @@ class JoystickTeleopNode(Node):
             # the same stick direction flips the wheel differential.
             if throttle < 0.0:
                 turn = -turn
-            twist = Twist()
-            twist.linear.x = throttle * self._max_linear
             # No pivot floor since the 2026-08-14 deflated-tire measurements:
             # all four wheels turn at any commanded rate (the old flat-tire
             # stall is gone). Slow pivots just walk more (~10 cm/rev at 1.5
             # rad/s vs ~2.5 cm at 2.5) — visible to the operator, their call.
-            twist.angular.z = turn
-            self._pub.publish(twist)
-        elif now - self._last_active < STOP_GRACE:
-            # Just released: a short burst of zeros stops the robot promptly,
-            # then we go silent and hand cmd_vel back to other sources.
-            self._pub.publish(Twist())
+            self._cmd.command(throttle * self._max_linear, turn)
+        else:
+            self._cmd.idle()
 
     def stop(self):
         self._stop = True
-        self._pub.publish(Twist())  # explicit stop on shutdown
+        self._cmd.stop_now()  # explicit stop on shutdown
 
 
 def main():

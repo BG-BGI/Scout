@@ -41,7 +41,9 @@ ros.on('error', () => {});  // 'close' fires after and handles retry
 connect();
 
 // --- topics & services ----------------------------------------------------------
-const cmdVel = new ROSLIB.Topic({
+// Repointed to the profile's web topic (/cmd_vel_web -> twist_mux) once
+// loadProfile() runs; the /cmd_vel default still works (lowest mux priority).
+let cmdVel = new ROSLIB.Topic({
   ros, name: '/cmd_vel', messageType: 'geometry_msgs/msg/Twist',
 });
 const batteryTopic = new ROSLIB.Topic({
@@ -208,6 +210,11 @@ async function loadProfile() {
     }
     if (prof.linear_cap) linSlider.max = prof.linear_cap;
     if (prof.angular_cap) angSlider.max = prof.angular_cap;
+    if (prof.topic_cmd_vel_web) {
+      cmdVel = new ROSLIB.Topic({
+        ros, name: prof.topic_cmd_vel_web, messageType: 'geometry_msgs/msg/Twist',
+      });
+    }
     startDriveLoop();  // restart at the profile's rate
   } catch (e) {
     console.warn('robot_profile.yaml fetch failed; using baked defaults:', e);
@@ -297,6 +304,28 @@ document.getElementById('stop').addEventListener('click', () => {
   cancelNav();   // a live nav goal would keep driving through the zero burst
   patrolStop();  // a patrol would send the NEXT waypoint after the cancel
   zeroBurst();
+});
+
+// E-STOP: the latching software e-stop (twist_mux lock + active brake), distinct
+// from the one-shot STOP above. Reflects the /estop lock state live.
+const estopBtn = document.getElementById('estop');
+const estopEngageSrv = new ROSLIB.Service({
+  ros, name: '/estop/engage', serviceType: 'std_srvs/srv/Trigger',
+});
+const estopReleaseSrv = new ROSLIB.Service({
+  ros, name: '/estop/release', serviceType: 'std_srvs/srv/Trigger',
+});
+let estopEngaged = false;
+new ROSLIB.Topic({
+  ros, name: '/estop', messageType: 'std_msgs/msg/Bool',
+}).subscribe((msg) => {
+  estopEngaged = msg.data;
+  estopBtn.classList.toggle('engaged', estopEngaged);
+  estopBtn.textContent = estopEngaged ? 'E-STOP — release' : 'E-STOP';
+});
+estopBtn.addEventListener('click', () => {
+  (estopEngaged ? estopReleaseSrv : estopEngageSrv)
+    .callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
 });
 
 // --- map + tap-to-navigate ------------------------------------------------------------

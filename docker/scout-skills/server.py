@@ -70,6 +70,9 @@ mcp = FastMCP("scout-skills", lifespan=_lifespan)
 # action_msgs/msg/GoalStatus code -> friendly name (robot_profile.yaml SSOT).
 NAV_STATUS = dict(enumerate(_load_profile()["goal_status_names"]))
 
+# twist_mux output — the honest "is anything driving?" wire (every source feeds it).
+CMD_VEL_OUT = _load_profile()["topic_cmd_vel_out"]
+
 
 def _pose_of(msg: dict | None) -> dict | None:
     """slam_toolbox /pose (PoseWithCovarianceStamped) → {x, y, yaw}."""
@@ -442,9 +445,9 @@ async def go_to_waypoint(name: str) -> dict:
 
 
 async def _require_motion_idle():
-    """Refuse to stream /cmd_vel on top of another commander. The status
-    topics only re-publish on transitions, so also sniff /cmd_vel itself —
-    a live Nav2 drive means ~30 Hz of smoother output."""
+    """Refuse to stream cmd_vel on top of another commander. The status topics
+    only re-publish on transitions, so also sniff the mux output /cmd_vel_out —
+    a live drive (Nav2, teleop, trick, follow) means steady non-zero output."""
     async with RosBridge() as rb:
         for action in NAV_ACTIONS:
             status = await _nav_status(rb, timeout=1.0, action=action)
@@ -458,13 +461,14 @@ async def _require_motion_idle():
                     "nav_cancel before relative motion"
                 )
         tw = await rb.subscribe_once(
-            "/cmd_vel", "geometry_msgs/msg/Twist", timeout=0.7
+            CMD_VEL_OUT, "geometry_msgs/msg/Twist", timeout=0.7
         )
     if tw is not None and (
         abs(tw["linear"]["x"]) > 1e-3 or abs(tw["angular"]["z"]) > 1e-3
     ):
         raise ToolError(
-            "something is already streaming non-zero /cmd_vel (Nav2 or teleop)"
+            "something is already driving (non-zero on the mux output) — "
+            "nav_cancel / stop_all before relative motion"
         )
 
 
@@ -956,6 +960,21 @@ async def stop_all() -> dict:
         "stopped": stopped,
         "nav_return_codes": codes,
         "goals_canceling": canceling,
+    }
+
+
+@mcp.tool
+async def estop(engaged: bool) -> dict:
+    """Latching software e-stop (the twist_mux lock + active brake). engaged=true
+    locks the robot out of ALL motion and actively brakes; nothing drives until
+    engaged=false releases it. Unlike stop_all (a one-shot halt), this HOLDS
+    until released — use it to make the robot safe to approach."""
+    svc = "/estop/engage" if engaged else "/estop/release"
+    async with RosBridge() as rb:
+        values = await rb.call_service(svc, "std_srvs/srv/Trigger")
+    return {
+        "estop": "engaged" if engaged else "released",
+        "message": values.get("message"),
     }
 
 
