@@ -40,13 +40,14 @@ checklist below.
 4. **M7 migration + drive** — run `scripts/migrate_waypoints.py maps/`, then
    mark→start→photo and skills `patrol(<route>)`. §4.
 
-**B. Needs network or a Pi image build (small, deferred from M5). §3.**
-5. Pin the 3 source forks (roboclaw_driver, rplidar_ros, m-explore-ros2) to
-   commit SHAs (`git ls-remote` for tips, then `checkout --detach`).
-6. Move the roboclaw layer below librealsense (layer-order rule → structural).
-7. Trim webui/foxglove bind mounts (webui/robot_profile.yaml is a git symlink
-   into scout/config — convert to an SC10-synced real copy first, then mount
-   only `./webui`).
+**B. M5 leftovers — ✅ CODE COMPLETE (ADR-0005 addendum); Pi rebuild verify open. §3.**
+5. ✅ Forks pinned: roboclaw `cc4d0e7`, rplidar ros2 `24cc9b6`, m-explore
+   `326cf8a` (tips at pin time).
+6. ✅ roboclaw layer moved below librealsense + apt layers (pin bumps no
+   longer cost the 13-min rebuild).
+7. ✅ webui/foxglove trimmed; `webui/robot_profile.yaml` converted symlink →
+   SC10-synced real copy. Pi verify: rebuild (~13 min), stamp-guard `down -v`
+   migration, webui serves, Foxglove connects (§3 verification).
 
 **C. The one remaining code task — DELIBERATELY NOT STARTED. §5b.**
 8. **M6-5b depth_grid + scan** extraction (the ~180-line under-lidar dedup).

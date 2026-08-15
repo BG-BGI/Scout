@@ -111,9 +111,20 @@ services:
     profiles: ["explore"]
     command: ros2 launch scout explore.launch.py profile:=${SCOUT_PROFILE:-default}
 
+  # Trimmed off the &base anchor (ADR-0005): a DDS participant, so it keeps
+  # host net + ipc + the discovery env + the ROS entrypoint, but it needs no
+  # repo bind mount and no overlay volume (foxglove_bridge is an apt package
+  # under /opt/ros; without the volume the stamp guard compares the image's
+  # own copy — always a match).
   foxglove_bridge:
-    <<: *base
+    image: scout:latest
+    network_mode: host
+    ipc: host
     restart: unless-stopped
+    environment:
+      - ROS_LOCALHOST_ONLY=1
+      - ROS_DISCOVERY_SERVER=127.0.0.1:11811
+    entrypoint: /ros_entrypoint.sh
     # network_mode: bridge  # only in WSL
     # ports: ["8765:8765"]  # only in WSL
     command: ros2 run foxglove_bridge foxglove_bridge
@@ -128,10 +139,17 @@ services:
   # Static files for the web UI (http://scout.local). Serves the bind-mounted
   # ./webui directly, so UI edits are live without a rebuild. Host networking +
   # root in the container makes port 80 fine.
+  # Trimmed off the &base anchor (ADR-0005): a plain http server — no ROS
+  # entrypoint, no DDS env, and only the ./webui mount (webui/robot_profile.yaml
+  # is now a real SC10-synced copy of the SSOT, not a symlink out of the tree).
   webui:
-    <<: *base
+    image: scout:latest
+    network_mode: host
     restart: unless-stopped
-    command: python3 -m http.server 80 --directory /ros_ws/src/webui
+    entrypoint: []
+    volumes:
+      - ./webui:/webui:ro
+    command: python3 -m http.server 80 --directory /webui
 
   # MCP endpoint for Magnus (http://<pi>:9000/mcp, streamable-http). ros-mcp
   # speaks only the rosbridge websocket — its hardcoded default target is

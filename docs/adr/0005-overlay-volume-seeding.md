@@ -25,3 +25,23 @@ hardening pass), turning the silent-shadow trap into a loud one-time migration.
 
 - No second install path can shadow the overlay.
 - A cache-busting image rebuild costs one `down -v` + reseed.
+
+## Addendum (2026-08-15): fork pins, layer order, mount trim
+
+- **All three source forks are pinned to commit SHAs** (clone-then-
+  `checkout --detach`; `--depth 1` cannot fetch a bare SHA): roboclaw_driver
+  `cc4d0e7`, rplidar_ros (ros2 branch) `24cc9b6`, m-explore-ros2 `326cf8a` —
+  the tips at pin time; the previously deployed commits are unrecoverable
+  (clones were `rm -rf`'d), so the first rebuild may bump behavior.
+- **Layer-order rule is now structural:** roboclaw_driver (the most
+  bump-prone fork) sits BELOW librealsense and the apt layers, so a pin bump
+  rebuilds only roboclaw + explore + the stamp, never the 13-min
+  librealsense layer.
+- **Mount trim:** `foxglove_bridge` keeps host net/ipc + discovery env + the
+  ROS entrypoint but loses the repo bind mount and overlay volume (apt
+  package; without the volume the stamp guard self-compares the image);
+  `webui` is a bare http server — no entrypoint, no DDS env, only
+  `./webui:ro`. That required `webui/robot_profile.yaml` to become a **real
+  file** (SC10 keeps it byte-identical to the SSOT) instead of a symlink
+  into `scout/config`, which the trimmed mount could no longer resolve.
+- `rosbridge` deliberately kept on the full anchor (flagged optional).

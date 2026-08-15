@@ -64,12 +64,6 @@ rm -rf "$OVERLAY/build" "$OVERLAY/log"
 EOF
 RUN chmod +x /usr/local/bin/build-overlay && mkdir -p "$OVERLAY/src"
 
-# roboclaw_driver from source
-RUN git clone --depth 1 https://github.com/kahleeeb3/roboclaw_driver.git \
-        "$OVERLAY/src/roboclaw_driver" \
-    && build-overlay --packages-up-to roboclaw_driver \
-    && rm -rf "$OVERLAY/src/roboclaw_driver"
-
 # librealsense from source, RSUSB backend — D455 IMU without host kernel patching
 RUN git clone https://github.com/realsenseai/librealsense.git -b v2.57.7 --depth 1 --recurse-submodules \
     && cd librealsense \
@@ -101,11 +95,13 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
 # at "A1/A2/A3/S1/S2/S3/T1" and it ships no rplidar_c1_launch.py, while the ros2 branch
 # does, even though BOTH call themselves 2.1.4 (the deb is just built from an older
 # commit, so the version string cannot distinguish them). That keeps the image valid if
-# the scanner is ever swapped. Trade-off: this tracks the `ros2` branch and so is NOT
-# pinned to a commit. Needs no extra apt packages (std_srvs is already present), so it
-# sits with the other source builds without disturbing the librealsense cache above.
-RUN git clone --depth 1 -b ros2 https://github.com/Slamtec/rplidar_ros.git \
+# the scanner is ever swapped. Pinned to the ros2-branch tip at pin time (ADR-0005;
+# --depth 1 cannot fetch a bare SHA, hence clone-then-detach). Needs no extra apt
+# packages (std_srvs is already present), so it sits with the other source builds
+# without disturbing the librealsense cache above.
+RUN git clone -b ros2 https://github.com/Slamtec/rplidar_ros.git \
         "$OVERLAY/src/rplidar_ros" \
+    && git -C "$OVERLAY/src/rplidar_ros" checkout --detach 24cc9b6dea97e045bda1408eaa867ce730fd3fc3 \
     && build-overlay --packages-up-to rplidar_ros \
     && rm -rf "$OVERLAY/src/rplidar_ros"
 
@@ -146,10 +142,22 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# roboclaw_driver from source. Below librealsense DELIBERATELY (layer-order rule,
+# ADR-0005): this is the fork most likely to get pin bumps, and sitting under the
+# apt layers means a bump rebuilds only this + explore + the stamp — never the
+# 13-min librealsense layer. Pinned to the default-branch tip at pin time.
+RUN git clone https://github.com/kahleeeb3/roboclaw_driver.git \
+        "$OVERLAY/src/roboclaw_driver" \
+    && git -C "$OVERLAY/src/roboclaw_driver" checkout --detach cc4d0e78acb6f65a60e1e9135258a55d4624ecb7 \
+    && build-overlay --packages-up-to roboclaw_driver \
+    && rm -rf "$OVERLAY/src/roboclaw_driver"
+
 # explore_lite (frontier exploration) — no Humble apt package; build into $OVERLAY.
 # Repo is a multi-package workspace; only lift explore + explore_lite_msgs into src.
 # Wipe ros_overlay_install after rebuild so the volume re-seeds with this package.
-RUN git clone --depth 1 https://github.com/robo-friends/m-explore-ros2.git /tmp/m-explore-ros2 \
+# Pinned to the default-branch tip at pin time (ADR-0005).
+RUN git clone https://github.com/robo-friends/m-explore-ros2.git /tmp/m-explore-ros2 \
+    && git -C /tmp/m-explore-ros2 checkout --detach 326cf8a0b487c34246bb8f3326afbcd69576dc60 \
     && mv /tmp/m-explore-ros2/explore /tmp/m-explore-ros2/explore_lite_msgs "$OVERLAY/src/" \
     && rm -rf /tmp/m-explore-ros2 \
     && build-overlay --packages-up-to explore_lite \
