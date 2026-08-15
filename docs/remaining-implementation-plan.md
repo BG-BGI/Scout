@@ -76,9 +76,23 @@ open. §8.5.**
 14. **Fast DDS Discovery Server** — verify on Pi: full stack rediscovers after
     `up -d`, Foxglove connects, super-client shell sees full graph. §8.5.
 
+**F. Nav/autonomy additions (2026-08-15 corpus+nav2 audit) — NONE started. §9.**
+15. **N1 nav2_collision_monitor** — safety stage after twist_mux; protects ALL
+    cmd_vel sources. Robot-coupled. §9.1.
+16. **N4 fail-fast bring-up** (respawn / OnProcessExit→Shutdown) — offline-
+    codeable; buys most of F4 cheaply. §9.2.
+17. **N5 SC11 rclpy no-sync-service-call rule** — Mac-verifiable, minutes. §9.3.
+18. **N9 `ros2 doctor --report` in deploy runbook** — zero code. §9.4.
+19. **N6 Fast DDS async publish + UDP-frag sysctls** — measure-first. §9.5.
+20. **N7 keepout/speed costmap filters** — ask operator first. §9.6.
+21. **N8 MPPI controller A/B overlay** — robot-coupled, after N1. §9.7.
+22. **N10 EKF process-noise tuning** — robot-coupled measurement. §9.8.
+    (N2/N3 are amendments folded into F2/F1 above, not separate items.)
+
 **Not doing** (unless asked): the optional `/nav_paused` link-loss/patrol fix
 (§4, new behavior); the prose comment-dedup pass (§6, low value — SC8 already
-test-enforces the profile-value slice).
+test-enforces the profile-value slice); the §9 Tier-B rejects (recorded there
+so the audit isn't redone).
 
 ---
 
@@ -576,6 +590,13 @@ levels in pure `scout.core.health`. ADR-0014. Landed: `scout/scout/health_monito
   own (cmd_vel_source's `/cmd_vel_*`, gyro_calibrator's `/imu/data`): offer the
   deadline on the publisher, request it on a dedicated monitor subscription in
   health_monitor. Do NOT put a deadline on the main consumer subscriptions.
+  Same pass should add (N3, 2026-08-15 audit): **liveliness events**
+  (MANUAL_BY_TOPIC on publishers we own + `liveliness_changed` callback —
+  catches a wedged process a 1 Hz hz-poll reads as merely slow; same
+  request/offered compat trap as deadline) and **`incompatible_qos` event
+  callbacks** on health_monitor's own subscriptions → DiagnosticArray WARN for
+  the documented silent best-effort/reliable mismatch class. rclpy Humble
+  supports both via `SubscriptionEventCallbacks`/`PublisherEventCallbacks`.
 
 ### 8.2 F2 — rosbag2 record-on-demand (robot-coupled — NOT started)
 
@@ -588,6 +609,15 @@ developed + validated with ros2 running.
   both latched (`scout.qos.LATCHED_QOS`). On start, spawn `ros2 bag record` as a
   subprocess (robust vs the rosbag2_py in-process threading caveats) into
   `captures/<UTC-timestamp>/`; clean SIGINT on stop; refuse double-start.
+- **(N2, 2026-08-15 audit) Add snapshot mode as the third service:** spawn with
+  `--snapshot-mode` (buffers in RAM, writes nothing until triggered);
+  `record/snapshot` (Trigger) calls the recorder's `~/snapshot` service to
+  flush the buffer to disk — "capture the last N seconds before the incident"
+  instead of continuous SD-card writes. Two recorder modes, one node:
+  continuous (start/stop) and armed-snapshot.
+- **⚠ Never pass `--max-bag-size`/`--max-bag-duration` in `record_argv`:**
+  Humble known issue — bags split by size or duration do not play back
+  correctly (only the last split plays; ros2/rosbag2#966).
 - New pure `scout/scout/core/recording.py` (offline-testable, lands with the
   node for SC7): `bag_dir(now, root)`, `record_argv(topics, out_dir)`,
   `resolve_topics(profile)` → argv list; 1:1 `test_recording.py`.
@@ -620,7 +650,9 @@ Robot-coupled: it is pure live-action (cancel + feedback) behavior.
     `navigate_through_poses` via `CancelGoal` clients (reuse the exact pattern in
     `link_watchdog.py:_pause`, zeroed-uuid = cancel all). Extract that into a
     shared `node_util.cancel_nav_goals(clients)` and have link_watchdog adopt it
-    (avoids a third copy).
+    (avoids a third copy). **⚠ Async-only (SC11, §9.3): the cancel fires from
+    inside a Trigger service callback — a sync `Client.call()` there deadlocks
+    silently (no warning, no exception). `call_async` + done-callback only.**
   - Subscribe both actions' `feedback` + `_action/status`; republish a
     consolidated `/nav_state` (String JSON: status name from
     `robot_profile.goal_status_names`, `distance_remaining`,
@@ -642,7 +674,10 @@ ordered activation + deactivate/reactivate of a wedged node without a container
 restart (nav2 already uses `nav2_lifecycle_manager`). **Honest ROI: low** — most
 own nodes are already inert-until-called; real value is only the always-on
 perception path. Robot-coupled: transitions/ordering only exist live. Recommend a
-**minimal spike**, not a blanket conversion.
+**minimal spike**, not a blanket conversion. **Do §9.2 (N4 fail-fast
+respawn/OnProcessExit) FIRST — it buys most of F4's motivation (dead node ≠
+half-running stack) at ~5% of the cost; re-evaluate whether F4 is still worth
+the spike afterwards.**
 - Convert only always-on nodes whose restart needs a container bounce and whose
   ordering matters (candidates: `gyro_calibrator`, `health_monitor`, `estop`,
   `tilt_monitor`) from `rclpy.node.Node` to `rclpy.lifecycle.LifecycleNode` (move
@@ -692,3 +727,151 @@ is encoded in the XML's RemoteServer prefix — change both together.
   start.
 - Rollback (either item): `use_composition:=false` on the nav2 command /
   remove `ROS_DISCOVERY_SERVER` + the `discovery` service. Independent knobs.
+
+---
+
+## 9. Nav/autonomy additions (2026-08-15 corpus + nav2 audit) — NONE started
+
+Second audit pass: full ros-development Humble corpus (294 pages) + repo
+gap-scan against nav2 1.1.20 features. Grounding facts: no collision monitor,
+no costmap filters, NavFn+DWB only (Smac/MPPI exist solely as nav2.yaml
+comments), `assisted_teleop` behavior configured but never called, zero
+callback-group / parameter-callback / message_filters usage anywhere,
+twist_mux → roboclaw has no safety stage, `always_send_full_costmap: True`
+still on (TODO in nav2.yaml — flip both costmaps to False when Foxglove
+costmap debugging is done), EKF process noise untuned (CLAUDE.md flags it).
+N2/N3 from this audit were folded into §8.2/§8.1 directly. Suggested order:
+9.3 (Mac, minutes) → 9.2 → 9.1 → 9.4 → operator priority among 9.5–9.8.
+
+### 9.1 N1 — nav2_collision_monitor (the biggest genuine gap; robot-coupled)
+
+Safety stage BETWEEN twist_mux and the driver: `/cmd_vel_out` →
+`collision_monitor` → `/cmd_vel_safe`; roboclaw remap changes once in
+`robot.launch.py`. Stop + slowdown polygons fed by `/scan` (optionally the
+depth cloud later). Protects **every** cmd_vel source — webui pad, joystick,
+tricks, follow_me, skills — not just nav2, and directly mitigates the
+documented "goal failed ≠ robot stops" / latched-goal hazards at the last
+hop. Config + launch only: package ships in nav2 1.1.20 apt (confirm on Pi:
+`ros2 pkg list | grep collision`). Polygons from the measured footprint
+(±0.169 × ±0.167); slowdown ring outside it. Runs in the robot service (it
+must be up whenever the driver is). Decisions for the ADR: interaction with
+estop (estop stays upstream in twist_mux — CM is a second, independent
+layer); whether follow_me's intentional close-approach needs a CM exclusion
+(likely tune `stop` polygon inside the follow standoff instead). Verify
+on-blocks then floor: drive at an obstacle → slowdown zone trims speed, stop
+zone zeroes it; confirm added latency doesn't break the 200 ms deadman
+(CM republishes at input rate).
+
+### 9.2 N4 — fail-fast bring-up via launch event handlers (offline-codeable)
+
+`robot.launch.py` starts 20 nodes; a dead rplidar/realsense/roboclaw process
+today leaves a half-running stack (only led_node has respawn). Humble-native,
+~2 lines/node: `respawn=True, respawn_delay=2.0` on recoverable drivers
+(rplidar, apriltag, joystick) and `RegisterEventHandler(OnProcessExit(...))`
+→ `EmitEvent(Shutdown())` on load-bearing ones (roboclaw_driver, camera, ekf,
+robot_state_publisher) so compose `restart: unless-stopped` recycles the
+whole service cleanly instead of limping. Deadman note: a respawning
+roboclaw_driver coasts the drivetrain — same as today's crash behavior, no
+new hazard. Buys most of F4 (§8.4) at ~5% cost. ADR: which node gets which
+policy and why. Verify (Pi): `kill -9` a driver PID inside the container →
+respawn case comes back publishing; shutdown case recycles the service and
+the stack returns healthy.
+
+### 9.3 N5 — SC11: no sync service/action calls in rclpy callbacks (Mac, minutes)
+
+Humble docs (Sync-Vs-Async how-to): `Client.call()` from inside any
+subscription/timer/service callback deadlocks **with no warning, no
+exception, no stack-trace evidence**. F2 (record services) and F3 (cancel
+from a Trigger callback) are exactly this shape. Adopt now as a structural
+rule: **SC11 — no `.call(` on rclpy service clients in `scout/scout/`**
+(AST/grep check in `test_conventions.py`; async + done-callbacks only —
+link_watchdog's CancelGoal pattern is the house reference). Land with a
+one-paragraph note in ADR-0013's rule table. Gate: ruff + pytest.
+
+### 9.4 N9 — `ros2 doctor --report` in the deploy runbook (zero code)
+
+Emits a QOS COMPATIBILITY LIST naming publisher/subscriber node pairs (e.g.
+"Best effort publisher and reliable subscription") — the silent-failure class
+documented three times in CLAUDE.md — plus pub-without-sub warnings. Add one
+line to the deploy/verify recipe: run it in a **super-client** shell
+(`FASTRTPS_DEFAULT_PROFILES_FILE=.../super_client.xml` + daemon restart, per
+§8.5) or Discovery Server filtering blinds it. Not a liveness oracle (§ DDS
+discovery caveats still apply) — it's a QoS-mismatch linter.
+
+### 9.5 N6 — Fast DDS async publish mode + UDP-frag sysctls (measure-first)
+
+(a) Per-topic Fast DDS XML profile (XML infra exists — super_client.xml)
+setting `publishMode>ASYNCHRONOUS` for the realsense pointcloud + `/scan`
+publishers so a blocking network write can't stall the sensor callback
+thread. Safe unconditionally; needs `FASTRTPS_DEFAULT_PROFILES_FILE` on the
+robot service env. (b) Host sysctls from the Humble DDS-tuning guide:
+`net.ipv4.ipfrag_time=3`, `net.ipv4.ipfrag_high_thresh=134217728`, raised
+`net.core.rmem_max` — the documented multi-MB-message stall is one lost UDP
+fragment jamming the 256 KB reassembly buffer for 30 s. Localhost-only DDS
+lowers but doesn't eliminate exposure (loopback still fragments > MTU). Land
+(b) only if `/scan`/depth dropouts are actually observed — record baseline
+`ros2 topic hz` under load first.
+
+### 9.6 N7 — costmap filters: keepout + speed-restriction zones (ask operator first)
+
+nav2 1.1.20 ships `KeepoutFilter`/`SpeedFilter`. Mask PGM drawn over the
+saved map (stairs, cable zones, slow-near-X), served by a standalone
+`map_server` + `costmap_filter_info_server`, filter plugin added to both
+costmaps. Fits the maps/ + overlay machinery (mask per map). Only build if
+the operator actually wants zones — no current documented need. Medium
+effort; robot only for the final drive test.
+
+### 9.7 N8 — MPPI controller A/B (robot-coupled; after 9.1)
+
+`nav2_mppi_controller` is in Humble ≥1.1.8 (image has 1.1.20 — confirm
+`ros2 pkg list`). nav2.yaml already says "MPPI is the real answer for
+reversing maneuvers"; DWB runs `min_vel_x: 0.0` and tight_tunnel wants
+−0.15. Trial as a **profile overlay** (`FollowPath` plugin swap; keep the
+RotationShim wrapper). Risk is CPU on the Pi 5 — MPPI is the heaviest nav2
+controller; the composed bring-up + the control-loop-miss gauge are the
+measurement. A/B one goal course: CPU, misses, arrival error vs DWB.
+
+### 9.8 N10 — EKF process-noise tuning (robot-coupled measurement)
+
+Promoted from CLAUDE.md (absent here until now): yaw covariance grows
+~1.7 rad²/30 s against 0.07 deg/min real drift — wildly pessimistic. Harmless
+today, load-bearing the moment anything gates on pose uncertainty (9.6
+zones, F3 `/nav_state`, coverage). Edit `process_noise_covariance` (+
+`initial_estimate_covariance`) in `ekf.yaml`; deliverable is the re-measured
+`twist.covariance[35]`/pose-covariance growth stationary and over a standard
+drive, sane vs the known drift numbers.
+
+### 9.9 Surveyed and REJECTED/DEFERRED (recorded so the audit isn't redone)
+
+- **SmacPlanner/Theta\*** — NavFn measured fine; no planning failure to fix.
+  Revisit only if pipe work shows path-quality problems.
+- **Assisted-teleop action wiring** — superseded by 9.1 (CM protects teleop
+  lower in the chain, always-on, no action-client plumbing in the webui).
+- **tf2_ros MessageFilter in clutter_mapper/follow_me** — latest-time lookups
+  are deliberate; swapping changes a safety-adjacent path for a
+  startup-window-only gain.
+- **Waypoint-follower task executors (PhotoAtWaypoint)** — patrol_capture
+  already owns this with more logic than the plugin offers.
+- **Content-filtered topics** — Humble support is rclcpp + Fast DDS only; no
+  rclpy API → no consumer in this stack.
+- **Topic statistics** — rclcpp-only on Humble; our nodes are Python.
+- **Loaned messages / zero-copy** — LaserScan/PointCloud2 are non-POD → Fast
+  DDS can't loan them; know `ROS_DISABLE_LOANED_MESSAGES=1` exists as a kill
+  switch.
+- **ros2_tracing / LTTng** — the right instrument for per-callback durations,
+  but needs a tracetools source build in the image; defer until a concrete
+  CPU mystery demands it (first levers in nav2.yaml come first).
+- **backward_ros** — only C++ code is upstream forks; not patching those.
+- **Groot BT monitoring** — no Groot client in the toolchain (Foxglove only).
+- **SROS2** — Fast DDS `-DSECURITY=ON` source rebuild + key management, no
+  threat model on a lab LAN.
+- **Per-node log levels / `--disable-rosout-logs` / THROTTLE macros** — real
+  but tiny; note `--log-config-file` is UNIMPLEMENTED on Humble's spdlog
+  backend. Ops-note territory.
+- **`ros2 param dump`/`load` field-tuning loop** — NOTES.md recipe line, not
+  a milestone. (Types are static since Galactic; YAML `off`/`on` parse as
+  bools — `!!str` to escape.)
+- **Iron+-only, do not chase on Humble:** service introspection, matched
+  events, runtime logger-level services, `ROS_AUTOMATIC_DISCOVERY_RANGE`/
+  `ROS_STATIC_PEERS`, message_filters LatestTime, rosbag2 loss observability,
+  zenoh RMW.

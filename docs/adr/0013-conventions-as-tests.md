@@ -47,6 +47,7 @@ Two enforcement layers, both off-ROS, both blocking in CI
    | SC8 | profile-owned values are never bare literals on any surface (table derived from the yaml) |
    | SC9 | the `\|`-status wire formats are frozen as exact strings (`core.status`) |
    | SC10 | the two deliberate copies stay in sync: `webui/robot_profile.yaml` byte-identical, skills `geometry.py` function-source-identical |
+   | SC11 | no sync `Client.call()` / `ActionClient.send_goal()` in nodes — deadlocks the single-threaded executor silently (Humble Sync-Vs-Async how-to); `call_async`/`send_goal_async` + done-callback only (added 2026-08-15, §9.3 of the remaining plan) |
 
 **Waivers.** ruff: `# noqa: CODE — reason`, kept honest by RUF100. Structural
 rules: per-file `ALLOW = {path: reason}` dicts in the test (empty-reason

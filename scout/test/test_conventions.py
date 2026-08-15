@@ -1,4 +1,4 @@
-"""Repo conventions as AST rules (SC1–SC7) — see docs/adr/0013-conventions-as-tests.md.
+"""Repo conventions as AST rules (SC1–SC7, SC11) — see docs/adr/0013-conventions-as-tests.md.
 
 Like test_core_purity.py these parse SOURCE (ast.parse), never import ROS, and
 run under bare pytest anywhere. Each assertion message states the fix.
@@ -247,6 +247,38 @@ def test_sc4_twist_publishers_are_allowlisted():
 # --- SC6: one owner for the bind-mount config path ------------------------------
 # The bind-mount-wins policy was implemented four times in four shapes; it now
 # lives in scout.robot_profile (resolve_config / resolve_config_dir) only.
+
+# --- SC11: no sync service/action calls ----------------------------------------
+# Humble's Sync-Vs-Async how-to: a blocking Client.call() (or
+# ActionClient.send_goal()) from inside any subscription/timer/service callback
+# deadlocks the single-threaded executor with NO warning, NO exception, NO
+# stack-trace evidence. Every node spins single-threaded via run_node, so the
+# sync forms are banned: call_async / send_goal_async + done-callback
+# (link_watchdog's CancelGoal pattern is the house reference).
+
+SC11_BANNED = {'call': 'call_async', 'send_goal': 'send_goal_async'}
+SC11_ALLOW = {}
+
+
+def test_sc11_no_sync_service_or_action_calls():
+    _check_allow(SC11_ALLOW)
+    offenders = []
+    for path in _py_files(PKG):
+        if _rel(path) in SC11_ALLOW:
+            continue
+        for node in ast.walk(_tree(path)):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in SC11_BANNED):
+                offenders.append('%s:%d .%s( -> .%s(' % (
+                    _rel(path), node.lineno, node.func.attr,
+                    SC11_BANNED[node.func.attr]))
+    assert not offenders, (
+        'Synchronous rclpy client call — deadlocks silently inside any '
+        'callback on the single-threaded executor (Humble Sync-Vs-Async '
+        'how-to). Use the async form + done-callback (see link_watchdog), '
+        'ADR-0013 SC11:\n' + '\n'.join(offenders))
+
 
 def test_sc6_bind_path_only_in_robot_profile():
     offenders = []
