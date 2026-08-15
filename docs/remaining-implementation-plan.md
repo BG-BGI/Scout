@@ -19,19 +19,36 @@ da87c78 M6 (part 2): adopt geometry + TF helpers + run_node
 0c9f120 M1: safety + bug sweep
 ```
 
+**⚠ On top of those 7 commits, an UNCOMMITTED convention pass (ADR-0013) is in
+the working tree — commit it first.** It added ruff + structural convention
+tests (SC1–SC10) + CI, and while landing them it finished several M6 deferrals.
+Confirm with `git status` and land it before starting anything below. What it
+did (verified 2026-08-15): `scout.core.status` (status formatters — §5d), the
+`battery_monitor` → `scout.core.battery` adoption (§5a), `run_node` in every
+node (§5c), `scout/scout/qos.py` (`LATCHED_QOS` + the sensor-QoS convention),
+ruff replacing `ament_flake8` (`test_flake8.py` deleted), and moving config
+resolution into `robot_profile.py` (`resolve_config` / `resolve_config_dir`,
+SC6 — so **M4 does NOT create `launch_utils.py`**).
+
 **What already exists (don't rebuild it):**
 - `scout/config/robot_profile.yaml` — cross-surface SSOT (velocity caps/floors,
   cmd_vel topic names, LED modes, GoalStatus names, battery thresholds, occupied
-  threshold). Loaders: `scout/scout/robot_profile.py` (ROS), `docker/scout-skills/
-  robot_profile.py` (mounted, baked fallback), webui `fetch()` + mini-parser.
-- `scout/scout/cmd_vel_source.py` — `CmdVelSource` motion contract.
-- `scout/config/twist_mux.yaml` + twist_mux node in `robot.launch.py`; roboclaw
-  driver remapped to `/cmd_vel_out`.
-- `scout/scout/estop.py` — e-stop node + services.
-- `scout/scout/core/` — pure modules: `geometry`, `battery`, `coverage`,
-  `colors`, `tricks` (+ `node_util.py` with `run_node`, `lookup_pose2`,
-  `lookup_matrix`).
-- `scout/test/` — bare-pytest suite (23 tests). `CONTEXT.md`, `docs/adr/0001-0012`.
+  threshold). Loaders: `scout/scout/robot_profile.py` (ROS; also owns
+  `resolve_config*` — the sole home of the `/ros_ws/src/scout` bind path, SC6),
+  `docker/scout-skills/robot_profile.py` (mounted, baked fallback), webui
+  `fetch()` + mini-parser.
+- `scout/scout/cmd_vel_source.py` — `CmdVelSource`, the ONLY Twist publisher
+  besides `estop` (SC4). `scout/scout/estop.py` — e-stop node + services.
+- `scout/config/twist_mux.yaml` + twist_mux node; roboclaw remapped to
+  `/cmd_vel_out`.
+- `scout/scout/core/` — pure modules (stdlib+numpy only): `geometry`, `battery`,
+  `coverage`, `colors`, `tricks`, `status`. `node_util.py` = `run_node` +
+  `lookup_pose2` / `lookup_matrix`. `qos.py` = `LATCHED_QOS`.
+- `scout/test/` — bare-pytest suite: the algorithm tests PLUS the ADR-0013
+  structural tests (`test_conventions.py` SC1–SC10, `test_profile_constants.py`,
+  `test_status.py`, `test_lint.py`). `CONTEXT.md`, `docs/adr/0001-0013`.
+- Root `pyproject.toml` + `scout/ruff.toml` + `requirements-dev.txt` +
+  `.github/workflows/ci.yml` (ruff + pytest, py310).
 
 **Ground rules (non-negotiable — from CLAUDE.md):**
 1. **Deploy is git only.** Never edit tracked files on the Pi. commit → push →
@@ -52,13 +69,37 @@ git pull && docker compose --profile build run --rm build_package \
 # Dockerfile/image change: docker compose build && (see M5 volume note) && up -d
 ```
 
-**Mac / CI test workflow (no ROS needed):**
+**Mac / CI test workflow (no ROS needed) — this IS the definition of done:**
 ```bash
-python3 -m venv .venv && .venv/bin/pip install pytest numpy pyyaml
-PYTHONPATH=scout .venv/bin/python -m pytest scout/test -q
-# scout.core imports only stdlib+numpy (test_core_purity enforces it), so this
-# runs anywhere. test_flake8 importorskips ament and is skipped off-ROS.
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/ruff check .                                    # ADR-0013 lint gate
+PYTHONPATH=scout .venv/bin/python -m pytest scout/test -q  # algorithm + SC1-10 tests
+# scout.core imports only stdlib+numpy (test_core_purity/SC7 enforce it), so this
+# runs anywhere. CI (.github/workflows/ci.yml) runs both on every push; plain
+# pytest without ruff still works (test_lint skips). `colcon test` on the Pi
+# also runs pytest (ruff/structural tests skip when the tool is absent).
 ```
+
+**Conventions gate (ADR-0013) — every change below must satisfy it.** `ruff
+check .` + pytest is the bar; the structural tests fail with the fix in the
+message. Rules that touch this remaining work:
+- **SC1** a console-script `main()` is `def main(args=None)` delegating to
+  `run_node`. **SC2** `sensor_msgs` subscriptions use `qos_profile_sensor_data`,
+  never a bare depth. **SC3** no raw `lookup_transform` outside `node_util`.
+  **SC4** `Twist` publishers only in `cmd_vel_source`/`estop`. **SC5** no
+  hand-rolled planar-quaternion math (use `core.geometry`, or the vendored
+  `docker/scout-skills/geometry.py`). **SC6** the `/ros_ws/src/scout` bind path
+  only in `robot_profile.py`. **SC7** every `core/` module is imported by a node
+  AND has a 1:1 test file. **SC8** profile-owned values are never bare literals
+  (add new ones to `test_profile_constants.py`; escape a legitimate coincidence
+  with a `profile-exempt: <reason>` comment). **SC9** the `|`-status wire formats
+  are frozen in `core.status` + `test_status.py`. **SC10** the two deliberate
+  copies (`webui/robot_profile.yaml`, skills `geometry.py`) stay in sync.
+- **New convention?** Write it as a failing test first, remediate, land both,
+  record the why in an ADR (the ADR-0013 loop).
+- `scout.core` may never import ROS or yaml — profile values are *injected* by
+  the ROS caller (e.g. `plan_coverage(occupied=...)`), pure defaults carry a
+  `profile-exempt` marker.
 
 **Where designs live:** this file (execution detail) + `docs/adr/` (the *why*) +
 `CONTEXT.md` (glossary + node/topic map). The original approved plan is at
@@ -119,23 +160,24 @@ by param dump). See ADR-0010.
   misnomer).
 
 ### Files
-**New:**
-- `scout/scout/launch_utils.py`:
-  ```python
-  SRC_CONFIG = '/ros_ws/src/scout/config'   # bind-mount wins; share/ is fallback
-  def config_root() -> str
-  def resolve_config(name) -> str           # abs path; RAISES on miss
-  def known_profiles() -> list              # ['default'] + subdirs of overlays/
-  def profile_overlay(profile, basename)    # RAISES on unknown profile listing known;
-                                            # returns None if this file has no overlay
-  def deep_merge(base, overlay) -> dict      # dicts recurse; lists/scalars replace; None deletes
-  def merged_params(basename, profile) -> str
-      # 'default' -> resolve_config(basename) UNCHANGED (byte-identical path, no temp file)
-      # else -> deep_merge, write /tmp/scout_profile/<basename>, log path, return it
-  ```
-  This also replaces the 3 copies of the "bind-mount wins over share" path logic
-  (`robot.launch.py:22-28`, `explore.launch.py`, `slam.launch.py`'s
-  `_resolve_params_file`). Keep slam's raise-on-miss philosophy as the one dialect.
+**Extend (do NOT create `launch_utils.py`):** config resolution already lives in
+`scout/scout/robot_profile.py` — `resolve_config(name)` / `resolve_config_dir()`
+own the `/ros_ws/src/scout` bind path, and **SC6 forbids that path anywhere
+else** (the 3-dialect dedup the original plan proposed was done by the ADR-0013
+pass). Add the profile-overlay helpers to `robot_profile.py`:
+```python
+def known_profiles() -> list              # ['default'] + subdirs of config/overlays/
+def profile_overlay(profile, basename)    # RAISES on unknown profile listing known;
+                                          # returns None if this file has no overlay
+def deep_merge(base, overlay) -> dict      # dicts recurse; lists/scalars replace; None deletes
+def merged_params(basename, profile) -> str
+    # 'default' -> resolve_config(basename) UNCHANGED (byte-identical path, no temp file)
+    # else -> deep_merge, write /tmp/scout_profile/<basename>, log path, return it
+```
+`deep_merge` is pure — if you'd rather keep it testable in `scout.core`, put it
+in a new `core/` module (then SC7 needs a 1:1 test + a node importer) and have
+`robot_profile.merged_params` call it. `merged_params` stays in `robot_profile`
+(it reads files → not core-pure).
 - `scout/launch/nav2.launch.py` — resolves+merges nav2 params, then
   `IncludeLaunchDescription(navigation_launch.py, launch_arguments={'params_file':
   merged, 'use_sim_time':'false'})`. Add the **coupling guard** in an
@@ -193,8 +235,9 @@ arg on `robot.launch.py` in favor of `profile` (operator decision — recommend 
    /bt_navigator /waypoint_follower /velocity_smoother
    /local_costmap/local_costmap /global_costmap/global_costmap /slam_toolbox
    /camera/camera` → `captures/params_baseline/`. **Ground truth.**
-2. `launch_utils.py` + overlays + `test_profile_overlays.py` (forks still in
-   tree). `pytest` green — proves merge == fork modulo expected diffs + typo guard.
+2. `robot_profile.py` overlay helpers + overlay files + `test_profile_overlays.py`
+   (forks still in tree). `ruff check .` + `pytest` green — proves merge == fork
+   modulo expected diffs + typo guard.
 3. Rewire launch files + `nav2.launch.py` + coupling guard + setup.py. In the
    container: `ros2 launch scout <f> --print` for all 4 files × both profiles;
    confirm default-profile paths point at the ORIGINAL base files (no temp);
@@ -342,28 +385,17 @@ next run drives to the fresh pose.
 
 ---
 
-## 5. M6 deferrals (bench-gated)
+## 5. M6 deferrals
 
-The pure `scout.core` modules + node_util + the geometry/coverage/colors/tricks
-adoptions are done. Remaining:
+The ADR-0013 convention pass finished most of these while enforcing SC1/SC7/SC9.
+**Only 5b remains.**
 
-### 5a. battery_monitor → `scout.core.battery` + profile thresholds
-`core/battery.py` already has `DEFAULT_CURVE_*`, `validate_curve`, `fraction_at`,
-`RestingSocEstimator` (all tested). Rewire `battery_monitor.py`:
-- Use `validate_curve` (catch `ValueError`, log, fall back to `DEFAULT_CURVE_*`).
-- Replace the inline rest/median logic in `_on_status` with a
-  `RestingSocEstimator`; feed `update(t, volts, speed)` where `t =
-  self.get_clock().now().nanoseconds * 1e-9`; use its non-None return as the new
-  estimate (keep the existing log-delta gating in `_update_estimate`).
-- Read `warn_voltage`/`critical_voltage` param defaults from
-  `robot_profile.yaml` (`battery_warn_v`/`battery_critical_v`) like led_status
-  does; leave `activity_floor` (17.0) for trick_player `battery_floor` + patrol
-  `abort_voltage` to read from `battery_activity_floor_v`.
-- `main` → `run_node(BatteryMonitor)`.
-**Verify (Pi):** `/battery` percentage matches pre-change at the same resting
-voltage; low/critical warnings still fire. Safety-relevant — watch it.
+### 5a. battery_monitor → `scout.core.battery` — ✅ DONE (ADR-0013 pass, SC7)
+`battery_monitor.py` imports `RestingSocEstimator` + the curve from
+`scout.core.battery`. Still Pi-verify after committing: `/battery` percentage at
+a known resting voltage + the low/critical warnings.
 
-### 5b. depth_grid + scan (the ~180-line under-lidar dedup — highest risk)
+### 5b. depth_grid + scan (the ~180-line under-lidar dedup — highest risk, OUTSTANDING)
 The under-lidar obstacle algorithm is written twice: `follow_me._on_depth` +
 `_memory_corridor_min` (odom-anchored) and `clutter_mapper._on_depth`
 (map-anchored). Extract to `scout/scout/core/depth_grid.py`:
@@ -399,18 +431,19 @@ regression). Then adopt **clutter_mapper first** (commit), then **follow_me**
 recorded depth bag before merging — the best behavior-preservation check.
 **Bench-verify** each: clutter mark/see-through-clear; follow acquire/avoid.
 
-### 5c. run_node in the remaining trivial nodes
-`gyro_calibrator`, `wheel_joint_relay`, `tilt_monitor`, `led_status`,
-`joystick_teleop`, `estop`: replace `main()` boilerplate with
-`run_node(NodeCls, on_shutdown=..., args=args)`. Remove now-unused `import
-rclpy` / `from rclpy.executors import ExternalShutdownException` (flake8 fails on
-unused imports on the Pi). Pure cleanup, no behavior change.
+### 5c. run_node in every node — ✅ DONE (ADR-0013 pass, SC1)
+All 13 console-script mains delegate to `run_node`; SC1 in `test_conventions.py`
+keeps it that way.
 
-### 5d. status_protocol — DECLINED, don't build unless asked
-The `|`-joined status strings are consciously kept over `.msg` (churn across the
-rosbridge boundary for values that change yearly — ADR-0012). If desired later,
-a `core/status_protocol.py` with encode/parse + wire-format-frozen tests is the
-shape; the webui keeps its `split('|')`.
+### 5d. status wire formats — ✅ DONE (ADR-0013 pass, SC9)
+`scout/scout/core/status.py` owns the `|`-format grammar; `test_status.py` (SC9)
+freezes the exact strings. Still kept as strings, not `.msg` (ADR-0012/0013).
+
+**When you build 5b:** it must clear the conventions gate — a `core/depth_grid.py`
+and `core/scan.py` each need a 1:1 test file AND a node importer (SC7), any
+profile-owned values are injected by the caller not hardcoded (SC8, ADR-0012
+purity), and `ruff check .` must pass. Add the regression tests as SC-style
+where they encode a rule (e.g. the backwards-mount `scan_yaw_offset=pi`).
 
 ---
 
@@ -425,13 +458,17 @@ owns.
 ---
 
 ## 7. Suggested order for the next session
+0. **Commit the uncommitted ADR-0013 convention pass** (see §0) — run `ruff
+   check .` + pytest first; that's the definition of done for it.
 1. Deploy + on-blocks verify **M3** (prerequisite for any floor work).
 2. **M7 core** (`core/waypoints.py` + tests) — Mac-verifiable, lands clean.
 3. **M4** (needs Pi param-dump; highest functional value after M3).
 4. **M5** (one rebuild + volume migration).
-5. **M7 adoption + migration**, then **M6 deferrals** (5a battery, then 5b
-   depth_grid/scan with bench checks, then 5c run_node cleanup).
-6. Comment-dedup pass.
+5. **M7 adoption + migration**, then the one remaining M6 deferral: **5b
+   depth_grid/scan** (Mac tests, then adopt clutter_mapper → follow_me, with
+   bench checks). 5a/5c/5d are already done.
+6. Comment-dedup pass (note: SC8 already test-enforces "no re-hardcoded profile
+   values", so that slice is done; this is the prose-rationale cleanup).
 
 Every milestone is an independent commit; deploy + verify per-milestone. Update
 the relevant ADR if a decision changes during execution.
