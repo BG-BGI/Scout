@@ -12,8 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ament_flake8.main import main_with_errors
 import pytest
+
+# ament_flake8 only exists inside the ROS environment (colcon test on the Pi);
+# skip cleanly under bare pytest on the dev Mac / CI so the pure-core suite runs.
+main_with_errors = pytest.importorskip('ament_flake8.main').main_with_errors
 
 
 @pytest.mark.flake8

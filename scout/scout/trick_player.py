@@ -22,14 +22,14 @@ Safety:
 import math
 import time
 
-import rclpy
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scout.cmd_vel_source import CmdVelSource
+from scout.core.tricks import TRICK_LED, TRICKS, validate_tricks
+from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import PlayTrick
 
@@ -38,81 +38,6 @@ from scout_interfaces.srv import PlayTrick
 _PROFILE = _load_profile()
 MAX_LINEAR = _PROFILE['linear_cap']     # m/s  (= roboclaw.yaml max_linear_velocity)
 MAX_ANGULAR = _PROFILE['angular_cap']   # rad/s (= roboclaw.yaml max_angular_velocity)
-
-# name: [(duration_s, vx m/s, wz rad/s[, '#RRGGBB' led override]), ...]
-# A (dur, 0, 0) segment is a deliberate hard stop (zeros keep the deadman fed).
-# Durations/magnitudes are first guesses pending on-robot tuning. The wheelie
-# depends on the roboclaw.yaml `accel`: at 20000 counts/s^2 the -1 -> +1 m/s
-# flip ramps over ~0.65 s (~3 m/s^2) and the nose stays down; 40000+ is what
-# gives it a chance. Tune on a hard floor.
-TRICKS = {
-    'spin':      [(4.2, 0.0, 3.0)],
-    'wiggle':    [(0.3, 0.0, 2.5), (0.3, 0.0, -2.5)] * 6,
-    'figure8':   [(3.5, 0.4, 1.5), (3.5, 0.4, -1.5)],
-    'wheelie':   [(0.4, -1.0, 0.0), (0.6, 1.0, 0.0)],
-    # Lunge, hard stop, psych pause, lunge again, retreat.
-    'fakeout':   [(0.3, 1.0, 0.0), (0.4, 0.0, 0.0), (0.5, 0.0, 0.0),
-                  (0.3, 1.0, 0.0), (0.6, -0.6, 0.0)],
-    # Wet-dog shake: fast small pivots at the scrub floor.
-    'shiver':    [(0.15, 0.0, 2.5), (0.15, 0.0, -2.5)] * 8,
-    # One full rev each way; the reversal snap is the show (2*pi/3 ~= 2.1 s).
-    'whiplash':  [(2.1, 0.0, 3.0), (2.1, 0.0, -3.0)],
-    # One clean circle around a point ~27 cm to the left (r = vx/wz).
-    'orbit':     [(4.2, 0.4, 1.5)],
-    # Snake down the hallway (~1.8 m of travel).
-    'slalom':    [(0.5, 0.6, 1.2), (0.5, 0.6, -1.2)] * 3,
-    # Slow reverse with lazy alternating arcs.
-    'moonwalk':  [(0.7, -0.25, 0.8), (0.7, -0.25, -0.8)] * 4,
-    # Butt-wiggle creep forward (arcs, so the pivot floor does not apply).
-    'wag':       [(0.2, 0.15, 2.5), (0.2, 0.15, -2.5)] * 6,
-    # LED steps red -> orange -> green while stationary, then a 1 s sprint.
-    'countdown': [(1.0, 0.0, 0.0, '#FF0000'), (1.0, 0.0, 0.0, '#FF8000'),
-                  (1.0, 0.0, 0.0, '#00FF00'), (1.0, 1.0, 0.0, '#00FF00'),
-                  (0.4, 0.0, 0.0, '#00FF00')],
-    # Stationary light show with pivot pulses on the beat.
-    'disco':     [(0.25, 0.0, 2.5), (0.25, 0.0, -2.5)] * 8,
-    # Full-accel launch; with accel >= 40000 the wheels chirp before hooking up.
-    'burnout':   [(1.2, 1.0, 0.0), (0.5, 0.0, 0.0)],
-}
-
-# Default LED (color, led_node mode) per trick; 'rainbow' ignores color.
-# A segment's 4th element overrides the color mid-trick (see countdown).
-TRICK_LED = {
-    'spin':      ('#0080FF', 'chase'),
-    'wiggle':    ('#B040FF', 'chase'),
-    'figure8':   ('#00FFFF', 'chase'),
-    'wheelie':   ('#FF2000', 'chase'),
-    'fakeout':   ('#FF2000', 'chase'),
-    'shiver':    ('#4060FF', 'breathe'),
-    'whiplash':  ('#FFFFFF', 'blink'),
-    'orbit':     ('#00FFFF', 'chase'),
-    'slalom':    ('#00FF40', 'chase'),
-    'moonwalk':  ('', 'rainbow'),
-    'wag':       ('#B040FF', 'chase'),
-    'countdown': ('#FF0000', 'solid'),
-    'disco':     ('', 'rainbow'),
-    'burnout':   ('#FF6000', 'chase'),
-}
-
-
-def _validate_tricks(min_pivot_rate):
-    """Raise if any trick segment violates the caps or the pivot floor."""
-    for name, segments in TRICKS.items():
-        for i, seg in enumerate(segments):
-            dur, vx, wz = seg[0], seg[1], seg[2]
-            if dur <= 0.0:
-                raise ValueError('%s[%d]: duration %.2f <= 0' % (name, i, dur))
-            if abs(vx) > MAX_LINEAR:
-                raise ValueError('%s[%d]: |vx| %.2f > %.2f' % (name, i, vx, MAX_LINEAR))
-            if abs(wz) > MAX_ANGULAR:
-                raise ValueError('%s[%d]: |wz| %.2f > %.2f' % (name, i, wz, MAX_ANGULAR))
-            if vx == 0.0 and wz != 0.0 and abs(wz) < min_pivot_rate:
-                raise ValueError(
-                    '%s[%d]: pivot at %.2f rad/s is under the %.2f tracking floor'
-                    % (name, i, wz, min_pivot_rate))
-        if name not in TRICK_LED:
-            raise ValueError('%s: missing TRICK_LED entry' % name)
-
 
 class TrickPlayer(Node):
     """Serves /play_trick and walks the segment list on a fixed timer."""
@@ -128,7 +53,8 @@ class TrickPlayer(Node):
         self._min_pivot_rate = float(self.get_parameter('min_pivot_rate').value)
         self._battery_floor = float(self.get_parameter('battery_floor_volts').value)
 
-        _validate_tricks(self._min_pivot_rate)
+        validate_tricks(TRICKS, TRICK_LED, max_linear=MAX_LINEAR,
+                        max_angular=MAX_ANGULAR, min_pivot_rate=self._min_pivot_rate)
 
         self._cmd = CmdVelSource(self, 'trick', hz=publish_hz)
         self._status_pub = self.create_publisher(String, 'trick_status', 10)
@@ -241,18 +167,8 @@ class TrickPlayer(Node):
         self._cmd.stop_now()  # explicit stop on shutdown
 
 
-def main():
-    rclpy.init()
-    node = TrickPlayer()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.stop()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main(args=None):
+    run_node(TrickPlayer, on_shutdown=lambda n: n.stop(), args=args)
 
 
 if __name__ == '__main__':

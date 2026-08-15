@@ -19,12 +19,12 @@ import colorsys
 import math
 import time
 
-import rclpy
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
 
 from scout.apa102 import (APA102, LED_FULL_WHITE_AMPS, NUM_LEDS,
                           SPI_BUS, SPI_DEVICE, SPI_HZ)
+from scout.core.colors import parse_hex_color
+from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import SetLedMode
 
@@ -123,25 +123,6 @@ class LedNode(Node):
                     % (level, b_final, self._current_budget))
         return b_final, note
 
-    @staticmethod
-    def _parse_hex_color(text):
-        """Parse a hex color into (r, g, b). Empty -> black. Raises ValueError.
-
-        Accepts '#RRGGBB', 'RRGGBB', '0xRRGGBB', and 3-digit shorthand '#RGB'.
-        """
-        s = (text or '').strip().lower()
-        if not s:
-            return (0, 0, 0)
-        if s.startswith('0x'):
-            s = s[2:]
-        elif s.startswith('#'):
-            s = s[1:]
-        if len(s) == 3:                     # shorthand: "abc" -> "aabbcc"
-            s = ''.join(c * 2 for c in s)
-        if len(s) != 6 or any(c not in '0123456789abcdef' for c in s):
-            raise ValueError("expected hex like '#RRGGBB', got '%s'" % text)
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
-
     # --- service -------------------------------------------------------------
     def _on_set_led_mode(self, request, response):
         mode = (request.mode or '').strip().lower()
@@ -153,7 +134,7 @@ class LedNode(Node):
             return response
 
         try:
-            r, g, b = self._parse_hex_color(request.color)
+            r, g, b = parse_hex_color(request.color)
         except ValueError as exc:
             response.success = False
             response.message = 'bad color: %s' % exc
@@ -249,18 +230,8 @@ class LedNode(Node):
             pass
 
 
-def main():
-    rclpy.init()
-    node = LedNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.shutdown()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main(args=None):
+    run_node(LedNode, on_shutdown=lambda n: n.shutdown(), args=args)
 
 
 if __name__ == '__main__':
