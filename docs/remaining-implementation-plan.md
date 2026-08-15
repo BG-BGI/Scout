@@ -69,6 +69,13 @@ ROS 2 Humble capabilities the stack lacks.
 12. **F4 managed lifecycle bring-up** — NOT started (robot-coupled: transition/
     ordering behavior; largest effort, lowest ROI — spike last). §8.4.
 
+**E. Humble-capability adoptions (2026-08-15 audit) — CODE COMPLETE, Pi verify
+open. §8.5.**
+13. **nav2 composed bring-up** — verify on Pi: goal succeeds, CPU + control-loop
+    misses vs `use_composition:=false` baseline. §8.5.
+14. **Fast DDS Discovery Server** — verify on Pi: full stack rediscovers after
+    `up -d`, Foxglove connects, super-client shell sees full graph. §8.5.
+
 **Not doing** (unless asked): the optional `/nav_paused` link-loss/patrol fix
 (§4, new behavior); the prose comment-dedup pass (§6, low value — SC8 already
 test-enforces the profile-value slice).
@@ -561,6 +568,14 @@ levels in pure `scout.core.health`. ADR-0014. Landed: `scout/scout/health_monito
 - **Later (needs on-hardware JSON):** add drivetrain temps + RoboClaw error flags
   once the `/roboclaw_status` keys past `main_battery`/`m1_speed`/`m2_speed` are
   read on the robot — do not guess field names (ADR-0014).
+- **Optional follow-up — QoS deadline events instead of hz-polling:** a
+  subscription created with a `deadline` QoS gets a missed-deadline *callback*
+  (event-driven, catches single dropouts a 1 Hz poll misses). Compatibility is
+  request/offered — a subscriber deadline vs a publisher with no offered
+  deadline = **no connection** — so it only works on topics whose publishers we
+  own (cmd_vel_source's `/cmd_vel_*`, gyro_calibrator's `/imu/data`): offer the
+  deadline on the publisher, request it on a dedicated monitor subscription in
+  health_monitor. Do NOT put a deadline on the main consumer subscriptions.
 
 ### 8.2 F2 — rosbag2 record-on-demand (robot-coupled — NOT started)
 
@@ -584,9 +599,16 @@ developed + validated with ros2 running.
   `rosbridge.py`. webui: a REC toggle lit from `record/active`.
 - **Confirm `captures/` is bind-mounted to the host** in `docker-compose.yaml` so
   bags reach the operator (add the mount if missing). ADR-0015.
+- **⚠ QoS overrides are mandatory or the bag silently misses `/imu/data`:**
+  `gyro_calibrator` publishes best-effort (same trap as the EKF QoS note), and
+  a reliable-by-default recorder subscription receives nothing. Ship
+  `scout/config/bag_qos_overrides.yaml` (best-effort reliability for
+  `/imu/data` + any sensor topics) and pass
+  `--qos-profile-overrides-path` in `record_argv` (Humble how-to:
+  Overriding-QoS-Policies-For-Recording-And-Playback).
 - Verify (robot): `record/start` → short **operator-confirmed** drive →
-  `record/stop`; `ros2 bag info captures/<ts>` lists topics + counts; bag opens on
-  the host.
+  `record/stop`; `ros2 bag info captures/<ts>` lists topics + counts —
+  **including a nonzero `/imu/data` count** — bag opens on the host.
 
 ### 8.3 F3 — nav2 cancel + `/nav_state` feedback (robot-coupled — NOT started)
 
@@ -631,3 +653,42 @@ perception path. Robot-coupled: transitions/ordering only exist live. Recommend 
   discipline). ADR-0017 (which nodes are managed and why; which stay plain).
 - Verify (robot): `ros2 lifecycle get <node>` = `active`; `set <node>
   deactivate`/`activate` cycles without a container restart; ordered autostart.
+
+### 8.5 Humble-capability adoptions ✅ CODE COMPLETE (2026-08-15) — Pi verify open
+
+Two changes from the ROS 2 Humble core-docs audit (corpus has no nav2/slam docs;
+these are the core capabilities that map to documented pain points).
+
+**A. nav2 composed bring-up** (`scout/launch/nav2.launch.py`). Upstream
+`navigation_launch.py` gained `use_composition` handling in the scout wrapper:
+it only LOADS components (`bringup_launch.py` normally makes the container), so
+the wrapper now starts `component_container_isolated` named `nav2_container`
+itself and passes `use_composition`/`container_name` through. All 8 nav2 nodes
+become components in one process — one executor, intra-process comms, 1 DDS
+participant instead of 8. Targets the `Control loop missed 15 Hz` contention +
+the throwaway-container goal abort (nav2 was ~39% of a core as 8 processes).
+Default `use_composition:=true`; `false` restores one-process-per-node for A/B.
+- Verify (Pi): nav2 up → all 8 lifecycle nodes active, node names unchanged
+  (`/controller_server` etc. survive composition); one Foxglove goal succeeds;
+  `docker stats` nav2 CPU + control-loop-miss count over one drive vs a
+  `use_composition:=false` run. cmd_vel remaps are per-component in upstream's
+  LoadComposableNodes (verified against 1.1.20 source) — `/cmd_vel_nav` →
+  `/cmd_vel` plumbing unchanged.
+
+**B. Fast DDS Discovery Server** (compose `discovery` service, id 0,
+127.0.0.1:11811; `ROS_DISCOVERY_SERVER` on the `&base` env). Replaces multicast
+simple discovery — fixes the documented throwaway-container discovery false
+negatives and shrinks discovery traffic. Discovery Server v2 filters by topic,
+so plain-client shells see a near-empty graph: diagnostic shells need
+`FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml` +
+`ros2 daemon stop && ros2 daemon start` (recipe in the XML header). Server-id 0
+is encoded in the XML's RemoteServer prefix — change both together.
+- Verify (Pi): `up -d` → every service's own log shows normal startup (data
+  topics flowing: `/scan`, `/odom`, `/map`); Foxglove connects and lists topics;
+  webui drives; a throwaway shell WITH the super-client profile lists the full
+  graph in <2 s (the old 16 s false-negative case), and one WITHOUT it showing
+  near-nothing confirms the server is actually in use. `fastdds` CLI presence:
+  `docker compose run --rm discovery which fastdds` if the service fails to
+  start.
+- Rollback (either item): `use_composition:=false` on the nav2 command /
+  remove `ROS_DISCOVERY_SERVER` + the `discovery` service. Independent knobs.

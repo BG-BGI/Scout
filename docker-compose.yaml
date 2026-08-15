@@ -8,6 +8,14 @@ x-service: &base
   # off-host. Remove only if a ROS node must run on another machine.
   environment:
     - ROS_LOCALHOST_ONLY=1
+    # Discovery Server instead of multicast simple discovery (see `discovery`
+    # service). Fixes the documented throwaway-container discovery false
+    # negatives and cuts discovery traffic. Clients retry the server until it
+    # appears, so start order doesn't matter.
+    # ⚠ Introspection from a shell now needs the SUPER_CLIENT profile or
+    # `ros2 topic list` reads near-empty (v2 filters by topic) — see
+    # scout/config/super_client.xml for the two-line recipe.
+    - ROS_DISCOVERY_SERVER=127.0.0.1:11811
   entrypoint: /ros_entrypoint.sh
   volumes:
     - .:/ros_ws/src/
@@ -21,6 +29,17 @@ x-service: &base
   # SPI), so only it gets privileged. Bridges/compute services run unprivileged.
 
 services:
+
+  # Fast DDS Discovery Server v2 (id 0, loopback:11811). Every &base service is
+  # a discovery CLIENT via ROS_DISCOVERY_SERVER above; ros_mcp/scout_skills are
+  # rosbridge-websocket-only and unaffected. Server-id 0 is encoded in
+  # scout/config/super_client.xml's RemoteServer prefix — change both together.
+  # If this restarts, clients re-ping and re-register on their own; already-
+  # matched endpoints keep talking (discovery only, no data plane).
+  discovery:
+    <<: *base
+    restart: unless-stopped
+    command: fastdds discovery -i 0 -l 127.0.0.1 -p 11811
 
   # Installs scout (+ deps) into $OVERLAY. Symlink-install: edits under the bind
   # mount take effect after rebuild without a second copy.

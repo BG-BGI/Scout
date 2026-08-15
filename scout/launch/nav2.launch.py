@@ -20,6 +20,7 @@ from launch.actions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 
 from launch import LaunchDescription
 from scout.robot_profile import merged_params
@@ -53,15 +54,34 @@ def _launch_setup(context, *args, **kwargs):
     nav_launch = os.path.join(
         get_package_share_directory('nav2_bringup'), 'launch',
         'navigation_launch.py')
-    return [
+    use_composition = (
+        LaunchConfiguration('use_composition').perform(context).lower()
+        in ('true', '1'))
+
+    actions = []
+    if use_composition:
+        # Composed bring-up: all 8 nav2 nodes as components in one process --
+        # one executor, intra-process comms, 1 DDS participant instead of 8.
+        # navigation_launch.py only LOADS components; the container normally
+        # comes from bringup_launch.py (which we skip -- no amcl/map_server),
+        # so create it here, mirroring bringup_launch.py's container node.
+        actions.append(Node(
+            name='nav2_container',
+            package='rclcpp_components',
+            executable='component_container_isolated',
+            parameters=[params_file, {'autostart': True}],
+            output='screen'))
+    actions.append(
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(nav_launch),
             launch_arguments={
                 'params_file': params_file,
                 'use_sim_time': 'false',
+                'use_composition': str(use_composition),
+                'container_name': 'nav2_container',
             }.items(),
-        ),
-    ]
+        ))
+    return actions
 
 
 def generate_launch_description():
@@ -69,5 +89,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'profile', default_value='default',
             description='Config profile (default | tight_tunnel)'),
+        DeclareLaunchArgument(
+            'use_composition', default_value='true',
+            description='Load the 8 nav2 nodes into one component container '
+                        '(false = one process per node, the pre-2026-08-15 '
+                        'behavior; keep available for CPU A/B on the Pi)'),
         OpaqueFunction(function=_launch_setup),
     ])
