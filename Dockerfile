@@ -146,8 +146,8 @@ RUN apt-get update && apt-get install -y \
 # ADR-0005): this is the fork most likely to get pin bumps, and sitting under the
 # apt layers means a bump rebuilds only this + explore + the stamp — never the
 # 13-min librealsense layer. Pinned to the default-branch tip at pin time.
-# BG-BGI/roboclaw_driver is our org fork of kahleeeb3/roboclaw_driver (itself a
-# wimblerobotics/Sigyn fork) — no build-time dependency on personal repos.
+# BG-BGI/roboclaw_driver is our org fork (wimblerobotics/Sigyn lineage) — no
+# build-time dependency on personal repos; bump flow in ADR-0005.
 RUN git clone https://github.com/BG-BGI/roboclaw_driver.git \
         "$OVERLAY/src/roboclaw_driver" \
     && git -C "$OVERLAY/src/roboclaw_driver" checkout --detach cc4d0e78acb6f65a60e1e9135258a55d4624ecb7 \
