@@ -38,7 +38,8 @@ robot_profile:
   source_timeout_s: 0.5    # twist_mux per-input staleness (keep twist_mux.yaml in step)
 
   # --- cmd_vel topics (twist_mux fan-in — keep in step with twist_mux.yaml) ---
-  topic_cmd_vel_out: "/cmd_vel_out"      # mux output -> roboclaw_driver
+  topic_cmd_vel_out: "/cmd_vel_out"      # mux output -> collision_monitor
+  topic_cmd_vel_safe: "/cmd_vel_safe"    # collision_monitor -> roboclaw_driver (ADR-0016)
   topic_cmd_vel_joy: "/cmd_vel_joy"      # joystick_teleop  (prio 100)
   topic_cmd_vel_web: "/cmd_vel_web"      # webui + Foxglove (prio 90)
   topic_cmd_vel_trick: "/cmd_vel_trick"  # trick_player     (prio 60)

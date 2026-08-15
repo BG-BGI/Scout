@@ -1,0 +1,60 @@
+# nav2_collision_monitor — the last-hop safety stage (ADR-0016).
+#
+# Sits BETWEEN twist_mux and the driver:
+#   /cmd_vel_out (mux winner) -> collision_monitor -> /cmd_vel_safe -> roboclaw
+# so it guards EVERY motion source (joystick, webui, tricks, follow_me,
+# skills, nav2), unlike nav2's costmaps which only constrain nav goals. It is
+# what stands between a latched/runaway command and furniture.
+#
+# Verified against nav2 1.1.20 source: the per-polygon point threshold is
+# `max_points` (points > max_points triggers; renamed min_points only in
+# later distros — do not "fix" it), polygons are boxes in base_frame_id, and
+# a scan source is transformed through TF (the 180° lidar mount is already
+# in base_link->laser, so no angle handling here).
+#
+# Interplay notes:
+# - estop stays upstream (twist_mux prio-255 lock, ADR-0001); this is an
+#   independent second layer. A zero Twist passes through unchanged.
+# - source_timeout 2.0: a lidar gap >2 s (e.g. the rplidar respawn window,
+#   ADR-0015) treats the scan as invalid and STOPS motion until it returns.
+#   That is the deliberate fail-safe direction.
+# - The deadman is unaffected: output publishes per input message, so the
+#   20–50 Hz cadence and the explicit-zero stop convention pass through.
+# - tight_tunnel: the default side margins would read pipe walls as a stop
+#   condition — the overlay shrinks both boxes to the footprint (see
+#   overlays/tight_tunnel/collision_monitor.yaml).
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "/cmd_vel_out"
+    cmd_vel_out_topic: "/cmd_vel_safe"
+    # Matches the stack-wide 0.5 tolerance (nav2.yaml) — the 0.1 upstream
+    # default throws on the Pi's TF latency.
+    transform_tolerance: 0.5
+    source_timeout: 2.0
+    base_shift_correction: true
+    stop_pub_timeout: 1.0
+    polygons: ["PolygonStop", "PolygonSlow"]
+    # Footprint is ±0.169 x ±0.167 (mesh bounds, nav2.yaml). Stop box adds
+    # ~7 cm ahead / ~4 cm to the side: at 0.6 m/s the robot covers ~5 cm per
+    # 11.7 Hz scan, so the margin is roughly one scan of travel + coast.
+    PolygonStop:
+      type: "polygon"
+      points: [0.24, 0.21, 0.24, -0.21, -0.24, -0.21, -0.24, 0.21]
+      action_type: "stop"
+      max_points: 3
+      visualize: true
+      polygon_pub_topic: "polygon_stop"
+    PolygonSlow:
+      type: "polygon"
+      points: [0.45, 0.32, 0.45, -0.32, -0.45, -0.32, -0.45, 0.32]
+      action_type: "slowdown"
+      max_points: 3
+      slowdown_ratio: 0.4
+      visualize: true
+      polygon_pub_topic: "polygon_slowdown"
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan"

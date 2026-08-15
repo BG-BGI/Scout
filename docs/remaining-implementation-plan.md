@@ -77,8 +77,9 @@ open. §8.5.**
     `up -d`, Foxglove connects, super-client shell sees full graph. §8.5.
 
 **F. Nav/autonomy additions (2026-08-15 corpus+nav2 audit) — NONE started. §9.**
-15. **N1 nav2_collision_monitor** — safety stage after twist_mux; protects ALL
-    cmd_vel sources. Robot-coupled. §9.1.
+15. **N1 nav2_collision_monitor** — ✅ CODE COMPLETE (ADR-0016); on-blocks +
+    floor verify open. NOTE: changes M3's §1 checklist — driver now listens on
+    `/cmd_vel_safe`. §9.1.
 16. **N4 fail-fast bring-up** — ✅ CODE COMPLETE (ADR-0015); Pi kill-test
     verify open. §9.2.
 17. **N5 SC11 rclpy no-sync-service-call rule** — ✅ DONE (test_conventions
@@ -187,8 +188,11 @@ M4 (which restarts nav2 on top of it).
 `scout_skills` rebuild (profile mount + code). Then `up -d robot scout_skills`.
 
 **On-blocks checklist (operator, wheels off ground):**
+_(updated for ADR-0016: the collision monitor now sits between the mux and
+the driver)_
 1. `ros2 topic info /cmd_vel_out -v` → exactly 2 endpoints: twist_mux pub +
-   roboclaw_driver sub.
+   collision_monitor sub. `ros2 topic info /cmd_vel_safe -v` → exactly 2:
+   collision_monitor pub + roboclaw_driver sub.
 2. Joystick drive → `ros2 topic hz /cmd_vel_joy` and `/cmd_vel_out` ≈25 Hz;
    release → 0.3 s of zeros pass through, then `/cmd_vel_out` silent.
 3. Webui pad drives; hold joystick simultaneously → joystick preempts (visible
@@ -746,7 +750,7 @@ costmap debugging is done), EKF process noise untuned (CLAUDE.md flags it).
 N2/N3 from this audit were folded into §8.2/§8.1 directly. Suggested order:
 9.3 (Mac, minutes) → 9.2 → 9.1 → 9.4 → operator priority among 9.5–9.8.
 
-### 9.1 N1 — nav2_collision_monitor (the biggest genuine gap; robot-coupled)
+### 9.1 N1 — nav2_collision_monitor ✅ CODE COMPLETE (ADR-0016) — on-blocks verify open
 
 Safety stage BETWEEN twist_mux and the driver: `/cmd_vel_out` →
 `collision_monitor` → `/cmd_vel_safe`; roboclaw remap changes once in

@@ -1,6 +1,7 @@
 # twist_mux: the cmd_vel arbiter. Every motion producer publishes to its own
 # per-source topic; twist_mux forwards the highest-priority input that is fresh
-# (published within its timeout) to /cmd_vel_out, which roboclaw_driver drives.
+# (published within its timeout) to /cmd_vel_out, which the collision monitor
+# guards into /cmd_vel_safe for roboclaw_driver (ADR-0016).
 #
 # Topology (see ADR-0001): nav2 keeps publishing plain /cmd_vel (velocity_smoother
 # AND behavior_server's direct output both land there) — that IS the nav input at

@@ -55,6 +55,38 @@ def _camera_setup(context, *args, **kwargs):
     ]
 
 
+def _safety_setup(context, *args, **kwargs):
+    # Last-hop collision monitor (ADR-0016): /cmd_vel_out -> /cmd_vel_safe.
+    # Profile-aware (tight_tunnel shrinks the polygons), so resolved here like
+    # the camera config. It is a lifecycle node — the manager activates it.
+    profile = LaunchConfiguration('profile').perform(context)
+    collision_monitor = Node(
+        package='nav2_collision_monitor',
+        executable='collision_monitor',
+        name='collision_monitor',
+        output='screen',
+        parameters=[merged_params('collision_monitor.yaml', profile)],
+    )
+    lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_safety',
+        output='screen',
+        parameters=[{'autostart': True,
+                     'node_names': ['collision_monitor']}],
+    )
+    return [
+        collision_monitor,
+        lifecycle_manager,
+        # Both are motion-chain members: with either dead the driver hears
+        # nothing on /cmd_vel_safe — undrivable counts as "the stack lies".
+        _fail_fast(collision_monitor,
+                   'collision_monitor exited — cmd_vel_safe dead'),
+        _fail_fast(lifecycle_manager,
+                   'lifecycle_manager_safety exited — CM unmanaged'),
+    ]
+
+
 def generate_launch_description():
     scout_share = get_package_share_directory('scout')
     # Bind-mounted repo wins for live edits; share path is the fallback
@@ -86,7 +118,9 @@ def generate_launch_description():
         name='roboclaw_driver',
         output='screen',
         parameters=[os.path.join(config, 'roboclaw.yaml')],
-        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_out')],
+        # /cmd_vel_safe = collision-monitor output (ADR-0016); the driver no
+        # longer hears the mux directly.
+        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_safe')],
     )
     gyro_calibrator = Node(
         package='scout',
@@ -179,6 +213,8 @@ def generate_launch_description():
         ),
 
         OpaqueFunction(function=_camera_setup),
+
+        OpaqueFunction(function=_safety_setup),
 
         gyro_calibrator,
 

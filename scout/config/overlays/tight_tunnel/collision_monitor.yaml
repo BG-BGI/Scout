@@ -1,0 +1,14 @@
+# tight_tunnel deltas for collision_monitor (ADR-0016).
+#
+# In a pipe barely wider than the robot the default side margins read the
+# pipe walls as a permanent stop condition and freeze the robot. Shrink both
+# boxes to the physical footprint (+~1 cm): the collision monitor then only
+# fires on genuine contact-imminent points, and clearance decisions stay with
+# nav2's ObstacleFootprint critic (which is tuned for exactly this).
+collision_monitor:
+  ros__parameters:
+    PolygonStop:
+      points: [0.18, 0.175, 0.18, -0.175, -0.18, -0.175, -0.18, 0.175]
+    PolygonSlow:
+      points: [0.28, 0.175, 0.28, -0.175, -0.28, -0.175, -0.28, 0.175]
+      slowdown_ratio: 0.5
