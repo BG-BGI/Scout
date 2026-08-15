@@ -25,9 +25,10 @@ from rclpy.executors import ExternalShutdownException
 
 from scout.apa102 import (APA102, LED_FULL_WHITE_AMPS, NUM_LEDS,
                           SPI_BUS, SPI_DEVICE, SPI_HZ)
+from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import SetLedMode
 
-VALID_MODES = ('off', 'solid', 'blink', 'breathe', 'rainbow', 'chase')
+VALID_MODES = tuple(_load_profile()['led_modes'])
 
 CHASE_SEGMENT = 6          # LEDs lit in the chase "comet"
 DEFAULT_SPEED = 1.0        # used when a request passes speed <= 0

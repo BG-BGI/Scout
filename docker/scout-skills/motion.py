@@ -15,16 +15,18 @@ import asyncio
 import math
 import time
 
+from robot_profile import load as _load_profile
 from rosbridge import ADVERTISE_SETTLE_S, RosBridge
 
-CMD_VEL = "/cmd_vel"
+_P = _load_profile()
+CMD_VEL = _P["topic_cmd_vel_skills"]
 ODOM = "/odom"
 TWIST_TYPE = "geometry_msgs/msg/Twist"
 
-# Velocity-loop quantization floor .. reachable-at-cutoff ceiling.
-LIN_FLOOR, LIN_CAP = 0.05, 1.0
-# DWB's min_speed_theta .. max_angular_velocity.
-ANG_FLOOR, ANG_CAP = 0.35, 3.0
+# Cross-surface velocity envelope (robot_profile.yaml, SSOT): floors are the
+# velocity-loop quantization floor, caps are roboclaw.yaml's real limits.
+LIN_FLOOR, LIN_CAP = _P["linear_floor"], _P["linear_cap"]
+ANG_FLOOR, ANG_CAP = _P["angular_floor"], _P["angular_cap"]
 MAX_MOVE_M = 5.0
 MAX_ROTATE_RAD = 2 * math.pi
 # Taper spans: full speed outside, linear down to the floor inside.

@@ -23,7 +23,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # consumes /detections over rosbridge, so no detector library here. (dt-
 # apriltags was tried and dropped: multi-family silently detects nothing and
 # Detector destruction corrupts malloc.)
-RUN uv pip install --system --no-cache "fastmcp>=2.10,<3" "websockets>=13" numpy pillow onnxruntime
+RUN uv pip install --system --no-cache "fastmcp>=2.10,<3" "websockets>=13" numpy pillow onnxruntime pyyaml
 COPY --from=yolo-export /yolo11n.onnx /app/yolo11n.onnx
 COPY *.py /app/
 CMD ["python", "/app/server.py"]

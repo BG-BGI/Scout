@@ -30,11 +30,14 @@ from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import PlayTrick
 
-MAX_LINEAR = 1.0     # m/s, roboclaw.yaml max_linear_velocity
-MAX_ANGULAR = 3.0    # rad/s, roboclaw.yaml max_angular_velocity
-STOP_GRACE = 0.3     # s of explicit zeros after a trick, then silence
+# Cross-surface caps + stop-burst live in robot_profile.yaml (SSOT).
+_PROFILE = _load_profile()
+MAX_LINEAR = _PROFILE['linear_cap']     # m/s  (= roboclaw.yaml max_linear_velocity)
+MAX_ANGULAR = _PROFILE['angular_cap']   # rad/s (= roboclaw.yaml max_angular_velocity)
+STOP_GRACE = _PROFILE['stop_grace_s']   # s of explicit zeros after a trick, then silence
 
 # name: [(duration_s, vx m/s, wz rad/s[, '#RRGGBB' led override]), ...]
 # A (dur, 0, 0) segment is a deliberate hard stop (zeros keep the deadman fed).

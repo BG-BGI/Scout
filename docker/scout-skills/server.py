@@ -46,6 +46,7 @@ from motion import (
     run_rotate,
 )
 from render import render_map
+from robot_profile import load as _load_profile
 from rosbridge import ADVERTISE_SETTLE_S, RosBridge, RosBridgeError
 from tf import TfTree
 
@@ -66,16 +67,8 @@ async def _lifespan(app):
 
 mcp = FastMCP("scout-skills", lifespan=_lifespan)
 
-# action_msgs/msg/GoalStatus values.
-NAV_STATUS = {
-    0: "unknown",
-    1: "accepted",
-    2: "driving",
-    3: "canceling",
-    4: "arrived",
-    5: "canceled",
-    6: "aborted",
-}
+# action_msgs/msg/GoalStatus code -> friendly name (robot_profile.yaml SSOT).
+NAV_STATUS = dict(enumerate(_load_profile()["goal_status_names"]))
 
 
 def _pose_of(msg: dict | None) -> dict | None:

@@ -44,7 +44,9 @@ from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
-STOP_GRACE = 0.3
+from scout.robot_profile import load as _load_profile
+
+STOP_GRACE = _load_profile()['stop_grace_s']
 
 
 class FollowMe(Node):

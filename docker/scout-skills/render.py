@@ -11,8 +11,11 @@ from io import BytesIO
 import numpy as np
 from PIL import Image, ImageDraw
 
+from robot_profile import load as _load_profile
+
 MAX_DIM = 1024
-OCCUPIED_THRESHOLD = 50  # nav2's lethal convention; webui uses the same split
+# nav2's lethal convention; webui uses the same split (robot_profile.yaml SSOT).
+OCCUPIED_THRESHOLD = _load_profile()["occupied_threshold"]
 
 
 def render_map(msg: dict, robot: dict | None) -> tuple[bytes, int]:

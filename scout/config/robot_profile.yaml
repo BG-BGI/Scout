@@ -1,0 +1,68 @@
+# Scout robot profile — SINGLE SOURCE OF TRUTH for cross-surface constants.
+#
+# These values used to be copy-pasted across the ROS nodes (joystick_teleop,
+# trick_player, follow_me, led_node/led_status, link_watchdog), the webui
+# (app.js / index.html), the scout-skills MCP server (motion.py, server.py,
+# render.py) and Foxglove.json — and had already DRIFTED apart (five different
+# angular floors, a stale pivot clamp, mismatched LED-mode lists). Anything a
+# reader must agree on with another surface belongs here; per-node UX tunables
+# (teleop slider steps, follow gains) stay in the node.
+#
+# ⚠ CONSTRAINTS (the webui parses this file with a deliberately tiny parser):
+#   * flat scalar keys only — NO nested maps
+#   * lists in JSON flow style only — [a, b, c]
+#
+# Consumers:
+#   * scout nodes            -> scout/scout/robot_profile.py (load())
+#   * scout-skills MCP       -> docker/scout-skills/profile.py (mounted ro)
+#   * webui                  -> app.js fetch('robot_profile.yaml') + mini-parser
+#   * Foxglove.json          -> CANNOT consume (static JSON); its teleop rate and
+#                               button values are hand-mirrored — a known limit.
+#
+# roboclaw.yaml stays authoritative for the DRIVER; the velocity caps below MUST
+# match roboclaw.yaml's max_linear_velocity / max_angular_velocity (and its
+# max_seconds_uncommanded_travel = the deadman). Keep them in step.
+robot_profile:
+  # --- velocity envelope ---
+  linear_cap: 1.0          # m/s   (= roboclaw.yaml max_linear_velocity)
+  angular_cap: 3.0         # rad/s (= roboclaw.yaml max_angular_velocity)
+  linear_floor: 0.05       # m/s   velocity-loop quantization floor (ADVISORY, not a clamp)
+  angular_floor: 0.35      # rad/s DWB min_speed_theta twin           (ADVISORY, not a clamp)
+  recommended_pivot: 2.5   # rad/s pivot rate where position matters — a WALK MINIMIZER,
+                           #       never a clamp (the retired flat-tire stall floor)
+
+  # --- cmd_vel contract ---
+  publish_hz: 25.0         # teleop/webui stream rate (> 1/deadman)
+  stop_grace_s: 0.3        # zero-Twist burst on release, then silence
+  deadman_s: 0.2           # RoboClaw stops if no packet for this long (= roboclaw.yaml)
+  source_timeout_s: 0.5    # twist_mux per-input staleness (keep twist_mux.yaml in step)
+
+  # --- cmd_vel topics (twist_mux fan-in; M3/D1 flips the _joy/_web/... values) ---
+  topic_cmd_vel_out: "/cmd_vel_out"    # mux output -> roboclaw_driver
+  topic_cmd_vel_joy: "/cmd_vel"        # -> /cmd_vel_joy at D1
+  topic_cmd_vel_web: "/cmd_vel"        # -> /cmd_vel_web at D1
+  topic_cmd_vel_trick: "/cmd_vel"      # -> /cmd_vel_trick at D1
+  topic_cmd_vel_follow: "/cmd_vel"     # -> /cmd_vel_follow at D1
+  topic_cmd_vel_skills: "/cmd_vel"     # -> /cmd_vel_skills at D1
+  topic_cmd_vel_stop: "/cmd_vel_stop"  # estop active-brake input (prio 255)
+  topic_estop: "/estop"                # twist_mux lock (Bool)
+
+  # --- camera topics ---
+  topic_camera_color: "/camera/camera/color/image_raw/compressed"
+  topic_camera_info: "/camera/camera/color/camera_info"
+
+  # --- nav ---
+  goal_tolerance_m: 0.15   # = nav2.yaml xy_goal_tolerance (base profile)
+  # action_msgs/GoalStatus by code (friendly names the UIs already show):
+  goal_status_names: ["unknown", "accepted", "driving", "canceling", "arrived", "canceled", "aborted"]
+
+  # --- LED ---
+  led_modes: ["off", "solid", "blink", "breathe", "rainbow", "chase"]
+
+  # --- battery threshold ladder (see battery_monitor / led_status) ---
+  battery_warn_v: 17.5
+  battery_critical_v: 16.5
+  battery_activity_floor_v: 17.0   # tricks refuse / patrol aborts below this
+
+  # --- map rendering ---
+  occupied_threshold: 50   # nav2 lethal convention (render.py + webui split)

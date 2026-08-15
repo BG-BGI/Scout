@@ -34,12 +34,15 @@ from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
+from scout.robot_profile import load as _load_profile
 from scout_interfaces.srv import SetLedMode
 
 try:
     from rosbridge_msgs.msg import ConnectedClients
 except ImportError:  # rosbridge not installed; run without client events
     ConnectedClients = None
+
+_PROFILE = _load_profile()
 
 # A pattern is (mode, color, brightness_pct, speed) — the SetLedMode fields.
 PATTERN_CRITICAL = ('blink', '#FF0000', 60, 2.0)
@@ -49,7 +52,7 @@ PATTERN_CONNECT = ('blink', '#00FF00', 50, 2.0)
 PATTERN_DISCONNECT = ('blink', '#FF8000', 50, 1.0)
 PATTERN_OFF = ('off', '', 0, 1.0)
 
-VALID_MODES = ('off', 'solid', 'blink', 'breathe', 'rainbow', 'chase')
+VALID_MODES = tuple(_PROFILE['led_modes'])
 
 
 class LedStatus(Node):
@@ -58,8 +61,8 @@ class LedStatus(Node):
     def __init__(self):
         super().__init__('led_status')
 
-        self.declare_parameter('warn_voltage', 17.5)       # battery_monitor default
-        self.declare_parameter('critical_voltage', 16.5)   # battery_monitor default
+        self.declare_parameter('warn_voltage', _PROFILE['battery_warn_v'])
+        self.declare_parameter('critical_voltage', _PROFILE['battery_critical_v'])
         self.declare_parameter('hysteresis_volts', 0.4)
         self.declare_parameter('ready_seconds', 3.0)
         self.declare_parameter('connect_seconds', 2.0)

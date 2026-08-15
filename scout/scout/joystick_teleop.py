@@ -11,6 +11,8 @@ from geometry_msgs.msg import Twist
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from scout.robot_profile import load as _load_profile
+
 # --- Xbox controller mapping (Linux joydev / xpad driver) --------------------
 # Axis/button numbers come from the kernel joystick interface. If the robot
 # behaves wrong, run `jstest /dev/input/js0` (or `ros2 topic echo /joy`) and
@@ -33,8 +35,10 @@ _JS_EVENT_BUTTON = 0x01
 _JS_INIT_FLAG = 0x80
 BTN_A = 0   # Xbox A, both xpad USB and stock Bluetooth HID mappings
 
-PUBLISH_HZ = 25.0          # > 1/WATCHDOG_TIMEOUT so the motor driver stays armed
-STOP_GRACE = 0.3           # after release, briefly publish zeros, then go silent
+# Cross-surface cmd_vel contract + caps live in robot_profile.yaml (SSOT).
+_PROFILE = _load_profile()
+PUBLISH_HZ = _PROFILE['publish_hz']   # > 1/deadman so the motor driver stays armed
+STOP_GRACE = _PROFILE['stop_grace_s']  # after release, briefly publish zeros, then go silent
                            # so other cmd_vel sources (Foxglove, nav2) can drive
 STICK_DEADZONE = 0.08      # ignore small left-stick noise so the robot tracks straight
 TURN_EXPO = 0.6            # turn-stick response curve: 0 = linear, 1 = pure cubic.
@@ -43,8 +47,8 @@ TRIGGER_DEADZONE = 0.03    # ignore trigger rest noise
 
 # Live-adjustable speed limits (D-pad), with hard caps and per-press steps.
 # NB the driver clamps at roboclaw.yaml's real caps (1.0 m/s, 3.0 rad/s).
-LINEAR_MIN, LINEAR_MAX = 0.05, 1.0      # m/s
-ANGULAR_MIN, ANGULAR_MAX = 0.5, 3.0     # rad/s
+LINEAR_MIN, LINEAR_MAX = 0.05, _PROFILE['linear_cap']      # m/s
+ANGULAR_MIN, ANGULAR_MAX = 0.5, _PROFILE['angular_cap']    # rad/s
 LINEAR_DEFAULT, ANGULAR_DEFAULT = 0.35, 1.5
 LINEAR_STEP, ANGULAR_STEP = 0.05, 0.5
 

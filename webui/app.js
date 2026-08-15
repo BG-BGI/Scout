@@ -8,9 +8,12 @@
  */
 'use strict';
 
-// --- constants (mirror joystick_teleop.py) -----------------------------------
-const PUBLISH_HZ = 25;
-const STOP_GRACE_MS = 300;
+// --- constants -----------------------------------------------------------------
+// Cross-surface values (publish rate, stop grace, nav-status names, speed caps)
+// are loaded at startup from robot_profile.yaml (the SSOT the ROS nodes and
+// scout-skills also read); these are the baked fallbacks if the fetch fails.
+let PUBLISH_HZ = 25;
+let STOP_GRACE_MS = 300;
 const STICK_DEADZONE = 0.08;
 const TURN_EXPO = 0.6;
 const TRIGGER_DEADZONE = 0.03;
@@ -165,7 +168,54 @@ function driveTick() {
     publishTwist(0, 0);   // zero burst, then silence
   }
 }
-setInterval(driveTick, 1000 / PUBLISH_HZ);
+let driveTimer = null;
+function startDriveLoop() {
+  if (driveTimer) clearInterval(driveTimer);
+  driveTimer = setInterval(driveTick, 1000 / PUBLISH_HZ);
+}
+
+// Tiny parser for robot_profile.yaml's deliberately flat format (2-space keys,
+// JSON-flow lists, quoted strings, numbers). NOT a general YAML parser.
+function parseProfile(text) {
+  const p = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/#.*$/, '');
+    const m = line.match(/^ {2}([a-z0-9_]+):\s*(\S.*?)\s*$/);
+    if (!m) continue;
+    const [, key, val] = m;
+    if (val[0] === '[') {
+      try { p[key] = JSON.parse(val.replace(/'/g, '"')); } catch (e) { /* skip */ }
+    } else if (val[0] === '"') {
+      p[key] = val.slice(1, -1);
+    } else {
+      const n = parseFloat(val);
+      p[key] = Number.isNaN(n) ? val : n;
+    }
+  }
+  return p;
+}
+
+async function loadProfile() {
+  try {
+    const res = await fetch('robot_profile.yaml');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const prof = parseProfile(await res.text());
+    if (prof.publish_hz) PUBLISH_HZ = prof.publish_hz;
+    if (prof.stop_grace_s) STOP_GRACE_MS = prof.stop_grace_s * 1000;
+    if (Array.isArray(prof.goal_status_names)) {
+      NAV_STATUS = {};
+      prof.goal_status_names.forEach((name, i) => { NAV_STATUS[i] = name; });
+    }
+    if (prof.linear_cap) linSlider.max = prof.linear_cap;
+    if (prof.angular_cap) angSlider.max = prof.angular_cap;
+    startDriveLoop();  // restart at the profile's rate
+  } catch (e) {
+    console.warn('robot_profile.yaml fetch failed; using baked defaults:', e);
+  }
+}
+
+startDriveLoop();  // start immediately with baked defaults (never gate driving on the fetch)
+loadProfile();     // then override + restart from the SSOT
 
 function publishTwist(vx, wz) {
   cmdVel.publish(new ROSLIB.Message({
@@ -505,7 +555,7 @@ const navStatusTopic = new ROSLIB.Topic({
   ros, name: '/navigate_to_pose/_action/status',
   messageType: 'action_msgs/msg/GoalStatusArray',
 });
-const NAV_STATUS = { 1: 'accepted', 2: 'driving', 3: 'canceling', 4: 'arrived', 5: 'canceled', 6: 'aborted' };
+let NAV_STATUS = { 1: 'accepted', 2: 'driving', 3: 'canceling', 4: 'arrived', 5: 'canceled', 6: 'aborted' };
 navStatusTopic.subscribe((msg) => {
   if (!msg.status_list.length) return;
   const s = msg.status_list[msg.status_list.length - 1].status;

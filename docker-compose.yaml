@@ -157,6 +157,10 @@ services:
     restart: unless-stopped
     volumes:
       - ./maps:/maps
+      # Cross-surface SSOT (velocity caps, status names, thresholds, cmd_vel
+      # topics). Read-only; robot_profile.py falls back to baked defaults if
+      # this mount is ever missing.
+      - ./scout/config/robot_profile.yaml:/robot_profile.yaml:ro
 
 volumes:
   ros_ws_build:
