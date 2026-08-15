@@ -33,10 +33,8 @@ import math
 import time
 
 import numpy as np
-import rclpy
 import tf2_ros
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan, PointCloud2
@@ -45,6 +43,8 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scout.cmd_vel_source import CmdVelSource
+from scout.core.geometry import wrap_angle
+from scout.node_util import lookup_matrix, lookup_pose2, run_node
 
 
 class FollowMe(Node):
@@ -300,7 +300,7 @@ class FollowMe(Node):
             r = msg.ranges[i]
             ok = (math.isfinite(r) and self._min_range <= r <= self._max_range)
             if ok:
-                bearing = self._wrap(msg.angle_min + i * msg.angle_increment
+                bearing = wrap_angle(msg.angle_min + i * msg.angle_increment
                                      + self._yaw_offset)
                 ok = abs(bearing) <= self._sector
             if not ok or (prev_r is not None and abs(r - prev_r) > self._cluster_gap):
@@ -320,10 +320,6 @@ class FollowMe(Node):
             ys = [r * math.sin(b) for b, r in beams]
             out.append((sum(xs) / len(xs), sum(ys) / len(ys)))
 
-    @staticmethod
-    def _wrap(a):
-        return (a + math.pi) % (2.0 * math.pi) - math.pi
-
     def _update_obstacles(self, msg):
         """Corridor clearance + repulsive steering from everything non-target.
 
@@ -342,7 +338,7 @@ class FollowMe(Node):
             r = msg.ranges[i]
             if not (math.isfinite(r) and self._min_range <= r <= self._max_range):
                 continue
-            bearing = self._wrap(msg.angle_min + i * msg.angle_increment
+            bearing = wrap_angle(msg.angle_min + i * msg.angle_increment
                                  + self._yaw_offset)
             x = r * math.cos(bearing)
             y = r * math.sin(bearing)
@@ -450,15 +446,7 @@ class FollowMe(Node):
 
     def _odom_pose(self):
         """(x, y, yaw) of base_link in odom, or None if TF is not up."""
-        try:
-            t = self._tf_buffer.lookup_transform('odom', 'base_link',
-                                                 rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException):
-            return None
-        q = t.transform.rotation
-        return (t.transform.translation.x, t.transform.translation.y,
-                2.0 * math.atan2(q.z, q.w))
+        return lookup_pose2(self._tf_buffer, 'odom', 'base_link')
 
     def _memory_corridor_min(self, now):
         """Nearest remembered obstacle inside the live corridor, base_link."""
@@ -496,21 +484,10 @@ class FollowMe(Node):
 
     def _resolve_camera_tf(self, frame_id):
         """Cache the static camera-optical -> base_link transform as a matrix."""
-        try:
-            t = self._tf_buffer.lookup_transform('base_link', frame_id,
-                                                 rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException):
+        result = lookup_matrix(self._tf_buffer, 'base_link', frame_id)
+        if result is None:
             return False
-        q = t.transform.rotation
-        x, y, z, w = q.x, q.y, q.z, q.w
-        self._cam_rot = np.array([
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ], dtype=np.float32)
-        tr = t.transform.translation
-        self._cam_trans = np.array([tr.x, tr.y, tr.z], dtype=np.float32)
+        self._cam_rot, self._cam_trans = result
         self.get_logger().info('Depth corridor guard active (camera TF cached)')
         return True
 
@@ -668,7 +645,7 @@ class FollowMe(Node):
             want = self._lost_heading
             if want is None:
                 want = math.atan2(dy, dx) if dist > 0.2 else oyaw
-            err = self._wrap(want - oyaw)
+            err = wrap_angle(want - oyaw)
             wz = self._kp_ang * err if abs(err) > 0.12 else 0.0
         step = self._max_accel * max(dt, 0.0)
         delta = vx - self._vx_out
@@ -703,18 +680,8 @@ class FollowMe(Node):
         self._cmd.stop_now()
 
 
-def main():
-    rclpy.init()
-    node = FollowMe()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.stop()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main(args=None):
+    run_node(FollowMe, on_shutdown=lambda n: n.stop(), args=args)
 
 
 if __name__ == '__main__':

@@ -31,7 +31,6 @@ import socket
 import subprocess
 import time
 
-import rclpy
 from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseArray, PoseStamped
 from nav2_msgs.action import NavigateThroughPoses
@@ -43,6 +42,8 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
+
+from scout.node_util import run_node
 
 NAV_ACTIONS = ("navigate_to_pose", "navigate_through_poses")
 # action_msgs/GoalStatus: STATUS_ACCEPTED=1, STATUS_EXECUTING=2.
@@ -228,14 +229,8 @@ class LinkWatchdog(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = LinkWatchdog()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
+    # run_node adds the rclpy.shutdown() this node used to skip.
+    run_node(LinkWatchdog, args=args)
 
 
 if __name__ == '__main__':

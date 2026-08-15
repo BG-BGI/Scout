@@ -29,12 +29,10 @@ import os
 import time
 
 import numpy as np
-import rclpy
 import tf2_ros
 import yaml
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PolygonStamped, PoseStamped
 from nav_msgs.msg import OccupancyGrid, Path
@@ -42,6 +40,9 @@ from nav2_msgs.action import NavigateToPose
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+
+from scout.core.coverage import plan_coverage
+from scout.node_util import lookup_pose2, run_node
 
 
 class PatrolCapture(Node):
@@ -184,93 +185,19 @@ class PatrolCapture(Node):
         msg.data = 'plan|%s' % text
         self._status_pub.publish(msg)
 
-    @staticmethod
-    def _scanline(poly, wy):
-        """Sorted [(xa, xb), ...] where the horizontal line y=wy is inside poly."""
-        xs = []
-        n = len(poly)
-        for i in range(n):
-            (x1, y1), (x2, y2) = poly[i], poly[(i + 1) % n]
-            if (y1 <= wy < y2) or (y2 <= wy < y1):
-                xs.append(x1 + (wy - y1) * (x2 - x1) / (y2 - y1))
-        xs.sort()
-        return [(xs[i], xs[i + 1]) for i in range(0, len(xs) - 1, 2)]
-
     def _plan_coverage(self, poly):
-        """Serpentine stripes over free/unknown cells inside the polygon.
-
-        Occupied cells (>=50) are inflated by coverage_inflation; unknown
-        (-1) counts as coverable — mapping unexplored space is the point,
-        and nav2 plans through unknown (allow_unknown). Stripes are clipped
-        to the polygon by scanline, then split at obstacles; nav2 routes
-        between segment endpoints on its own.
-        """
+        """Serpentine stripes over free/unknown cells inside the polygon
+        (obstacles inflated by coverage_inflation). See scout.core.coverage."""
         info = self._grid.info
-        res = info.resolution
         grid = np.array(self._grid.data, dtype=np.int8).reshape(
             info.height, info.width)
-        blocked = grid >= 50
-        for _ in range(max(1, int(round(self._cov_inflation / res)))):
-            d = blocked.copy()
-            d[1:, :] |= blocked[:-1, :]
-            d[:-1, :] |= blocked[1:, :]
-            d[:, 1:] |= blocked[:, :-1]
-            d[:, :-1] |= blocked[:, 1:]
-            blocked = d
-
-        def cell_x(wx):
-            return int((wx - info.origin.position.x) / res)
-
-        def cell_y(wy):
-            return int((wy - info.origin.position.y) / res)
-
-        min_run = max(2, int(round(0.45 / res)))   # skip slivers < robot length
-        y0 = min(p[1] for p in poly)
-        y1 = max(p[1] for p in poly)
-        route = []
-        flip = False
-        wy = y0 + self._cov_spacing / 2.0
-        while wy < y1:
-            iy = cell_y(wy)
-            if 0 <= iy < info.height:
-                segs = []
-                for xa, xb in self._scanline(poly, wy):
-                    ca = max(0, cell_x(xa))
-                    cb = min(info.width - 1, cell_x(xb))
-                    if cb - ca < min_run:
-                        continue
-                    open_row = ~blocked[iy, ca:cb + 1]
-                    idx = np.flatnonzero(np.diff(np.concatenate(
-                        ([0], open_row.view(np.int8), [0]))))
-                    segs.extend((ca + idx[i], ca + idx[i + 1] - 1)
-                                for i in range(0, len(idx), 2)
-                                if idx[i + 1] - idx[i] >= min_run)
-                if flip:
-                    segs = [(b, a) for a, b in reversed(segs)]
-                for a, b in segs:
-                    # plain floats: numpy scalars blow up yaml.safe_dump in
-                    # _save_route (RepresenterError) — this killed the node
-                    wxa = float(info.origin.position.x + (a + 0.5) * res)
-                    wxb = float(info.origin.position.x + (b + 0.5) * res)
-                    yaw = 0.0 if wxb >= wxa else math.pi
-                    route.append({'x': round(wxa, 3), 'y': round(float(wy), 3),
-                                  'yaw': round(yaw, 3)})
-                    route.append({'x': round(wxb, 3), 'y': round(float(wy), 3),
-                                  'yaw': round(yaw, 3)})
-            flip = not flip
-            wy += self._cov_spacing
-        return route
+        return plan_coverage(
+            grid, (info.origin.position.x, info.origin.position.y),
+            info.resolution, poly,
+            spacing=self._cov_spacing, inflation=self._cov_inflation)
 
     def _map_pose(self):
-        try:
-            t = self._tf_buffer.lookup_transform('map', 'base_link',
-                                                 rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException):
-            return None
-        q = t.transform.rotation
-        return (t.transform.translation.x, t.transform.translation.y,
-                2.0 * math.atan2(q.z, q.w))
+        return lookup_pose2(self._tf_buffer, 'map', 'base_link')
 
     # --- services ---------------------------------------------------------------
     def _on_mark(self, request, response):
@@ -468,17 +395,8 @@ class PatrolCapture(Node):
         self._status_pub.publish(msg)
 
 
-def main():
-    rclpy.init()
-    node = PatrolCapture()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main(args=None):
+    run_node(PatrolCapture, args=args)
 
 
 if __name__ == '__main__':

@@ -34,16 +34,16 @@ import os
 import time
 
 import numpy as np
-import rclpy
 import tf2_ros
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
 from rclpy.qos import qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
+
+from scout.node_util import lookup_matrix, lookup_pose2, run_node
 
 MARK = 2          # log-odds increment per confirmed sighting
 CLEAR = 1         # decrement per see-through ray
@@ -159,37 +159,21 @@ class ClutterMapper(Node):
 
     # --- input -------------------------------------------------------------------
     def _map_pose(self):
-        try:
-            t = self._tf_buffer.lookup_transform('map', 'base_link',
-                                                 rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException):
+        pose = lookup_pose2(self._tf_buffer, 'map', 'base_link')
+        if pose is None:
             if not self._warned_no_map:
                 self._warned_no_map = True
                 self.get_logger().warn(
                     'No map->base_link TF (slam not running?) — clutter mapping idle')
             return None
         self._warned_no_map = False
-        q = t.transform.rotation
-        return (t.transform.translation.x, t.transform.translation.y,
-                2.0 * math.atan2(q.z, q.w))
+        return pose
 
     def _resolve_camera_tf(self, frame_id):
-        try:
-            t = self._tf_buffer.lookup_transform('base_link', frame_id,
-                                                 rclpy.time.Time())
-        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
-                tf2_ros.ExtrapolationException):
+        result = lookup_matrix(self._tf_buffer, 'base_link', frame_id)
+        if result is None:
             return False
-        q = t.transform.rotation
-        x, y, z, w = q.x, q.y, q.z, q.w
-        self._cam_rot = np.array([
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ], dtype=np.float32)
-        tr = t.transform.translation
-        self._cam_trans = np.array([tr.x, tr.y, tr.z], dtype=np.float32)
+        self._cam_rot, self._cam_trans = result
         return True
 
     def _on_depth(self, msg: PointCloud2):
@@ -315,19 +299,13 @@ class ClutterMapper(Node):
         self._grid_pub.publish(grid)
 
 
-def main():
-    rclpy.init()
-    node = ClutterMapper()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        if node._dirty:
-            node._save()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def _save_if_dirty(node):
+    if node._dirty:
+        node._save()
+
+
+def main(args=None):
+    run_node(ClutterMapper, on_shutdown=_save_if_dirty, args=args)
 
 
 if __name__ == '__main__':
