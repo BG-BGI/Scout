@@ -33,6 +33,10 @@ hardening pass), turning the silent-shadow trap into a loud one-time migration.
   `cc4d0e7`, rplidar_ros (ros2 branch) `24cc9b6`, m-explore-ros2 `326cf8a` —
   the tips at pin time; the previously deployed commits are unrecoverable
   (clones were `rm -rf`'d), so the first rebuild may bump behavior.
+- **roboclaw_driver builds from the org fork `BG-BGI/roboclaw_driver`**
+  (forked 2026-08-15 at `cc4d0e7`, same SHA as the pin) — operator rule: no
+  build-time dependency on personal repos. Bump flow: push/merge to the
+  BG-BGI fork, re-pin the SHA here + in the Dockerfile.
 - **Layer-order rule is now structural:** roboclaw_driver (the most
   bump-prone fork) sits BELOW librealsense and the apt layers, so a pin bump
   rebuilds only roboclaw + explore + the stamp, never the 13-min
