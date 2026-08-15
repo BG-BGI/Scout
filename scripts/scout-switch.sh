@@ -26,7 +26,10 @@ git checkout "$BRANCH"
 # Fast-forward only: never invent merge commits on the robot.
 git merge --ff-only "origin/$BRANCH" 2>/dev/null || true
 
-docker compose build
+# build: lives only on the build_package service now (profile-gated), so the
+# image build needs --profile build; then build_package installs Scout into the
+# overlay volume.
+docker compose --profile build build
 docker compose --profile build run --rm build_package
 
 # Bring up only the always-on services this branch's compose defines.

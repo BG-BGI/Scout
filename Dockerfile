@@ -155,11 +155,33 @@ RUN git clone --depth 1 https://github.com/robo-friends/m-explore-ros2.git /tmp/
     && build-overlay --packages-up-to explore_lite \
     && rm -rf "$OVERLAY/src/explore" "$OVERLAY/src/explore_lite_msgs"
 
+# Version stamp for the ros_overlay_install volume (ADR-0005). MUST stay the last
+# layer that writes $OVERLAY/install: the entrypoint compares the image's stamp
+# against the volume's copy and refuses to start on a mismatch, turning the
+# silent-shadow trap (a rebuilt image running the volume's OLD forks) into a loud
+# one-time `down -v`. Layer caching reruns this only when a layer above changed,
+# so an unchanged image keeps its stamp and the volume stays valid.
+RUN date +%s.%N > "$OVERLAY/.image_build_id" \
+    && cp "$OVERLAY/.image_build_id" "$OVERLAY/install/.image_build_id"
+
 # Modify the ROS entrypoint
 RUN cat > /ros_entrypoint.sh <<'EOF'
 #!/bin/bash
 set -e
 source "/opt/ros/$ROS_DISTRO/setup.bash"
+# ⚠ Stale-overlay-volume guard (ADR-0005): ros_overlay_install seeds from the
+# image ONCE, so a rebuilt image with an unwiped volume silently runs the old
+# forks and looks healthy. Refuse to start on a stamp mismatch (an absent
+# volume stamp counts as stale — forces the one-time migration).
+img="$OVERLAY/.image_build_id"
+vol="$OVERLAY/install/.image_build_id"
+if [ -f "$img" ] && { [ ! -f "$vol" ] || ! cmp -s "$img" "$vol"; }; then
+  echo "FATAL: ros_overlay_install volume is stale (seeded from an older image)." >&2
+  echo "  docker compose down -v" >&2
+  echo "  docker compose --profile build run --rm build_package" >&2
+  echo "  docker compose up -d" >&2
+  exit 1
+fi
 # Single install tree: image-baked forks and locally built Scout packages both live
 # under $OVERLAY/install. Adding a source package means adding a RUN above.
 if [ -f "$OVERLAY/install/setup.bash" ]; then

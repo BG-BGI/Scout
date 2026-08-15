@@ -1,5 +1,4 @@
 x-service: &base
-  build: .
   image: scout:latest
   network_mode: host
   ipc: host
@@ -15,9 +14,11 @@ x-service: &base
     - ros_ws_build:/ros_ws/build
     - ros_ws_log:/ros_ws/log
     # Single install tree (image-baked forks + Scout). Empty volume seeds from the
-    # image once; wipe it when bumping an overlay fork pin (compose down -v).
+    # image once; the entrypoint stamp guard (ADR-0005) refuses to start on a
+    # stale volume, so `down -v` when bumping an image-baked fork.
     - ros_overlay_install:/opt/overlay/install
-  privileged: true
+  # privileged is NOT here: only `robot` touches /dev (UART, USB lidar/camera,
+  # SPI), so only it gets privileged. Bridges/compute services run unprivileged.
 
 services:
 
@@ -25,6 +26,9 @@ services:
   # mount take effect after rebuild without a second copy.
   build_package:
     <<: *base
+    # The one service that builds the image (runtime services are pure
+    # image: scout:latest consumers — no redundant parallel builds).
+    build: .
     profiles: ["build"]
     command: >
       colcon build --packages-up-to scout --symlink-install
@@ -43,6 +47,7 @@ services:
   robot:
     <<: *base
     restart: unless-stopped
+    privileged: true   # sole device user: UART, USB lidar/camera, SPI strip
     command: ros2 launch scout robot.launch.py enable_joystick:=true profile:=${SCOUT_PROFILE:-default}
     # One knob switches nav2/slam/realsense together: set SCOUT_PROFILE=tight_tunnel
     # in .env (see .env.example) or pass profile:= on the command line (ADR-0010).
