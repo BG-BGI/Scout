@@ -36,9 +36,17 @@ from fastmcp.utilities.types import Image
 
 import tags as tagdb
 from detect import annotate, detect
-from motion import MAX_MOVE_M, MAX_ROTATE_RAD, run_move, run_rotate
+from motion import (
+    CMD_VEL,
+    MAX_MOVE_M,
+    MAX_ROTATE_RAD,
+    TWIST_TYPE,
+    _zero_twist,
+    run_move,
+    run_rotate,
+)
 from render import render_map
-from rosbridge import RosBridge
+from rosbridge import ADVERTISE_SETTLE_S, RosBridge, RosBridgeError
 from tf import TfTree
 
 TAG_WATCH_PERIOD_S = 2.0
@@ -878,28 +886,37 @@ async def tag_watch(enabled: bool) -> dict:
     return {"watcher_enabled": enabled}
 
 
+async def _cancel_all_nav(rb: RosBridge) -> tuple[dict, int]:
+    """Zeroed CancelGoal (= cancel-all) on both bt_navigator actions. Returns
+    ({action: return_code}, total goals canceling)."""
+    codes: dict = {}
+    canceling = 0
+    for action in NAV_ACTIONS:
+        values = await rb.call_service(
+            f"{action}/_action/cancel_goal",
+            "action_msgs/srv/CancelGoal",
+            {
+                "goal_info": {
+                    "goal_id": {"uuid": [0] * 16},
+                    "stamp": {"sec": 0, "nanosec": 0},
+                }
+            },
+        )
+        codes[action.lstrip("/")] = values.get("return_code")
+        canceling += len(values.get("goals_canceling", []))
+    return codes, canceling
+
+
 @mcp.tool
 async def nav_cancel() -> dict:
-    """STOP navigation: cancel every active Nav2 goal (zeroed CancelGoal =
-    cancel-all). The software e-stop — a goal survives its client dying, so
-    this is the only way to clear one short of restarting nav2. Deceleration
-    is a coast, not a brake (200 ms deadman, free-wheeling idle)."""
-    canceling = 0
-    codes = {}
+    """Cancel every active Nav2 goal (zeroed CancelGoal = cancel-all). ⚠ This
+    is NOT the full e-stop — it stops only Nav2, leaving a running patrol,
+    follow_me, or trick driving. Use `stop_all` to halt everything. A goal
+    survives its client dying, so this is the only way to clear a stray Nav2
+    goal short of restarting nav2. Deceleration is a coast, not a brake
+    (200 ms deadman, free-wheeling idle)."""
     async with RosBridge() as rb:
-        for action in NAV_ACTIONS:
-            values = await rb.call_service(
-                f"{action}/_action/cancel_goal",
-                "action_msgs/srv/CancelGoal",
-                {
-                    "goal_info": {
-                        "goal_id": {"uuid": [0] * 16},
-                        "stamp": {"sec": 0, "nanosec": 0},
-                    }
-                },
-            )
-            codes[action.lstrip("/")] = values.get("return_code")
-            canceling += len(values.get("goals_canceling", []))
+        codes, canceling = await _cancel_all_nav(rb)
         status = await _nav_status(rb, timeout=2.0)
     # return_code 0 = none active (nothing to cancel), which still means "not
     # driving" — report it as success with the detail visible.
@@ -907,6 +924,45 @@ async def nav_cancel() -> dict:
         "return_codes": codes,
         "goals_canceling": canceling,
         "nav": status or "no status transition seen",
+    }
+
+
+@mcp.tool
+async def stop_all() -> dict:
+    """THE software e-stop: halt every motion source at once — the same thing
+    the web UI STOP button does. Cancels Nav2 goals AND stops any running
+    patrol, follow_me, and trick (each of which keeps driving through a bare
+    nav_cancel), then streams zero Twists so nothing stays latched past the
+    200 ms deadman. Safe to call even when idle; missing services are reported,
+    not fatal."""
+    stopped: dict = {}
+    async with RosBridge() as rb:
+        # Stop the higher-level drivers first: a live patrol/follow would
+        # re-issue motion right through a nav cancel + zero burst.
+        for name, svc in (
+            ("trick", "/stop_trick"),
+            ("follow", "/follow_me/stop"),
+            ("patrol", "/patrol/stop"),
+        ):
+            try:
+                values = await rb.call_service(svc, "std_srvs/srv/Trigger")
+                stopped[name] = values.get("message", "ok")
+            except RosBridgeError as exc:
+                # Service absent (driver not running) or slow — not a failure
+                # of the stop; keep going and stop the rest.
+                stopped[name] = f"unavailable: {exc}"
+        codes, canceling = await _cancel_all_nav(rb)
+        # Explicit repeated zeros: a single lost frame would leave the last
+        # command latched until the deadman coasts it out.
+        await rb.advertise(CMD_VEL, TWIST_TYPE)
+        await asyncio.sleep(ADVERTISE_SETTLE_S)
+        for _ in range(3):
+            await rb.publish_raw(CMD_VEL, _zero_twist())
+            await asyncio.sleep(0.04)
+    return {
+        "stopped": stopped,
+        "nav_return_codes": codes,
+        "goals_canceling": canceling,
     }
 
 

@@ -1,6 +1,6 @@
 # apriltag_ros: single-family AprilTag detection on the D455 color stream.
 # Publishes /detections (apriltag_msgs/AprilTagDetectionArray) and a TF frame
-# per tag ("tagStandard52h13:0").
+# per tag ("tag36h11:0").
 #
 # ⚠ ONE family, deliberately. The 2026-08-14 all-families fan-out (8 nodes on
 # a throttled stream) was reverted the same hour: the big-codebook families
@@ -14,12 +14,15 @@
 # restart); tag MEANING (names, roles, home, waypoints) lives in
 # scout-skills' sqlite registry at /maps/tags.db.
 #
-# The physical doghouse print: 200 mm page, pose reference square 120 mm.
+# tag36h11 (small codebook, ~cheap RAM — unlike the big-codebook families
+# above) matches the checked-in physical artifact tags/doghouse.svg and
+# scout-skills register_tag's defaults. The physical doghouse print: 200 mm
+# page, black square 160 mm edge (registered size_m 0.16).
 apriltag:
   ros__parameters:
     image_transport: raw
-    family: Standard52h13
-    size: 0.12
+    family: tag36h11
+    size: 0.16
     max_hamming: 0
     detector:
       threads: 2

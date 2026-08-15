@@ -14,9 +14,6 @@ const STOP_GRACE_MS = 300;
 const STICK_DEADZONE = 0.08;
 const TURN_EXPO = 0.6;
 const TRIGGER_DEADZONE = 0.03;
-// Below this an in-place turn can't beat the flat front-left tire's drag —
-// the left side stalls and only one side spins. Pure pivots get floored.
-const PIVOT_FLOOR = 2.5;
 
 // --- ROS connection -----------------------------------------------------------
 const ros = new ROSLIB.Ros({});
@@ -163,10 +160,6 @@ function driveTick() {
     let wz = -input.turn * maxAng;
     // In reverse, invert turning so it steers like a car backing up.
     if (input.throttle < 0) wz = -wz;
-    // Pure pivot: enforce the flat-tire floor so all four wheels turn.
-    if (input.throttle === 0 && wz !== 0 && Math.abs(wz) < PIVOT_FLOOR) {
-      wz = Math.sign(wz) * PIVOT_FLOOR;
-    }
     publishTwist(input.throttle * maxLin, wz);
   } else if (now - lastActiveMs < STOP_GRACE_MS) {
     publishTwist(0, 0);   // zero burst, then silence

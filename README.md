@@ -14,7 +14,9 @@ docker compose --profile build run --rm build_package
 ```bash
 docker compose up
 ```
-(`robot` + `slam` + `nav2` + `foxglove_bridge`. Joystick on by default; disable with
+(Starts every non-profiled service: `robot`, `slam`, `nav2`, `rosbridge`, `webui`,
+`foxglove_bridge`, `ros_mcp`, `scout_skills` — `build_package` and `explore` are
+profile-gated. Joystick on by default; disable with
 `docker compose run --rm robot ros2 launch scout robot.launch.py enable_joystick:=false`.)
 
 After switching off the old `ros_ws_install` volume, once:
@@ -40,16 +42,18 @@ sudo apt install -y avahi-daemon         # usually already on Pi OS
 systemctl is-enabled docker              # should be "enabled" (default)
 ```
 
-Boot autostart — `robot`, `rosbridge`, `webui`, and `foxglove_bridge` carry
-`restart: unless-stopped`, so after this one-time bring-up they return on every
-power-on with no SSH:
+Boot autostart — `robot`, `slam`, `nav2`, `rosbridge`, `webui`, `foxglove_bridge`,
+`ros_mcp`, and `scout_skills` carry `restart: unless-stopped`, so after this one-time
+bring-up they return on every power-on with no SSH:
 
 ```bash
-docker compose up -d robot rosbridge webui foxglove_bridge
+docker compose up -d
 ```
 
 (`restart` policies only apply to containers created with `up -d`, never `compose run`.
-`slam`/`nav2` deliberately do not autostart — start them manually when mapping/navigating.)
+`slam`/`nav2` became always-on with patrol_capture (2026-08-12): marking waypoints needs
+the map frame and patrols need the planner, and a fresh nav2 holds no goal so autostart
+adds no unattended motion.)
 
 Notes:
 - `http://scout.local` needs mDNS; some Android builds don't resolve it — use

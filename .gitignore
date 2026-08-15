@@ -13,5 +13,9 @@ maps/*.posegraph
 maps/*.data
 maps/*.pgm
 maps/*.yaml
+# Runtime state written into the tracked maps/ dir by patrol_capture and
+# scout-skills (waypoint store + AprilTag registry) — never committed.
+maps/waypoints.json
+maps/tags.db
 captures/*
 !captures/.gitkeep

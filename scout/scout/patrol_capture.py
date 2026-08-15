@@ -76,6 +76,11 @@ class PatrolCapture(Node):
         self._goal_deadline = 0.0
         self._goal_handle = None
         self._nav_result = None   # None while pending, else True/False
+        # True only for a cancel WE initiate (timeout / operator stop). An
+        # EXTERNAL cancel (webui Cancel, skills nav_cancel) leaves this False,
+        # which is how _on_goal_result tells "skip this waypoint" from "stop
+        # the patrol" — see _cancel_nav / _on_goal_result.
+        self._self_cancel = False
         self._last_frame = None   # (monotonic stamp, CompressedImage)
         self._battery_v = None
 
@@ -339,6 +344,7 @@ class PatrolCapture(Node):
         goal.pose.pose.orientation.w = math.cos(float(wp['yaw']) / 2.0)
         self._nav_result = None
         self._goal_handle = None
+        self._self_cancel = False
         self._state = 'driving'
         self._goal_deadline = time.monotonic() + self._goal_timeout
         self._nav.send_goal_async(goal).add_done_callback(self._on_goal_ack)
@@ -354,8 +360,17 @@ class PatrolCapture(Node):
         handle.get_result_async().add_done_callback(self._on_goal_result)
 
     def _on_goal_result(self, fut):
-        # status 4 = SUCCEEDED (action_msgs/GoalStatus)
-        self._nav_result = (fut.result().status == 4)
+        # action_msgs/GoalStatus: 4 = SUCCEEDED, 5 = CANCELED.
+        status = fut.result().status
+        # An EXTERNAL cancel (webui Cancel / skills nav_cancel — the "software
+        # e-stop") must END the patrol, not read as a failed waypoint and
+        # advance to the next goal (which kept the robot driving through the
+        # cancel). Our own timeout/stop cancels set _self_cancel, and those
+        # fall through to the normal skip-and-continue path.
+        if status == 5 and not self._self_cancel and self._state != 'idle':
+            self._finish('nav goal canceled externally — patrol stopped')
+            return
+        self._nav_result = (status == 4)
 
     def _tick(self):
         now = time.monotonic()
@@ -385,6 +400,10 @@ class PatrolCapture(Node):
         self._send_goal(self._wp_i)
 
     def _cancel_nav(self):
+        # Mark this as a self-initiated cancel so the result callback treats it
+        # as skip-this-waypoint (timeout) or run-already-ending (stop/abort),
+        # NOT as an external e-stop that should halt the patrol.
+        self._self_cancel = True
         if self._goal_handle is not None:
             self._goal_handle.cancel_goal_async()
             self._goal_handle = None
