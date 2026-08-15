@@ -38,6 +38,7 @@ setup(
             'led_node = scout.led_node:main',
             'gyro_calibrator = scout.gyro_calibrator:main',
             'battery_monitor = scout.battery_monitor:main',
+            'health_monitor = scout.health_monitor:main',
             'wheel_joint_relay = scout.wheel_joint_relay:main',
             'tilt_monitor = scout.tilt_monitor:main',
             'trick_player = scout.trick_player:main',

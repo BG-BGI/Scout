@@ -58,6 +58,17 @@ checklist below.
    without the robot or a recorded depth bag (the plan requires a rosbags
    old-vs-new corridor-min diff before merge). Do it at the bench, per §5b.
 
+**D. New ROS 2 feature additions (2026-08-15). §8.** Four features grounded in
+ROS 2 Humble capabilities the stack lacks.
+9. **F1 unified diagnostics — CODE COMPLETE, gate-green (64 pass / 1 skip).**
+   Only Pi/browser verification + the webui/Foxglove surface remain. §8.1.
+10. **F2 rosbag2 record-on-demand** — NOT started (robot-coupled: the value is
+    the `ros2 bag record` subprocess lifecycle). §8.2.
+11. **F3 nav2 cancel + `/nav_state` feedback** — NOT started (robot-coupled:
+    live action cancel/feedback semantics). §8.3.
+12. **F4 managed lifecycle bring-up** — NOT started (robot-coupled: transition/
+    ordering behavior; largest effort, lowest ROI — spike last). §8.4.
+
 **Not doing** (unless asked): the optional `/nav_paused` link-loss/patrol fix
 (§4, new behavior); the prose comment-dedup pass (§6, low value — SC8 already
 test-enforces the profile-value slice).
@@ -509,3 +520,114 @@ owns.
 
 Every milestone is an independent commit; deploy + verify per-milestone. Update
 the relevant ADR if a decision changes during execution.
+
+---
+
+## 8. New feature additions (2026-08-15) — ROS 2 capabilities the stack lacks
+
+Grounded in the ROS 2 Humble docs. All are pure-Python scout nodes → built by
+`build_package` (colcon overlay), **no base-image rebuild** (diagnostic_msgs /
+rosbag2 / nav2_msgs / rclpy.lifecycle already in `scout:latest` via nav2 +
+robot_localization — confirm with `ros2 interface show` / `ros2 pkg list`).
+Split by the operator's rule: what develops+validates offline is landed now
+(F1); what needs the robot in the loop to develop is specced here.
+
+Every one follows the house pattern: node in `scout/scout/`, `main()` =
+`run_node(...)`, cross-surface constants → `robot_profile.yaml` (per-node
+tunables stay `declare_parameter`), pure logic → `scout/scout/core/<x>.py` with a
+1:1 `test_<x>.py` (SC7 requires a node importer too — core + node land together),
+register in `setup.py` + `robot.launch.py`, one ADR per decision, gate = ruff +
+pytest. Verify liveness from node logs + data topics, never throwaway-container
+discovery. Never command motion without per-run operator confirmation.
+
+### 8.1 F1 — unified diagnostics ✅ CODE COMPLETE (gate-green) — Pi/webui verify open
+
+`health_monitor` aggregates `/battery` + `/tilt_alarm` + `/roboclaw_status`
+liveness onto `/diagnostics` (DiagnosticArray) at 1 Hz with an overall roll-up;
+levels in pure `scout.core.health`. ADR-0014. Landed: `scout/scout/health_monitor.py`,
+`scout/scout/core/health.py`, `scout/test/test_health.py`, `setup.py`,
+`robot.launch.py`, `docs/adr/0014-*.md`.
+**Open (needs robot / browser):**
+- Deploy (`build_package` + `up -d robot`); `ros2 topic echo /diagnostics` shows
+  battery/tilt/drivetrain + roll-up; force a WARN (raise `battery_warn_v`
+  temporarily) and confirm colour; kill `battery_monitor` → battery item goes
+  STALE; stop `robot` → drivetrain STALE.
+- Confirm `diagnostic_msgs` is in the image (`ros2 interface show
+  diagnostic_msgs/msg/DiagnosticArray`); if absent, add `ros-humble-diagnostic-msgs`
+  *after* the librealsense RUN (image rebuild).
+- **webui health strip** (`webui/index.html`/`app.js`/`style.css`): subscribe
+  `/diagnostics` over rosbridge (roslibjs), colour by worst level. Browser-only
+  verification. **Foxglove:** add a Diagnostics panel to `Foxglove.json`.
+- **Later (needs on-hardware JSON):** add drivetrain temps + RoboClaw error flags
+  once the `/roboclaw_status` keys past `main_battery`/`m1_speed`/`m2_speed` are
+  read on the robot — do not guess field names (ADR-0014).
+
+### 8.2 F2 — rosbag2 record-on-demand (robot-coupled — NOT started)
+
+**Why:** all bench/calibration tooling was deleted; rosbag2 is the ROS-native
+permanent replacement for "rebuild the instrument". Robot-coupled: the feature IS
+the `ros2 bag record` subprocess lifecycle — spawn/track/clean-SIGINT can only be
+developed + validated with ros2 running.
+- New `scout/scout/bag_recorder.py`: `record/start` + `record/stop`
+  (`std_srvs/Trigger`), publishes `record/active` (Bool) + last bag path (String),
+  both latched (`scout.qos.LATCHED_QOS`). On start, spawn `ros2 bag record` as a
+  subprocess (robust vs the rosbag2_py in-process threading caveats) into
+  `captures/<UTC-timestamp>/`; clean SIGINT on stop; refuse double-start.
+- New pure `scout/scout/core/recording.py` (offline-testable, lands with the
+  node for SC7): `bag_dir(now, root)`, `record_argv(topics, out_dir)`,
+  `resolve_topics(profile)` → argv list; 1:1 `test_recording.py`.
+- `robot_profile.yaml`: `record_topics` (flow list) — default `/odom /wheel_odom
+  /imu/data /scan /cmd_vel_out /roboclaw_status /battery /diagnostics /tf
+  /tf_static`. `robot.launch.py` + `setup.py` register the node.
+- scout-skills MCP (`docker/scout-skills/server.py`): `start_recording` /
+  `stop_recording` / `recording_status` tools calling the Trigger services via
+  `rosbridge.py`. webui: a REC toggle lit from `record/active`.
+- **Confirm `captures/` is bind-mounted to the host** in `docker-compose.yaml` so
+  bags reach the operator (add the mount if missing). ADR-0015.
+- Verify (robot): `record/start` → short **operator-confirmed** drive →
+  `record/stop`; `ros2 bag info captures/<ts>` lists topics + counts; bag opens on
+  the host.
+
+### 8.3 F3 — nav2 cancel + `/nav_state` feedback (robot-coupled — NOT started)
+
+**Why:** documented sharp edges — no operator nav-cancel (only the `nav_cancel`
+skill / compose restart), "goal failed ≠ robot stops", no visible nav progress.
+Robot-coupled: it is pure live-action (cancel + feedback) behavior.
+- New `scout/scout/nav_manager.py`:
+  - `/nav/cancel` (`std_srvs/Trigger`) → cancel BOTH `navigate_to_pose` and
+    `navigate_through_poses` via `CancelGoal` clients (reuse the exact pattern in
+    `link_watchdog.py:_pause`, zeroed-uuid = cancel all). Extract that into a
+    shared `node_util.cancel_nav_goals(clients)` and have link_watchdog adopt it
+    (avoids a third copy).
+  - Subscribe both actions' `feedback` + `_action/status`; republish a
+    consolidated `/nav_state` (String JSON: status name from
+    `robot_profile.goal_status_names`, `distance_remaining`,
+    `number_of_recoveries`), latched.
+- webui: two distinct controls — **CANCEL NAV** → `/nav/cancel` (stops the goal,
+  robot stays drivable) vs the existing **STOP** → `/estop/engage` (hard, locks
+  twist_mux + active-brake). Show `/nav_state` near the map. `robot.launch.py` +
+  `setup.py`. ADR-0016.
+- Verify (robot): dispatch a goal, CANCEL NAV → motion stops, still drivable,
+  `/nav_state` = `canceled`; STOP still hard-estops. **Watch from host
+  `docker compose logs`, never a throwaway container during a live goal** (the
+  documented starvation-abort).
+
+### 8.4 F4 — managed lifecycle bring-up (robot-coupled — NOT started, spike last)
+
+**Why:** `robot.launch.py` starts ~19 nodes at once though real ordering deps
+exist (EKF needs camera+description+gyro; slam/nav2 need EKF). Lifecycle gives
+ordered activation + deactivate/reactivate of a wedged node without a container
+restart (nav2 already uses `nav2_lifecycle_manager`). **Honest ROI: low** — most
+own nodes are already inert-until-called; real value is only the always-on
+perception path. Robot-coupled: transitions/ordering only exist live. Recommend a
+**minimal spike**, not a blanket conversion.
+- Convert only always-on nodes whose restart needs a container bounce and whose
+  ordering matters (candidates: `gyro_calibrator`, `health_monitor`, `estop`,
+  `tilt_monitor`) from `rclpy.node.Node` to `rclpy.lifecycle.LifecycleNode` (move
+  pub/sub/timer creation into `on_configure`/`on_activate`, teardown in
+  `on_deactivate`). Manage with upstream `nav2_lifecycle_manager` in
+  `robot.launch.py` (explicit `node_names` order, `autostart: true`).
+- Add a `run_lifecycle_node` variant to `node_util.py` (keep the single-entry
+  discipline). ADR-0017 (which nodes are managed and why; which stay plain).
+- Verify (robot): `ros2 lifecycle get <node>` = `active`; `set <node>
+  deactivate`/`activate` cycles without a container restart; ordered autostart.

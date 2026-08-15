@@ -106,6 +106,15 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # Health aggregator: rolls battery + tilt + drivetrain-link liveness
+        # into one /diagnostics (DiagnosticArray) for Foxglove + the webui
+        # strip — ADR-0014. Read-only; no motion, no device claim.
+        Node(
+            package='scout',
+            executable='health_monitor',
+            output='screen',
+        ),
+
         # respawn: a hard SPI fault (beyond the soft retry inside the node)
         # brings the strip back instead of leaving it dark until a container
         # restart — this happened live (TimeoutError in xfer2 killed the node).
