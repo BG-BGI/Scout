@@ -12,8 +12,13 @@ goals (one at a time, so a failed waypoint is skipped, not fatal), settles,
 grabs the freshest frame off the already-running color stream, and appends
 to a per-run manifest. Requires slam (map frame) + nav2 running.
 
+Route storage is the shared waypoint store (ADR-0011): /patrol/mark adds a
+`mark-<n>` waypoint and appends its NAME to the route, and /patrol/start
+RESOLVES the route names to poses — so a waypoint the scout-skills tag watcher
+refreshes is driven at its fresh pose automatically.
+
 Files (bind-mounted, gitignored like maps/):
-  /ros_ws/src/maps/patrol_route.yaml            the route
+  /ros_ws/src/maps/waypoints.json               waypoint + route store (ADR-0011)
   /ros_ws/src/captures/<runstamp>/wpNN.jpg      photos
   /ros_ws/src/captures/<runstamp>/manifest.yaml waypoint, pose, time, result
 
@@ -41,6 +46,7 @@ from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
+from scout.core import waypoints as wpstore
 from scout.core.coverage import plan_coverage
 from scout.core.geometry import yaw_to_quat_zw
 from scout.core.status import format_patrol_plan, format_patrol_status
@@ -55,8 +61,9 @@ class PatrolCapture(Node):
         super().__init__('patrol_capture')
 
         p = self.declare_parameter
-        self._route_file = str(p('route_file',
-                                 '/ros_ws/src/maps/patrol_route.yaml').value)
+        self._waypoints_file = str(p('waypoints_file',
+                                     '/ros_ws/src/maps/waypoints.json').value)
+        self._route_name = str(p('route_name', 'patrol').value)
         self._capture_dir = str(p('capture_dir', '/ros_ws/src/captures').value)
         self._settle = float(p('settle_seconds', 1.5).value)
         self._frame_max_age = float(p('frame_max_age', 2.0).value)
@@ -73,7 +80,7 @@ class PatrolCapture(Node):
         self._cov_inflation = float(p('coverage_inflation', 0.30).value)
         self._cov_max_wp = int(p('coverage_max_waypoints', 120).value)
 
-        self._route = self._load_route()
+        self._route = self._resolve_route()   # resolved [{x,y,yaw}]; refreshed at start
         self._state = 'idle'      # idle | driving | settling | capturing
         self._wp_i = 0
         self._run_dir = None
@@ -114,25 +121,18 @@ class PatrolCapture(Node):
         self.create_timer(0.2, self._tick)
         self.create_timer(1.0, self._publish_status)
 
-        self.get_logger().info('Patrol up: %d waypoints in %s'
-                               % (len(self._route), self._route_file))
+        self.get_logger().info('Patrol up: route %r, %d waypoints in %s'
+                               % (self._route_name, len(self._route),
+                                  self._waypoints_file))
 
-    # --- route persistence -----------------------------------------------------
-    def _load_route(self):
+    # --- route storage (shared waypoint store, ADR-0011) ------------------------
+    def _resolve_route(self):
+        """Resolved [{x, y, yaw}] for the configured route, or [] if absent."""
         try:
-            with open(self._route_file) as f:
-                data = yaml.safe_load(f) or {}
-            return list(data.get('waypoints', []))
-        except FileNotFoundError:
+            return wpstore.resolve_route(
+                wpstore.load(self._waypoints_file), self._route_name)
+        except KeyError:
             return []
-        except yaml.YAMLError as exc:
-            self.get_logger().error('Bad route file: %s' % exc)
-            return []
-
-    def _save_route(self):
-        os.makedirs(os.path.dirname(self._route_file), exist_ok=True)
-        with open(self._route_file, 'w') as f:
-            yaml.safe_dump({'waypoints': self._route}, f)
 
     # --- inputs ------------------------------------------------------------------
     def _on_frame(self, msg):
@@ -173,11 +173,15 @@ class PatrolCapture(Node):
                                 'smaller box or larger coverage_spacing'
                                 % (len(route), self._cov_max_wp))
             return
-        self._route = route
         try:
-            self._save_route()
+            store = wpstore.load(self._waypoints_file)
+            # Coverage points are inline poses (out of the name namespace).
+            store['routes'][self._route_name] = [
+                {'x': wp['x'], 'y': wp['y'], 'yaw': wp['yaw']} for wp in route]
+            wpstore.save(self._waypoints_file, store)
         except Exception as exc:  # noqa: BLE001 — saving must not kill the node
             self._plan_feedback('coverage route not saved: %s' % exc)
+        self._route = route
         dist = sum(math.hypot(route[i + 1]['x'] - route[i]['x'],
                               route[i + 1]['y'] - route[i]['y'])
                    for i in range(len(route) - 1))
@@ -206,26 +210,48 @@ class PatrolCapture(Node):
         return lookup_pose2(self._tf_buffer, 'map', 'base_link')
 
     # --- services ---------------------------------------------------------------
+    @staticmethod
+    def _next_mark_name(store):
+        existing = store.get('waypoints', {})
+        n = 1
+        while ('mark-%d' % n) in existing:
+            n += 1
+        return 'mark-%d' % n
+
     def _on_mark(self, request, response):
         pose = self._map_pose()
         if pose is None:
             response.success = False
             response.message = 'no map pose (slam running?)'
             return response
-        self._route.append({'x': round(pose[0], 3), 'y': round(pose[1], 3),
-                            'yaw': round(pose[2], 3)})
-        self._save_route()
+        store = wpstore.load(self._waypoints_file)
+        name = self._next_mark_name(store)
+        wpstore.set_waypoint(store, name, pose, 'mark',
+                             saved=time.strftime('%Y-%m-%d %H:%M:%S'))
+        store['routes'].setdefault(self._route_name, []).append(name)
+        wpstore.save(self._waypoints_file, store)
+        self._route = self._resolve_route()
         response.success = True
-        response.message = 'waypoint %d marked' % len(self._route)
+        response.message = 'marked %s (%d in route %r)' % (
+            name, len(self._route), self._route_name)
         self.get_logger().info(response.message)
         return response
 
     def _on_clear(self, request, response):
-        n = len(self._route)
+        # Clears the route and deletes ITS mark-* waypoints only (named/tag
+        # waypoints survive — semantic change from the old nuke-everything).
+        store = wpstore.load(self._waypoints_file)
+        route = store.get('routes', {}).get(self._route_name, [])
+        marks = [it for it in route
+                 if isinstance(it, str) and it.startswith('mark-')]
+        for m in marks:
+            store['waypoints'].pop(m, None)
+        store['routes'][self._route_name] = []
+        wpstore.save(self._waypoints_file, store)
         self._route = []
-        self._save_route()
         response.success = True
-        response.message = 'cleared %d waypoints' % n
+        response.message = 'cleared route %r (%d entries, %d marks)' % (
+            self._route_name, len(route), len(marks))
         return response
 
     def _on_start(self, request, response):
@@ -233,9 +259,13 @@ class PatrolCapture(Node):
             response.success = False
             response.message = 'already running'
             return response
+        # Resolve names -> poses NOW, so a tag-refreshed waypoint is driven at
+        # its current pose (ADR-0011).
+        self._route = self._resolve_route()
         if not self._route:
             response.success = False
-            response.message = 'route is empty — mark waypoints first'
+            response.message = ('route %r is empty — mark waypoints first'
+                                % self._route_name)
             return response
         if not self._nav.server_is_ready() and \
                 not self._nav.wait_for_server(timeout_sec=2.0):
@@ -375,7 +405,7 @@ class PatrolCapture(Node):
                                   'ok' if fresh else 'STALE-SKIPPED'))
 
     def _write_manifest(self, end_reason):
-        data = {'route_file': self._route_file, 'captures': self._results}
+        data = {'route': self._route_name, 'captures': self._results}
         if end_reason:
             data['ended'] = end_reason
         with open(os.path.join(self._run_dir, 'manifest.yaml'), 'w') as f:

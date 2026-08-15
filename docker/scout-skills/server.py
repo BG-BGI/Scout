@@ -344,25 +344,42 @@ async def go_through(points: list[list[float]], final_yaw: float | None = None) 
 @mcp.tool
 async def patrol(names: list[str], loops: int = 1) -> dict:
     """Visit saved waypoints in order, fluidly (no stop at intermediate ones),
-    optionally looping the circuit — one call covers a whole patrol round.
-    loops 1–10, total ≤ 50 poses. Arrives in the last waypoint's saved
-    orientation. Returns IMMEDIATELY; poll nav_status, stop with nav_cancel."""
-    wp = _load_waypoints()
-    missing = [n for n in names if n not in wp]
-    if missing:
-        raise ToolError(f"unknown waypoints {missing} — have: {sorted(wp) or 'none'}")
+    optionally looping the circuit — one call covers a whole patrol round. A
+    single name that is a stored ROUTE (see list_waypoints.routes, e.g. the
+    operator's "patrol" route) expands to that route's waypoints. loops 1–10,
+    total ≤ 50 poses. Arrives in the last waypoint's saved orientation. Returns
+    IMMEDIATELY; poll nav_status, stop with nav_cancel."""
     if not names:
         raise ToolError("names is empty")
+    store = _load_waypoints()
+    pts = store["waypoints"]
+    if len(names) == 1 and names[0] in store.get("routes", {}):
+        poses, label = [], {"route": names[0]}
+        for it in store["routes"][names[0]]:
+            if isinstance(it, str):
+                if it not in pts:
+                    raise ToolError(
+                        f"route {names[0]!r} references missing waypoint {it!r}")
+                poses.append(pts[it])
+            else:
+                poses.append(it)
+    else:
+        missing = [n for n in names if n not in pts]
+        if missing:
+            raise ToolError(
+                f"unknown waypoints {missing} — have: {sorted(pts) or 'none'}")
+        poses, label = [pts[n] for n in names], {"patrol": names}
     loops = min(max(int(loops), 1), 10)
-    circuit = [[wp[n]["x"], wp[n]["y"]] for n in names] * loops
-    if len(circuit) > 50:
-        raise ToolError(f"{len(circuit)} poses > 50 — fewer waypoints or loops")
-    final_yaw = wp[names[-1]]["yaw"]
+    poses = poses * loops
+    if len(poses) > 50:
+        raise ToolError(f"{len(poses)} poses > 50 — fewer waypoints or loops")
+    final_yaw = poses[-1]["yaw"]
+    circuit = [[p["x"], p["y"]] for p in poses]
     if len(circuit) == 1:
         result = await _dispatch_goal(circuit[0][0], circuit[0][1], final_yaw)
     else:
         result = await _dispatch_through(circuit, final_yaw)
-    return {"patrol": names, "loops": loops} | result
+    return label | {"loops": loops} | result
 
 
 # --- named waypoints ---------------------------------------------------------
@@ -372,20 +389,37 @@ async def patrol(names: list[str], loops: int = 1) -> dict:
 # are only meaningful on the map they were saved on — a remap invalidates them.
 
 WAYPOINTS_PATH = os.environ.get("WAYPOINTS_PATH", "/maps/waypoints.json")
+WAYPOINTS_VERSION = 2
 
 
 def _load_waypoints() -> dict:
+    """The v2 waypoint store (ADR-0011): {"version", "waypoints": {name: pose},
+    "routes": {name: [names|inline poses]}}. Tolerates the legacy flat
+    {name: pose} file. Schema is shared with scout.core.waypoints; the CODE is
+    not (separate container), so this is a small hand copy kept in sync by the
+    ADR-0011 contract + fixtures."""
     try:
         with open(WAYPOINTS_PATH) as f:
-            return json.load(f)
+            data = json.load(f)
     except FileNotFoundError:
-        return {}
+        data = {}
+    if data.get("version") == WAYPOINTS_VERSION:
+        data.setdefault("waypoints", {})
+        data.setdefault("routes", {})
+        return data
+    # legacy flat {name: pose}
+    return {
+        "version": WAYPOINTS_VERSION,
+        "waypoints": {k: v for k, v in data.items()
+                      if isinstance(v, dict) and "x" in v},
+        "routes": {},
+    }
 
 
-def _store_waypoints(wp: dict) -> None:
+def _store_waypoints(store: dict) -> None:
     tmp = WAYPOINTS_PATH + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(wp, f, indent=1, sort_keys=True)
+        json.dump(store, f, indent=2, sort_keys=True)
     os.replace(tmp, WAYPOINTS_PATH)
 
 
@@ -401,31 +435,36 @@ async def save_waypoint(name: str) -> dict:
         raise ToolError(
             "robot pose unknown (/pose silent) — slam/localization not running"
         )
-    wp = _load_waypoints()
-    wp[name] = robot | {
-        "saved": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    store = _load_waypoints()
+    pts = store["waypoints"]
+    pts[name] = robot | {
+        "saved": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        "source": "operator",
     }
-    _store_waypoints(wp)
-    return {"saved": {name: wp[name]}, "waypoint_count": len(wp)}
+    _store_waypoints(store)
+    return {"saved": {name: pts[name]}, "waypoint_count": len(pts)}
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def list_waypoints() -> dict:
     """Named waypoints usable with go_to_waypoint (map-frame poses saved with
-    save_waypoint). Only valid on the map they were saved on."""
-    wp = _load_waypoints()
-    return {"waypoints": wp, "count": len(wp)}
+    save_waypoint), plus stored route names (usable with patrol). Only valid on
+    the map they were saved on."""
+    store = _load_waypoints()
+    return {"waypoints": store["waypoints"], "count": len(store["waypoints"]),
+            "routes": sorted(store["routes"])}
 
 
 @mcp.tool
 async def delete_waypoint(name: str) -> dict:
     """Delete a named waypoint."""
-    wp = _load_waypoints()
-    if name not in wp:
-        raise ToolError(f"no waypoint {name!r} — have: {sorted(wp) or 'none'}")
-    del wp[name]
-    _store_waypoints(wp)
-    return {"deleted": name, "remaining": sorted(wp)}
+    store = _load_waypoints()
+    pts = store["waypoints"]
+    if name not in pts:
+        raise ToolError(f"no waypoint {name!r} — have: {sorted(pts) or 'none'}")
+    del pts[name]
+    _store_waypoints(store)
+    return {"deleted": name, "remaining": sorted(pts)}
 
 
 @mcp.tool
@@ -433,10 +472,10 @@ async def go_to_waypoint(name: str) -> dict:
     """Send Scout driving to a named waypoint saved earlier with
     save_waypoint (arrives in its saved orientation). Same semantics as
     go_to: returns immediately, poll nav_status, stop with nav_cancel."""
-    wp = _load_waypoints()
-    if name not in wp:
-        raise ToolError(f"no waypoint {name!r} — have: {sorted(wp) or 'none'}")
-    target = wp[name]
+    pts = _load_waypoints()["waypoints"]
+    if name not in pts:
+        raise ToolError(f"no waypoint {name!r} — have: {sorted(pts) or 'none'}")
+    target = pts[name]
     result = await _dispatch_goal(target["x"], target["y"], target["yaw"])
     return {"waypoint": name} | result
 
@@ -766,13 +805,14 @@ async def _scan_tags(update_waypoints: bool = True):
                 else None,
             )
             if update_waypoints and pose:
-                wp = _load_waypoints()
-                wp[entry["name"]] = pose | {
+                store = _load_waypoints()
+                store["waypoints"][entry["name"]] = pose | {
                     "saved": datetime.now(timezone.utc).strftime(
                         "%Y-%m-%d %H:%M UTC"
-                    )
+                    ),
+                    "source": "tag",
                 }
-                _store_waypoints(wp)
+                _store_waypoints(store)
                 out["waypoint_refreshed"] = entry["name"]
         out["_box"] = [
             min(c["x"] for c in d["corners"]), min(c["y"] for c in d["corners"]),
