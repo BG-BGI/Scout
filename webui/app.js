@@ -358,6 +358,9 @@ document.getElementById('stop').addEventListener('click', () => {
   stopFollow();  // follow_me would keep chasing through the zero burst
   cancelNav();   // a live nav goal would keep driving through the zero burst
   patrolStop();  // a patrol would send the NEXT waypoint after the cancel
+  // explore would dispatch the NEXT frontier goal after the cancel; a pause
+  // publish with no explore node running is simply dropped.
+  exploreResumePub.publish(new ROSLIB.Message({ data: false }));
   zeroBurst();
 });
 
@@ -537,6 +540,22 @@ function drawMap() {
       mapCtx.beginPath();
       mapCtx.arc(c.x, c.y, r, 0, 2 * Math.PI);
       mapCtx.fill();
+    });
+  }
+
+  if (frontierPts.length || frontierGoals.length) {
+    mapCtx.fillStyle = 'rgba(0, 220, 255, 0.55)';
+    frontierPts.forEach((p) => {
+      const c = worldToCanvas(p.x, p.y);
+      mapCtx.fillRect(c.x - 1, c.y - 1, 2, 2);
+    });
+    mapCtx.strokeStyle = '#00dcff';
+    mapCtx.lineWidth = 1.5;
+    frontierGoals.forEach((p) => {
+      const c = worldToCanvas(p.x, p.y);
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
+      mapCtx.stroke();
     });
   }
 
@@ -763,6 +782,64 @@ areaBtn.addEventListener('click', () => {
   }));
   areaReset('Planning coverage…');
 });
+
+// --- explore (explore_lite, compose profile `explore`) ---------------------------------
+// Pause/resume ride the /explore/resume Bool the skills server also uses;
+// deliberately NOT container start/stop. Frontier markers (/explore/frontiers,
+// published while the node plans) draw cyan on the map canvas. Markers go
+// stale when paused/stopped, so they are cleared after 10 s of silence.
+const exploreState = document.getElementById('explore-state');
+const exploreResult = document.getElementById('explore-result');
+const exploreResumePub = new ROSLIB.Topic({
+  ros, name: '/explore/resume', messageType: 'std_msgs/msg/Bool',
+});
+// Advertise at load: same DDS-discovery race as /coverage_box.
+ros.on('connection', () => exploreResumePub.advertise());
+let frontierPts = [];       // [{x, y}] frontier cells (POINTS markers)
+let frontierGoals = [];     // [{x, y}] centroid/goal spheres
+let frontierLastMs = 0;
+
+function setExplore(active) {
+  exploreResumePub.publish(new ROSLIB.Message({ data: active }));
+  exploreResult.textContent = active
+    ? 'resume sent — frontiers should update within a few seconds'
+    : 'pause sent — current drive continues (Cancel Goal / STOP to halt)';
+}
+document.getElementById('explore-resume')
+  .addEventListener('click', () => setExplore(true));
+document.getElementById('explore-pause')
+  .addEventListener('click', () => setExplore(false));
+
+new ROSLIB.Topic({
+  ros, name: '/explore/frontiers', messageType: 'visualization_msgs/msg/MarkerArray',
+  throttle_rate: 1000, queue_length: 1,
+}).subscribe((msg) => {
+  frontierLastMs = performance.now();
+  const pts = [];
+  const goals = [];
+  msg.markers.forEach((m) => {
+    if (m.action !== 0) return;   // ADD/MODIFY only
+    if (m.points && m.points.length) {
+      m.points.forEach((p) => pts.push({ x: p.x, y: p.y }));
+    } else {
+      goals.push({ x: m.pose.position.x, y: m.pose.position.y });
+    }
+  });
+  frontierPts = pts;
+  frontierGoals = goals;
+  exploreState.textContent = goals.length + ' frontiers · live';
+  drawMap();
+});
+
+setInterval(() => {
+  if (frontierLastMs && performance.now() - frontierLastMs > 10000) {
+    frontierLastMs = 0;
+    frontierPts = [];
+    frontierGoals = [];
+    exploreState.textContent = 'quiet';
+    drawMap();
+  }
+}, 2000);
 
 // --- camera view ----------------------------------------------------------------------
 // Subscribe ONLY while the panel is shown: compressed_image_transport JPEG-encodes

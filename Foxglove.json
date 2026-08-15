@@ -194,6 +194,9 @@
         },
         "/cost_cloud": {
           "visible": false
+        },
+        "/explore/frontiers": {
+          "visible": true
         }
       },
       "layers": {

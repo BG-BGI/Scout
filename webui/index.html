@@ -77,6 +77,19 @@
         Stand ~1–2 m ahead, then press Follow.</div>
     </section>
 
+    <details class="panel">
+      <summary><h2>Explore <span id="explore-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="explore-resume" class="primary">Resume</button>
+        <button id="explore-pause">Pause</button>
+      </div>
+      <div id="explore-result" class="dim">Frontier exploration (explore_lite).
+        Needs the explore service up first:
+        <code>docker compose --profile explore up -d explore</code>.
+        Frontiers draw cyan on the map. Pause stops NEW goals — the current
+        drive keeps going (use Cancel Goal / STOP to halt it).</div>
+    </details>
+
     <section class="panel">
       <h2>Speed</h2>
       <label>Linear <output id="lin-out">0.35</output> m/s
