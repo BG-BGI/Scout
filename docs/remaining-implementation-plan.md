@@ -85,8 +85,11 @@ open. §8.5.**
     verify open. §9.2.
 17. **N5 SC11 rclpy no-sync-service-call rule** — ✅ DONE (test_conventions
     SC11 + ADR-0013 row; zero remediation needed). §9.3.
-18. **N9 `ros2 doctor --report` in deploy runbook** — zero code. §9.4.
-19. **N6 Fast DDS async publish + UDP-frag sysctls** — measure-first. §9.5.
+18. **N9 `ros2 doctor --report` in deploy runbook** — ✅ DONE (recipe block
+    above). §9.4.
+19. **N6 Fast DDS async publish + UDP-frag sysctls** — XML landed DISABLED
+    (`scout/config/sensor_publish_profiles.xml`, enable recipe in its header);
+    sysctls + enablement stay measure-first on the Pi. §9.5.
 20. **N7 keepout/speed costmap filters** — ask operator first. §9.6.
 21. **N8 MPPI controller A/B overlay** — robot-coupled, after N1. §9.7.
 22. **N10 EKF process-noise tuning** — robot-coupled measurement. §9.8.
@@ -139,6 +142,13 @@ git pull && docker compose --profile build run --rm build_package \
   && docker compose up -d robot            # + slam/nav2/scout_skills as touched
 # scout-skills change: docker compose build scout_skills && up -d scout_skills
 # Dockerfile/image change: docker compose build && (see M5 volume note) && up -d
+
+# Post-deploy QoS-mismatch lint (§9.4) — run in a SUPER-CLIENT shell (see
+# scout/config/super_client.xml header; without it Discovery Server v2
+# filtering blinds the graph) and read the QOS COMPATIBILITY LIST section:
+docker compose exec robot bash -c \
+  'FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml \
+   ros2 daemon stop && ros2 doctor --report | sed -n "/QOS/,/^$/p"'
 ```
 
 **Mac / CI test workflow (no ROS needed) — this IS the definition of done:**
@@ -796,7 +806,7 @@ rule: **SC11 — no `.call(` on rclpy service clients in `scout/scout/`**
 link_watchdog's CancelGoal pattern is the house reference). Land with a
 one-paragraph note in ADR-0013's rule table. Gate: ruff + pytest.
 
-### 9.4 N9 — `ros2 doctor --report` in the deploy runbook (zero code)
+### 9.4 N9 — `ros2 doctor --report` in the deploy runbook ✅ DONE (recipe in §0)
 
 Emits a QOS COMPATIBILITY LIST naming publisher/subscriber node pairs (e.g.
 "Best effort publisher and reliable subscription") — the silent-failure class
@@ -806,13 +816,15 @@ line to the deploy/verify recipe: run it in a **super-client** shell
 §8.5) or Discovery Server filtering blinds it. Not a liveness oracle (§ DDS
 discovery caveats still apply) — it's a QoS-mismatch linter.
 
-### 9.5 N6 — Fast DDS async publish mode + UDP-frag sysctls (measure-first)
+### 9.5 N6 — Fast DDS async publish mode + UDP-frag sysctls (measure-first; XML landed DISABLED)
 
-(a) Per-topic Fast DDS XML profile (XML infra exists — super_client.xml)
-setting `publishMode>ASYNCHRONOUS` for the realsense pointcloud + `/scan`
-publishers so a blocking network write can't stall the sensor callback
-thread. Safe unconditionally; needs `FASTRTPS_DEFAULT_PROFILES_FILE` on the
-robot service env. (b) Host sysctls from the Humble DDS-tuning guide:
+(a) ✅ `scout/config/sensor_publish_profiles.xml` landed, NOT enabled —
+per-topic ASYNCHRONOUS publishMode for `/scan` + the depth cloud + color.
+Enable recipe + the two RMW_FASTRTPS_USE_QOS_FROM_XML traps are in the file
+header (verified against rmw_fastrtps humble README: default is SYNCHRONOUS,
+so this is a real change; every profile states publishMode AND
+historyMemoryPolicy explicitly because USE_QOS_FROM_XML=1 flips omitted
+attributes to Fast DDS defaults, incl. the ROS-breaking PREALLOCATED). (b) Host sysctls from the Humble DDS-tuning guide:
 `net.ipv4.ipfrag_time=3`, `net.ipv4.ipfrag_high_thresh=134217728`, raised
 `net.core.rmem_max` — the documented multi-MB-message stall is one lost UDP
 fragment jamming the 256 KB reassembly buffer for 30 s. Localhost-only DDS
