@@ -23,3 +23,6 @@ captures/*
 # uv/pytest local artifacts
 .venv/
 .pytest_cache/
+
+# Local profile selection (see .env.example); never committed.
+.env

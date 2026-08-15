@@ -4,20 +4,40 @@ slam / nav2 / foxglove_bridge stay as separate compose services.
 
     ros2 launch scout robot.launch.py
     ros2 launch scout robot.launch.py enable_joystick:=false
-    ros2 launch scout robot.launch.py camera_config:=realsense_tight_tunnel.yaml
+    ros2 launch scout robot.launch.py profile:=tight_tunnel
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from launch import LaunchDescription
-from scout.robot_profile import resolve_config_dir
+from scout.robot_profile import merged_params, resolve_config_dir
+
+
+def _camera_setup(context, *args, **kwargs):
+    # RealSense config carries the profile overlay (tight_tunnel turns depth
+    # off); resolved here because the profile is only known at launch time.
+    profile = LaunchConfiguration('profile').perform(context)
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory('realsense2_camera'),
+                'launch', 'rs_launch.py')),
+            launch_arguments={
+                'config_file': merged_params('realsense.yaml', profile),
+            }.items(),
+        ),
+    ]
 
 
 def generate_launch_description():
@@ -27,8 +47,6 @@ def generate_launch_description():
     config = resolve_config_dir()
 
     enable_joystick = LaunchConfiguration('enable_joystick')
-    camera_config = LaunchConfiguration('camera_config')
-    camera_config_path = PathJoinSubstitution([config, camera_config])
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -37,9 +55,10 @@ def generate_launch_description():
             description='Start joystick_teleop (set false when Nav2 owns /cmd_vel)',
         ),
         DeclareLaunchArgument(
-            'camera_config',
-            default_value='realsense.yaml',
-            description='Basename under scout/config for the RealSense launch config',
+            'profile',
+            default_value='default',
+            description='Config profile (default | tight_tunnel) — applies the '
+                        'realsense overlay here; pass the same to slam/nav2',
         ),
 
         IncludeLaunchDescription(
@@ -106,18 +125,7 @@ def generate_launch_description():
             parameters=[os.path.join(config, 'rplidar.yaml')],
         ),
 
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(
-                    get_package_share_directory('realsense2_camera'),
-                    'launch',
-                    'rs_launch.py',
-                ),
-            ),
-            launch_arguments={
-                'config_file': camera_config_path,
-            }.items(),
-        ),
+        OpaqueFunction(function=_camera_setup),
 
         Node(
             package='scout',

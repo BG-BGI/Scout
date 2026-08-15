@@ -43,17 +43,17 @@ services:
   robot:
     <<: *base
     restart: unless-stopped
-    command: ros2 launch scout robot.launch.py enable_joystick:=true
-    # command: ros2 launch scout robot.launch.py enable_joystick:=false camera_config:=realsense_tight_tunnel.yaml
+    command: ros2 launch scout robot.launch.py enable_joystick:=true profile:=${SCOUT_PROFILE:-default}
+    # One knob switches nav2/slam/realsense together: set SCOUT_PROFILE=tight_tunnel
+    # in .env (see .env.example) or pass profile:= on the command line (ADR-0010).
 
   # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
   slam:
     <<: *base
     restart: unless-stopped
-    command: ros2 launch scout slam.launch.py mode:=new
-    # command: ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
-    # command: ros2 launch scout slam.launch.py mode:=localization map:=house
-    # command: ros2 launch scout slam.launch.py mode:=continue map:=office
+    command: ros2 launch scout slam.launch.py mode:=new profile:=${SCOUT_PROFILE:-default}
+    # command: ros2 launch scout slam.launch.py mode:=localization map:=house profile:=${SCOUT_PROFILE:-default}
+    # command: ros2 launch scout slam.launch.py mode:=continue map:=office profile:=${SCOUT_PROFILE:-default}
 
   # Path planning and following. Needs `slam` up first for /map and map->odom.
   # Reuses upstream's navigation_launch.py because it owns the cmd_vel plumbing: it
@@ -71,8 +71,7 @@ services:
   nav2:
     <<: *base
     restart: unless-stopped
-    command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2.yaml use_sim_time:=false
-    # command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false
+    command: ros2 launch scout nav2.launch.py profile:=${SCOUT_PROFILE:-default}
 
   # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
   # starts it. Start after robot+slam+nav2 look healthy:
@@ -86,7 +85,7 @@ services:
   explore:
     <<: *base
     profiles: ["explore"]
-    command: ros2 launch scout explore.launch.py
+    command: ros2 launch scout explore.launch.py profile:=${SCOUT_PROFILE:-default}
 
   foxglove_bridge:
     <<: *base

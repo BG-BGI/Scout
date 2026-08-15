@@ -1,0 +1,13 @@
+# Tight-tunnel deltas over realsense.yaml (ADR-0010): depth OFF (no obstacle-
+# avoidance use — pipe walls fill the depth FOV); IMU + color stay. A null value
+# DELETES the key (back to the wrapper default). Merged by merged_params.
+enable_depth: false
+pointcloud.enable: false
+pointcloud__neon_.enable: false
+decimation_filter.enable: false
+align_depth.enable: false
+spatial_filter.enable: false
+# No advanced-mode preset / auto-exposure poking while depth is off (keeps clear
+# of the Motion-Module wedge hazard) — delete both keys.
+json_file_path: null
+depth_module.enable_auto_exposure: null

@@ -1,0 +1,7 @@
+# Tight-tunnel deltas over slam.yaml (ADR-0010): finer grid + denser keyframes
+# for pipes barely wider than the chassis. Merged by robot_profile.merged_params.
+slam_toolbox:
+  ros__parameters:
+    resolution: 0.025
+    minimum_travel_distance: 0.2
+    minimum_travel_heading: 0.25

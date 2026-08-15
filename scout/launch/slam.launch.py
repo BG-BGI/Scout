@@ -12,7 +12,7 @@ Examples:
     ros2 launch scout slam.launch.py mode:=continue map:=house
     ros2 launch scout slam.launch.py mode:=localization map:=house \
         map_start_pose:=1.5,0.0,3.14159
-    ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
+    ros2 launch scout slam.launch.py mode:=new profile:=tight_tunnel
 """
 
 import os
@@ -22,7 +22,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from launch import LaunchDescription
-from scout.robot_profile import resolve_config
+from scout.robot_profile import merged_params
 
 # Serialized pose graphs live in the repo, which is bind-mounted at /ros_ws/src, so
 # they land on the host where they can be inspected and copied off. Deliberately not
@@ -78,16 +78,11 @@ def _map_params(map_name):
     return {'map_file_name': path}
 
 
-def _resolve_params_file(name):
-    """Basename under scout/config; bind-mount wins over install share
-    (one policy, owned by scout.robot_profile — ADR-0013)."""
-    return resolve_config(name)
-
-
 def _launch_setup(context, *args, **kwargs):
     mode = LaunchConfiguration('mode').perform(context)
     map_name = LaunchConfiguration('map').perform(context)
     params_file = LaunchConfiguration('params_file').perform(context)
+    profile = LaunchConfiguration('profile').perform(context)
 
     if mode not in MODES:
         raise RuntimeError(
@@ -122,7 +117,8 @@ def _launch_setup(context, *args, **kwargs):
             'scan_buffer_size': 3,
         }
 
-    config = _resolve_params_file(params_file)
+    # Base params + the profile's slam overlay (tight_tunnel = finer grid).
+    config = merged_params(params_file, profile)
 
     return [
         Node(
@@ -161,7 +157,12 @@ def generate_launch_description():
             'params_file',
             default_value='slam.yaml',
             description='Basename (or absolute path) of the slam_toolbox params '
-                        'YAML under scout/config. Use slam_tight_tunnel.yaml for pipes.',
+                        'YAML under scout/config (the profile overlay merges on top).',
+        ),
+        DeclareLaunchArgument(
+            'profile',
+            default_value='default',
+            description='Config profile (default | tight_tunnel).',
         ),
         OpaqueFunction(function=_launch_setup),
     ])
