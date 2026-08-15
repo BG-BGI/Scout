@@ -26,7 +26,7 @@ def validate_curve(volts, fraction):
         raise ValueError('curve_volts and curve_fraction differ in length')
     if len(volts) < 2:
         raise ValueError('the curve needs at least two points')
-    if any(b <= a for a, b in zip(volts, volts[1:])):
+    if any(b <= a for a, b in zip(volts, volts[1:], strict=False)):
         raise ValueError('curve_volts must be strictly ascending')
     return volts, fraction
 
@@ -66,6 +66,7 @@ class RestingSocEstimator:
         self._samples = []
         self._last_estimate_at = None
         self.estimate = None  # last fraction produced, or None until the first
+        self.last_median = None  # the median volts behind `estimate` (for logs)
 
     def update(self, t, volts, speed):
         if speed > self._rest_speed_counts:
@@ -83,7 +84,7 @@ class RestingSocEstimator:
         if not due:
             return None
         self._last_estimate_at = t
-        self.estimate = fraction_at(
-            self._curve_v, self._curve_f, statistics.median(self._samples))
+        self.last_median = statistics.median(self._samples)
+        self.estimate = fraction_at(self._curve_v, self._curve_f, self.last_median)
         self._samples.clear()
         return self.estimate

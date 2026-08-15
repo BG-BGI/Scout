@@ -19,3 +19,4 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0010](0010-tight-tunnel-profile.md) | Scenario profiles as parameter overlays |
 | [0011](0011-waypoint-store.md) | One JSON waypoint/route store shared by patrol + skills |
 | [0012](0012-pure-core-testing.md) | Pure `scout.core` + bare-pytest testing |
+| [0013](0013-conventions-as-tests.md) | Conventions enforced by ruff + structural tests, gated by CI |

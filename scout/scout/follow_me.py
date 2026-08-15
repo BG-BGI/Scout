@@ -6,8 +6,9 @@ window are clustered (consecutive beams whose ranges differ < cluster_gap);
 the tracked target is the cluster centroid nearest the previous target (gated),
 or the nearest cluster overall while acquiring. A P-loop drives range error to
 `standoff` and bearing to zero — forward when too far, reverse (slower, rear
-corridor gated by lidar only) when the target closes inside the standoff. Follows anything — a person's legs, a box on a
-string — which is the point. No ML.
+corridor gated by lidar only) when the target closes inside the standoff.
+Follows anything — a person's legs, a box on a string — which is the point.
+No ML.
 
 The D455 depth cloud guards the corridor: the lidar plane sits 24 cm up, so
 shoes, toys and thresholds are invisible to it. Depth points in the
@@ -34,9 +35,9 @@ import time
 
 import numpy as np
 import tf2_ros
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import String
@@ -44,7 +45,9 @@ from std_srvs.srv import Trigger
 
 from scout.cmd_vel_source import CmdVelSource
 from scout.core.geometry import wrap_angle
+from scout.core.status import format_follow_status
 from scout.node_util import lookup_matrix, lookup_pose2, run_node
+from scout.robot_profile import load as _load_profile
 
 
 class FollowMe(Node):
@@ -95,7 +98,8 @@ class FollowMe(Node):
         self._seek_delay = float(p('seek_delay', 1.2).value)
         self._seek_vx = float(p('seek_vx', 0.35).value)
         self._seek_wz = float(p('seek_wz', 1.2).value)
-        publish_hz = float(p('publish_hz', 20.0).value)
+        publish_hz = float(
+            p('publish_hz', float(_load_profile()['publish_hz'])).value)
         # Obstacle avoidance: forward corridor gating + repulsive steering.
         # Half-width 0.30 covers the 0.238 m circumscribed radius while the
         # robot yaws to track the target, not just the 0.167 m box half-width —
@@ -416,7 +420,7 @@ class FollowMe(Node):
                 keep = d2.min(axis=1) > self._trail_radius ** 2
                 wx, wy = wx[keep], wy[keep]
             v = self._mem_voxel
-            for px, py in zip(np.round(wx / v) * v, np.round(wy / v) * v):
+            for px, py in zip(np.round(wx / v) * v, np.round(wy / v) * v, strict=True):
                 entry = self._obstacle_mem.get((float(px), float(py)))
                 if entry is None:
                     self._obstacle_mem[(float(px), float(py))] = [1, now, now]
@@ -669,11 +673,11 @@ class FollowMe(Node):
     def _publish_status(self):
         msg = String()
         if self._status in ('locked', 'blocked') and self._target is not None:
-            msg.data = '%s|%.2f|%.0f' % (
+            msg.data = format_follow_status(
                 self._status, math.hypot(*self._target),
                 math.degrees(math.atan2(self._target[1], self._target[0])))
         else:
-            msg.data = self._status
+            msg.data = format_follow_status(self._status)
         self._status_pub.publish(msg)
 
     def stop(self):

@@ -25,17 +25,15 @@ import base64
 import json
 import math
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from contextlib import asynccontextmanager
-
 import numpy as np
+from detect import annotate, detect
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
-
-import tags as tagdb
-from detect import annotate, detect
+from geometry import planar_yaw
 from motion import (
     CMD_VEL,
     MAX_MOVE_M,
@@ -49,6 +47,8 @@ from render import render_map
 from robot_profile import load as _load_profile
 from rosbridge import ADVERTISE_SETTLE_S, RosBridge, RosBridgeError
 from tf import TfTree
+
+import tags as tagdb
 
 TAG_WATCH_PERIOD_S = 2.0
 
@@ -84,7 +84,7 @@ def _pose_of(msg: dict | None) -> dict | None:
         "x": round(p["position"]["x"], 3),
         "y": round(p["position"]["y"], 3),
         # Planar quaternion; same shortcut the webui uses.
-        "yaw": round(2 * math.atan2(q["z"], q["w"]), 3),
+        "yaw": round(planar_yaw(q["z"], q["w"]), 3),
     }
 
 
@@ -105,7 +105,7 @@ async def _robot_pose(rb: RosBridge) -> dict | None:
         for t in m["transforms"]:
             tr, q = t["transform"]["translation"], t["transform"]["rotation"]
             tfs[t["header"]["frame_id"]] = (
-                tr["x"], tr["y"], 2 * math.atan2(q["z"], q["w"])
+                tr["x"], tr["y"], planar_yaw(q["z"], q["w"])
             )
         if {"map", "odom"} <= tfs.keys():
             break
@@ -790,8 +790,8 @@ async def _tag_watch_loop():
             continue
         try:
             results = await _scan_tags(update_waypoints=True)
-        except Exception:
-            continue  # apriltag node/rosbridge hiccup — try again next period
+        except Exception:  # noqa: BLE001 — apriltag node/rosbridge hiccup; retry next period
+            continue
         if results is not None:
             _tag_watch_last = {
                 "at": datetime.now(timezone.utc).strftime("%H:%M:%S UTC"),
@@ -1009,8 +1009,8 @@ async def _auto_pause(delay_s: float):
     await asyncio.sleep(delay_s)
     try:
         await _set_explore(False)
-    except Exception:
-        pass  # explore node already gone — nothing left to pause
+    except Exception:  # noqa: BLE001 — explore node already gone; nothing left to pause
+        pass
 
 
 async def _explore_running(rb: RosBridge) -> bool:

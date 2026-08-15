@@ -15,20 +15,39 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 
-_BIND_PATH = '/ros_ws/src/scout/config/robot_profile.yaml'
+# The ONE place the bind-mount path may appear (SC6, ADR-0013): every other
+# module and launch file resolves config through the helpers below.
+_BIND_DIR = '/ros_ws/src/scout/config'
 _cache = None
 
 
+def resolve_config_dir() -> str:
+    """The scout config directory — the bind-mounted repo copy wins over the
+    installed share copy, so an edit under /ros_ws/src takes effect on the
+    next start with no rebuild."""
+    if os.path.isdir(_BIND_DIR):
+        return _BIND_DIR
+    return os.path.join(get_package_share_directory('scout'), 'config')
+
+
+def resolve_config(name: str) -> str:
+    """Absolute path of a config file. Basenames resolve bind-mount-first
+    (per file, so a fresh repo file wins even before an install); absolute
+    paths pass through. Raises if the file does not exist."""
+    if os.path.isabs(name):
+        path = name
+    else:
+        path = os.path.join(_BIND_DIR, name)
+        if not os.path.isfile(path):
+            path = os.path.join(
+                get_package_share_directory('scout'), 'config', name)
+    if not os.path.isfile(path):
+        raise RuntimeError('scout config file not found: %s' % path)
+    return path
+
+
 def _resolve() -> str:
-    if os.path.isfile(_BIND_PATH):
-        return _BIND_PATH
-    share = os.path.join(
-        get_package_share_directory('scout'), 'config', 'robot_profile.yaml')
-    if os.path.isfile(share):
-        return share
-    raise RuntimeError(
-        'robot_profile.yaml not found (looked at %s and %s)'
-        % (_BIND_PATH, share))
+    return resolve_config('robot_profile.yaml')
 
 
 def load() -> dict:

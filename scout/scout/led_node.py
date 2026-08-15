@@ -20,13 +20,12 @@ import math
 import time
 
 from rclpy.node import Node
+from scout_interfaces.srv import SetLedMode
 
-from scout.apa102 import (APA102, LED_FULL_WHITE_AMPS, NUM_LEDS,
-                          SPI_BUS, SPI_DEVICE, SPI_HZ)
+from scout.apa102 import APA102, LED_FULL_WHITE_AMPS, NUM_LEDS, SPI_BUS, SPI_DEVICE, SPI_HZ
 from scout.core.colors import parse_hex_color
 from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
-from scout_interfaces.srv import SetLedMode
 
 VALID_MODES = tuple(_load_profile()['led_modes'])
 

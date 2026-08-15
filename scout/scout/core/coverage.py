@@ -10,7 +10,9 @@ import math
 
 import numpy as np
 
-OCCUPIED = 50  # nav2 lethal convention (matches robot_profile occupied_threshold)
+# Default only — ROS callers inject robot_profile's occupied_threshold; this
+# module cannot read the profile itself (scout.core bans yaml, ADR-0012).
+OCCUPIED = 50  # profile-exempt: core cannot read yaml (ADR-0012); callers inject
 
 
 def scanline(poly, wy):
@@ -38,17 +40,17 @@ def inflate(blocked, cells):
 
 
 def plan_coverage(grid, origin_xy, resolution, poly, *,
-                  spacing, inflation, min_run_m=0.45):
+                  spacing, inflation, min_run_m=0.45, occupied=OCCUPIED):
     """Serpentine stripes over free/unknown cells inside `poly`.
 
-    grid: 2D int array (height, width), OccupancyGrid convention (>=OCCUPIED is
+    grid: 2D int array (height, width), OccupancyGrid convention (>=occupied is
     lethal; -1 unknown counts as coverable). origin_xy: world coord of cell
     (0,0). Returns [{x, y, yaw}, ...] with builtin floats.
     """
     ox, oy = origin_xy
     res = resolution
     h, w = grid.shape
-    blocked = grid >= OCCUPIED
+    blocked = grid >= occupied
     blocked = inflate(blocked, max(1, int(round(inflation / res))))
 
     def cell_x(wx):

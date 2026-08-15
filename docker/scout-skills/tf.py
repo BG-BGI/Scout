@@ -8,17 +8,7 @@ A point is carried to an ancestor by walking child→parent applying that.
 """
 
 import numpy as np
-
-
-def quat_to_mat(q: dict) -> np.ndarray:
-    x, y, z, w = q["x"], q["y"], q["z"], q["w"]
-    return np.array(
-        [
-            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
-        ]
-    )
+from geometry import quat_to_matrix
 
 
 class TfTree:
@@ -39,7 +29,8 @@ class TfTree:
                     tr["translation"]["z"],
                 ]
             )
-            self._up[child] = (parent, quat_to_mat(tr["rotation"]), t)
+            self._up[child] = (parent, quat_to_matrix(tr["rotation"]["x"], tr["rotation"]["y"],
+                                              tr["rotation"]["z"], tr["rotation"]["w"]), t)
 
     def to_ancestor(
         self, point: np.ndarray, frame: str, ancestor: str

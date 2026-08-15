@@ -28,14 +28,13 @@ connect/disconnect events silently drop and everything else still works.
 import math
 import time
 
-import rclpy
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
+from scout_interfaces.srv import SetLedMode
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool, String
 
+from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
-from scout_interfaces.srv import SetLedMode
 
 try:
     from rosbridge_msgs.msg import ConnectedClients
@@ -229,17 +228,8 @@ class LedStatus(Node):
         self.get_logger().debug('LED -> %s %s' % (mode, color))
 
 
-def main():
-    rclpy.init()
-    node = LedStatus()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main(args=None):
+    run_node(LedStatus, args=args)
 
 
 if __name__ == '__main__':

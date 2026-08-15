@@ -31,18 +31,21 @@ import time
 import numpy as np
 import tf2_ros
 import yaml
-from rclpy.node import Node
-from rclpy.action import ActionClient
-from rclpy.qos import qos_profile_sensor_data
 from geometry_msgs.msg import PolygonStamped, PoseStamped
-from nav_msgs.msg import OccupancyGrid, Path
 from nav2_msgs.action import NavigateToPose
+from nav_msgs.msg import OccupancyGrid, Path
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState, CompressedImage
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scout.core.coverage import plan_coverage
+from scout.core.geometry import yaw_to_quat_zw
+from scout.core.status import format_patrol_plan, format_patrol_status
 from scout.node_util import lookup_pose2, run_node
+from scout.robot_profile import load as _load_profile
 
 
 class PatrolCapture(Node):
@@ -57,7 +60,9 @@ class PatrolCapture(Node):
         self._capture_dir = str(p('capture_dir', '/ros_ws/src/captures').value)
         self._settle = float(p('settle_seconds', 1.5).value)
         self._frame_max_age = float(p('frame_max_age', 2.0).value)
-        self._abort_voltage = float(p('abort_voltage', 17.0).value)
+        self._abort_voltage = float(
+            p('abort_voltage',
+              float(_load_profile()['battery_activity_floor_v'])).value)
         self._goal_timeout = float(p('goal_timeout', 120.0).value)
         # Coverage planning: a box dragged on the web UI map arrives on
         # /coverage_box; a serpentine route over its free/unknown cells
@@ -182,7 +187,7 @@ class PatrolCapture(Node):
     def _plan_feedback(self, text):
         self.get_logger().info(text)
         msg = String()
-        msg.data = 'plan|%s' % text
+        msg.data = format_patrol_plan(text)
         self._status_pub.publish(msg)
 
     def _plan_coverage(self, poly):
@@ -194,7 +199,8 @@ class PatrolCapture(Node):
         return plan_coverage(
             grid, (info.origin.position.x, info.origin.position.y),
             info.resolution, poly,
-            spacing=self._cov_spacing, inflation=self._cov_inflation)
+            spacing=self._cov_spacing, inflation=self._cov_inflation,
+            occupied=int(_load_profile()['occupied_threshold']))
 
     def _map_pose(self):
         return lookup_pose2(self._tf_buffer, 'map', 'base_link')
@@ -267,8 +273,8 @@ class PatrolCapture(Node):
         goal.pose.header.frame_id = 'map'   # never the display/odom frame
         goal.pose.pose.position.x = float(wp['x'])
         goal.pose.pose.position.y = float(wp['y'])
-        goal.pose.pose.orientation.z = math.sin(float(wp['yaw']) / 2.0)
-        goal.pose.pose.orientation.w = math.cos(float(wp['yaw']) / 2.0)
+        (goal.pose.pose.orientation.z,
+         goal.pose.pose.orientation.w) = yaw_to_quat_zw(float(wp['yaw']))
         self._nav_result = None
         self._goal_handle = None
         self._self_cancel = False
@@ -387,11 +393,7 @@ class PatrolCapture(Node):
             path.poses.append(ps)
         self._route_pub.publish(path)
         msg = String()
-        if self._state == 'idle':
-            msg.data = 'idle|%d' % len(self._route)
-        else:
-            msg.data = '%s|%d|%d/%d' % (self._state, len(self._route),
-                                        self._wp_i + 1, len(self._route))
+        msg.data = format_patrol_status(self._state, len(self._route), self._wp_i)
         self._status_pub.publish(msg)
 
 

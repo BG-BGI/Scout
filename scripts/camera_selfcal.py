@@ -37,9 +37,9 @@ OCC_JSON = '{"calib type": 0, "speed": 3, "scan parameter": 0, "white wall mode"
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--tare', type=int, metavar='MM',
-                    help='tare calibration: ground-truth distance to flat target, mm')
-    ap.add_argument('--timeout', type=int, default=30000, help='ms')
+    ap.add_argument("--tare", type=int, metavar="MM",
+                    help="tare calibration: ground-truth distance to flat target, mm")
+    ap.add_argument("--timeout", type=int, default=30000, help="ms")
     args = ap.parse_args()
 
     pipe = rs.pipeline()
@@ -49,8 +49,8 @@ def main():
     try:
         profile = pipe.start(cfg)
     except RuntimeError as exc:
-        sys.exit('Cannot open the camera (%s).\n'
-                 'Is the robot service holding it? Run: docker compose stop robot' % exc)
+        sys.exit("Cannot open the camera (%s).\n"
+                 "Is the robot service holding it? Run: docker compose stop robot" % exc)
 
     try:
         for _ in range(30):  # warm up the stream; occ needs live frames
@@ -59,46 +59,46 @@ def main():
         cal = rs.auto_calibrated_device(dev)
 
         old_table = cal.get_calibration_table()
-        print('Current table: %d bytes. Running %s…' %
-              (len(old_table), 'tare calibration' if args.tare else 'on-chip self-calibration'))
+        print("Current table: %d bytes. Running %s…" %
+              (len(old_table), "tare calibration" if args.tare else "on-chip self-calibration"))
 
         if args.tare:
             new_table, health = cal.run_tare_calibration(
-                args.tare, '', args.timeout)
+                args.tare, "", args.timeout)
         else:
             new_table, health = cal.run_on_chip_calibration(
                 OCC_JSON, args.timeout)
 
         try:
-            hval = float(health[0]) if hasattr(health, '__len__') else float(health)
+            hval = float(health[0]) if hasattr(health, "__len__") else float(health)
         except (TypeError, ValueError):
-            hval = float('nan')
-        print('Health score: %.4f' % hval)
+            hval = float("nan")
+        print("Health score: %.4f" % hval)
         a = abs(hval)
         if a < 0.25:
-            print('  |h| < 0.25 — optics were already good; new table is a refinement.')
+            print("  |h| < 0.25 — optics were already good; new table is a refinement.")
         elif a <= 0.75:
-            print('  0.25-0.75 — calibration had drifted; applying helps.')
+            print("  0.25-0.75 — calibration had drifted; applying helps.")
         else:
-            print('  > 0.75 — significant drift; definitely keep the result.')
+            print("  > 0.75 — significant drift; definitely keep the result.")
 
         cal.set_calibration_table(new_table)  # applied to this session only
-        print('New table applied to the RUNNING session (not yet in flash).')
+        print("New table applied to the RUNNING session (not yet in flash).")
 
-        ans = input('Write to flash? Old table is unrecoverable afterwards. [y/N] ')
-        if ans.strip().lower() == 'y':
+        ans = input("Write to flash? Old table is unrecoverable afterwards. [y/N] ")
+        if ans.strip().lower() == "y":
             cal.write_calibration()
-            print('Written to flash.')
+            print("Written to flash.")
         else:
-            print('NOT written — device reverts to the old table on power cycle.')
+            print("NOT written — device reverts to the old table on power cycle.")
     except RuntimeError as exc:
-        sys.exit('Calibration failed: %s\n'
-                 'Common causes: blank/too-close scene (needs texture 0.5-2 m), '
-                 'motion during the run.' % exc)
+        sys.exit("Calibration failed: %s\n"
+                 "Common causes: blank/too-close scene (needs texture 0.5-2 m), "
+                 "motion during the run." % exc)
     finally:
         pipe.stop()
         time.sleep(0.5)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

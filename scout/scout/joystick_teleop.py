@@ -1,15 +1,13 @@
-import math
 import os
 import struct
 import threading
 
-import rclpy
 from rclpy.node import Node
-from rclpy.executors import ExternalShutdownException
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scout.cmd_vel_source import CmdVelSource
+from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
 
 # --- Xbox controller mapping (Linux joydev / xpad driver) --------------------
@@ -238,18 +236,9 @@ class JoystickTeleopNode(Node):
         self._cmd.stop_now()  # explicit stop on shutdown
 
 
-def main():
-    rclpy.init()
-    node = JoystickTeleopNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.stop()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+def main(args=None):
+    run_node(JoystickTeleopNode, on_shutdown=lambda node: node.stop(),
+             args=args)
 
 
 if __name__ == '__main__':

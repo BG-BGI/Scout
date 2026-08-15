@@ -23,7 +23,6 @@ Cost per 10-waypoint run: about a cent with the defaults.
 import argparse
 import base64
 import io
-import json
 import os
 import sys
 

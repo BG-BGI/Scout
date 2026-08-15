@@ -10,7 +10,6 @@ from io import BytesIO
 
 import numpy as np
 from PIL import Image, ImageDraw
-
 from robot_profile import load as _load_profile
 
 MAX_DIM = 1024
@@ -22,7 +21,7 @@ def render_map(msg: dict, robot: dict | None) -> tuple[bytes, int]:
     """PNG bytes + the integer upscale factor (needed by the pixel→world
     formula in the tool's metadata)."""
     info = msg["info"]
-    w, h, res = info["width"], info["height"], info["resolution"]
+    w, h = info["width"], info["height"]
     grid = np.array(msg["data"], dtype=np.int16).reshape(h, w)
 
     img = np.full((h, w), 128, dtype=np.uint8)  # unknown: mid gray

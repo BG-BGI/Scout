@@ -15,6 +15,7 @@ import asyncio
 import math
 import time
 
+from geometry import planar_yaw, wrap_angle
 from robot_profile import load as _load_profile
 from rosbridge import ADVERTISE_SETTLE_S, RosBridge
 
@@ -110,10 +111,9 @@ async def run_rotate(angle_rad: float, speed: float) -> dict:
 
     def measure(msg: dict) -> float:
         q = msg["pose"]["pose"]["orientation"]
-        yaw = 2 * math.atan2(q["z"], q["w"])  # planar quaternion shortcut
+        yaw = planar_yaw(q["z"], q["w"])
         if state["prev"] is not None:
-            d = yaw - state["prev"]
-            state["acc"] += (d + math.pi) % (2 * math.pi) - math.pi
+            state["acc"] += wrap_angle(yaw - state["prev"])
         state["prev"] = yaw
         return direction * state["acc"]
 

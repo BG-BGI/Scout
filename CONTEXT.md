@@ -92,4 +92,18 @@ Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
 - `/patrol_status`: `idle|<n>` | `<state>|<n>|<i>/<n>` | `plan|<text>`
 
 Kept as strings deliberately (ADR-0012); consumers on both sides of the
-rosbridge boundary parse them, so the formats are frozen by tests.
+rosbridge boundary parse them, so the formats are frozen by tests —
+`scout.core.status` owns the grammar and `scout/test/test_status.py` pins the
+exact strings.
+
+## Conventions (machine-enforced — ADR-0013)
+
+`ruff check .` + `cd scout && pytest` is the definition of done; CI runs both
+off-ROS. Repo-specific rules are structural tests (SC1–SC10 in
+`scout/test/test_conventions.py`, `test_profile_constants.py`,
+`test_status.py`): run_node-only mains, sensor QoS on sensor topics, TF via
+node_util, Twist publishers only in cmd_vel_source/estop, no hand-rolled
+quaternions, one owner for the bind-mount path, core modules adopted+tested,
+profile values never re-hardcoded, wire formats frozen, deliberate copies
+synced. Failure messages state the fix; waivers are reasoned `# noqa` /
+`ALLOW` entries / `profile-exempt:` comments, all reviewed as code.

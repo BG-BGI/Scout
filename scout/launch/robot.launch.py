@@ -10,21 +10,21 @@ slam / nav2 / foxglove_bridge stay as separate compose services.
 import os
 
 from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 
+from launch import LaunchDescription
+from scout.robot_profile import resolve_config_dir
+
 
 def generate_launch_description():
     scout_share = get_package_share_directory('scout')
-    config = os.path.join(scout_share, 'config')
-    # Bind-mounted repo wins for live edits; share path is the fallback after install.
-    src_config = '/ros_ws/src/scout/config'
-    if os.path.isdir(src_config):
-        config = src_config
+    # Bind-mounted repo wins for live edits; share path is the fallback
+    # after install (one policy, owned by scout.robot_profile — ADR-0013).
+    config = resolve_config_dir()
 
     enable_joystick = LaunchConfiguration('enable_joystick')
     camera_config = LaunchConfiguration('camera_config')

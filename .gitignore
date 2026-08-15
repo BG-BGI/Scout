@@ -19,3 +19,7 @@ maps/waypoints.json
 maps/tags.db
 captures/*
 !captures/.gitkeep
+
+# uv/pytest local artifacts
+.venv/
+.pytest_cache/

@@ -14,14 +14,17 @@ stale = engaged, so a dead e-stop node parks the robot rather than leaving it
 drivable. There is still no hardware e-stop; S3 is free for one (see CLAUDE.md).
 """
 
-import rclpy
-from rclpy.executors import ExternalShutdownException
-from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from rclpy.node import Node
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
+from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
+
+# Lock heartbeat period. 5 Hz comfortably beats twist_mux's 1.0 s
+# estop-lock timeout while costing nothing; unrelated to publish_hz.
+_LOCK_HEARTBEAT_S = 0.2
 
 
 class EStop(Node):
@@ -42,7 +45,7 @@ class EStop(Node):
         self.create_service(Trigger, 'estop/engage', self._on_engage)
         self.create_service(Trigger, 'estop/release', self._on_release)
 
-        self.create_timer(0.2, self._publish_lock)       # 5 Hz lock heartbeat
+        self.create_timer(_LOCK_HEARTBEAT_S, self._publish_lock)
         self.create_timer(1.0 / hz, self._brake_tick)     # active-brake burst
 
         self.get_logger().info(
@@ -83,16 +86,7 @@ class EStop(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = EStop()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    run_node(EStop, args=args)
 
 
 if __name__ == '__main__':

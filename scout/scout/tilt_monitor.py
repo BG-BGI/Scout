@@ -7,14 +7,14 @@ On abort: latch, publish /tilt_alarm, pause explore_lite, cancel NavigateToPose.
 
 import math
 
-import rclpy
+from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
 
-from nav2_msgs.action import NavigateToPose
+from scout.node_util import run_node
 
 # Optical frame (camera_imu_optical_frame): gravity on -Y when the chassis is level.
 _LEVEL_AXIS = (0.0, -1.0, 0.0)
@@ -109,15 +109,7 @@ class TiltMonitor(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = TiltMonitor()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    run_node(TiltMonitor, args=args)
 
 
 if __name__ == '__main__':

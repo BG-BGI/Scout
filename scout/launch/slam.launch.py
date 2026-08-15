@@ -17,11 +17,12 @@ Examples:
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+from launch import LaunchDescription
+from scout.robot_profile import resolve_config
 
 # Serialized pose graphs live in the repo, which is bind-mounted at /ros_ws/src, so
 # they land on the host where they can be inspected and copied off. Deliberately not
@@ -78,19 +79,9 @@ def _map_params(map_name):
 
 
 def _resolve_params_file(name):
-    """Basename under scout/config; bind-mount wins over install share."""
-    if os.path.isabs(name):
-        path = name
-    else:
-        src = os.path.join('/ros_ws/src/scout/config', name)
-        if os.path.isfile(src):
-            path = src
-        else:
-            path = os.path.join(
-                get_package_share_directory('scout'), 'config', name)
-    if not os.path.isfile(path):
-        raise RuntimeError(f"slam params_file not found: {path}")
-    return path
+    """Basename under scout/config; bind-mount wins over install share
+    (one policy, owned by scout.robot_profile — ADR-0013)."""
+    return resolve_config(name)
 
 
 def _launch_setup(context, *args, **kwargs):

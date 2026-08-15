@@ -5,17 +5,15 @@
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
 from launch_ros.actions import Node
+
+from launch import LaunchDescription
+from scout.robot_profile import resolve_config_dir
 
 
 def generate_launch_description():
-    scout_share = get_package_share_directory('scout')
-    config = os.path.join(scout_share, 'config')
-    src_config = '/ros_ws/src/scout/config'
-    if os.path.isdir(src_config):
-        config = src_config
+    # Bind-mount-wins config resolution, owned by scout.robot_profile.
+    config = resolve_config_dir()
 
     return LaunchDescription([
         Node(

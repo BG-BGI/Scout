@@ -38,19 +38,19 @@ cleanly. Warning well before that is the point of the low/critical thresholds.
 
 import json
 import math
-import statistics
 
-import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
-# Resting pack voltage -> fraction of charge for the 5s li-ion DeWalt pack:
-# 4.20 V/cell full, 3.20 V/cell at the RoboClaw's 16.0 V Min Main cutoff. The
-# middle rows are soft because a li-ion curve is genuinely flat there, which is
-# the real limit on this approach rather than anything about the sensor.
-_DEFAULT_CURVE_VOLTS = [16.0, 17.0, 18.0, 18.5, 19.0, 20.0, 21.0]
-_DEFAULT_CURVE_FRACTION = [0.0, 0.12, 0.30, 0.45, 0.60, 0.85, 1.00]
+from scout.core.battery import (
+    DEFAULT_CURVE_FRACTION,
+    DEFAULT_CURVE_VOLTS,
+    RestingSocEstimator,
+    validate_curve,
+)
+from scout.node_util import run_node
+from scout.robot_profile import load as _load_profile
 
 # Below this the RoboClaw has not completed its first battery read (the status
 # state machine cycles through five reads, so the field is 0.0 for up to 0.5 s
@@ -94,26 +94,33 @@ class BatteryMonitor(Node):
         # refreshes at 2 Hz and a pack does not move meaningfully in seconds,
         # so this is about collecting enough samples to median, not about lag.
         self.estimate_period = self.declare_parameter('estimate_period', 5.0).value
-        # 17.5 V is 3.5 V/cell (~20% left); 16.5 V is 3.3 V/cell, just above the
-        # RoboClaw cutoff, and these are loaded readings so they fire early
-        # under drive current — which is the useful direction to be wrong in.
-        self.warn_voltage = self.declare_parameter('warn_voltage', 17.5).value
-        self.critical_voltage = self.declare_parameter('critical_voltage', 16.5).value
+        # Threshold ladder defaults come from robot_profile.yaml (SSOT — the
+        # webui badge and led_status read the same values). Warn is ~3.5 V/cell
+        # (~20% left); critical sits just above the RoboClaw cutoff, and these
+        # are loaded readings so they fire early under drive current — the
+        # useful direction to be wrong in.
+        _prof = _load_profile()
+        self.warn_voltage = self.declare_parameter(
+            'warn_voltage', float(_prof['battery_warn_v'])).value
+        self.critical_voltage = self.declare_parameter(
+            'critical_voltage', float(_prof['battery_critical_v'])).value
         self.design_capacity = self.declare_parameter('design_capacity', 5.0).value
         self.frame_id = self.declare_parameter('frame_id', 'base_link').value
 
-        volts = list(self.declare_parameter('curve_volts', _DEFAULT_CURVE_VOLTS).value)
+        volts = list(self.declare_parameter('curve_volts', DEFAULT_CURVE_VOLTS).value)
         fraction = list(
-            self.declare_parameter('curve_fraction', _DEFAULT_CURVE_FRACTION).value)
+            self.declare_parameter('curve_fraction', DEFAULT_CURVE_FRACTION).value)
         self._curve_volts, self._curve_fraction = self._validate_curve(volts, fraction)
+        self._estimator = RestingSocEstimator(
+            self._curve_volts, self._curve_fraction,
+            rest_speed_counts=self.rest_speed_counts,
+            rest_seconds=self.rest_seconds,
+            estimate_period=self.estimate_period)
 
         self._voltage = None
         self._voltage_stamp = None
         self._percentage = math.nan
         self._logged_percentage = math.nan
-        self._rest_since = None
-        self._rest_samples = []
-        self._last_estimate_at = None
 
         self._pub = self.create_publisher(BatteryState, 'battery', 10)
         self.create_subscription(String, 'roboclaw_status', self._on_status, 10)
@@ -124,30 +131,12 @@ class BatteryMonitor(Node):
             % (self._curve_volts[0], self._curve_volts[-1], self.rest_seconds))
 
     def _validate_curve(self, volts, fraction):
-        problem = None
-        if len(volts) != len(fraction):
-            problem = 'curve_volts and curve_fraction differ in length'
-        elif len(volts) < 2:
-            problem = 'the curve needs at least two points'
-        elif any(b <= a for a, b in zip(volts, volts[1:])):
-            problem = 'curve_volts must be strictly ascending'
-        if problem:
+        try:
+            return validate_curve(volts, fraction)
+        except ValueError as exc:
             self.get_logger().error(
-                '%s — falling back to the built-in 5s li-ion curve' % problem)
-            return list(_DEFAULT_CURVE_VOLTS), list(_DEFAULT_CURVE_FRACTION)
-        return volts, fraction
-
-    def _fraction_at(self, volts):
-        curve_v, curve_f = self._curve_volts, self._curve_fraction
-        if volts <= curve_v[0]:
-            return curve_f[0]
-        if volts >= curve_v[-1]:
-            return curve_f[-1]
-        for i in range(1, len(curve_v)):
-            if volts <= curve_v[i]:
-                span = (volts - curve_v[i - 1]) / (curve_v[i] - curve_v[i - 1])
-                return curve_f[i - 1] + span * (curve_f[i] - curve_f[i - 1])
-        return curve_f[-1]
+                '%s — falling back to the built-in 5s li-ion curve' % exc)
+            return list(DEFAULT_CURVE_VOLTS), list(DEFAULT_CURVE_FRACTION)
 
     def _on_status(self, msg: String):
         try:
@@ -167,29 +156,12 @@ class BatteryMonitor(Node):
         if self._voltage < _MIN_PLAUSIBLE_VOLTS:
             return
 
-        if speed > self.rest_speed_counts:
-            self._rest_since = None
-            # Anything gathered before the robot moved was measured against a
-            # different load history, so it cannot be medianed with what comes
-            # after the pack has recovered.
-            self._rest_samples.clear()
-            return
-        if self._rest_since is None:
-            self._rest_since = now
-            return
-        if (now - self._rest_since).nanoseconds * 1e-9 < self.rest_seconds:
-            return
+        estimate = self._estimator.update(
+            now.nanoseconds * 1e-9, self._voltage, speed)
+        if estimate is not None:
+            self._log_estimate(self._estimator.last_median, estimate)
 
-        self._rest_samples.append(self._voltage)
-        due = self._last_estimate_at is None or \
-            (now - self._last_estimate_at).nanoseconds * 1e-9 >= self.estimate_period
-        if due:
-            self._last_estimate_at = now
-            self._update_estimate(statistics.median(self._rest_samples))
-            self._rest_samples.clear()
-
-    def _update_estimate(self, volts):
-        estimate = self._fraction_at(volts)
+    def _log_estimate(self, volts, estimate):
         self._percentage = estimate
         moved = math.isnan(self._logged_percentage) or \
             abs(estimate - self._logged_percentage) >= _LOG_DELTA_FRACTION
@@ -255,15 +227,7 @@ class BatteryMonitor(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = BatteryMonitor()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    run_node(BatteryMonitor, args=args)
 
 
 if __name__ == '__main__':

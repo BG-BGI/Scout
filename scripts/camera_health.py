@@ -41,8 +41,8 @@ def start_pipeline(width, height, fps, preset_path):
     try:
         profile = pipe.start(cfg)
     except RuntimeError as exc:
-        sys.exit('Cannot open the camera (%s).\n'
-                 'Is the robot service holding it? Run: docker compose stop robot' % exc)
+        sys.exit("Cannot open the camera (%s).\n"
+                 "Is the robot service holding it? Run: docker compose stop robot" % exc)
     dev = profile.get_device()
     if preset_path:
         try:
@@ -54,9 +54,9 @@ def start_pipeline(width, height, fps, preset_path):
                 return start_pipeline(width, height, fps, preset_path)
             with open(preset_path) as f:
                 adv.load_json(f.read())
-            print('Preset applied: %s' % preset_path)
+            print("Preset applied: %s" % preset_path)
         except Exception as exc:  # noqa: BLE001 — preset is optional, say so and go on
-            print('WARNING: preset not applied (%s) — measuring factory behaviour' % exc)
+            print("WARNING: preset not applied (%s) — measuring factory behaviour" % exc)
     return pipe, profile
 
 
@@ -71,7 +71,7 @@ def plane_mode(pipe, profile, n_frames):
     sensor = profile.get_device().first_depth_sensor()
     scale = sensor.get_depth_scale()
     intr = profile.get_stream(rs.stream.depth).as_video_stream_profile().get_intrinsics()
-    print('Point at a flat wall ~1 m away, hold still. Capturing %d frames…' % n_frames)
+    print("Point at a flat wall ~1 m away, hold still. Capturing %d frames…" % n_frames)
     for _ in range(15):  # warmup / AE settle
         pipe.wait_for_frames()
 
@@ -105,33 +105,33 @@ def plane_mode(pipe, profile, n_frames):
         dists.append(zmean)
 
     if not rms_mms:
-        sys.exit('No usable frames — too many holes. Closer wall, more light, or laser up.')
+        sys.exit("No usable frames — too many holes. Closer wall, more light, or laser up.")
     fill, rms, sub, dist = map(lambda a: float(np.median(a)), (fills, rms_mms, subpixes, dists))
-    print('\nROI %dx%d (central 40%%), median over %d frames at %.2f m:' %
+    print("\nROI %dx%d (central 40%%), median over %d frames at %.2f m:" %
           (c1 - c0, r1 - r0, len(rms_mms), dist))
-    print('  fill rate     %.1f %%' % (fill * 100))
-    print('  Z-RMS         %.2f mm  (%.2f %% of distance)' % (rms, rms / (dist * 10)))
-    print('  subpixel RMS  %.3f' % sub)
+    print("  fill rate     %.1f %%" % (fill * 100))
+    print("  Z-RMS         %.2f mm  (%.2f %% of distance)" % (rms, rms / (dist * 10)))
+    print("  subpixel RMS  %.3f" % sub)
     if sub < 0.1:
-        print('  VERDICT: well calibrated (< 0.1)')
+        print("  VERDICT: well calibrated (< 0.1)")
     elif sub <= 0.2:
-        print('  VERDICT: acceptable (0.1-0.2); re-test before recalibrating')
+        print("  VERDICT: acceptable (0.1-0.2); re-test before recalibrating")
     else:
-        print('  VERDICT: RECALIBRATE (> 0.2) — run camera_selfcal.py')
+        print("  VERDICT: RECALIBRATE (> 0.2) — run camera_selfcal.py")
 
 
 def watch_mode(pipe, profile):
     scale = profile.get_device().first_depth_sensor().get_depth_scale()
-    print('1 Hz min/max valid depth (0.5 / 99.5 percentiles). Ctrl-C to stop.')
+    print("1 Hz min/max valid depth (0.5 / 99.5 percentiles). Ctrl-C to stop.")
     try:
         while True:
             t0 = time.monotonic()
             z = get_depth(pipe, scale)
             v = z[z > 0]
             if v.size < 100:
-                print('  (no depth)')
+                print("  (no depth)")
             else:
-                print('  near %.3f m   far %.3f m   valid %5.1f %%' %
+                print("  near %.3f m   far %.3f m   valid %5.1f %%" %
                       (np.percentile(v, 0.5), np.percentile(v, 99.5),
                        100.0 * v.size / z.size))
             time.sleep(max(0.0, 1.0 - (time.monotonic() - t0)))
@@ -142,11 +142,11 @@ def watch_mode(pipe, profile):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--watch', action='store_true', help='live min/max range readout')
-    ap.add_argument('--plane', action='store_true', help='plane-fit RMS test (default)')
-    ap.add_argument('--frames', type=int, default=30)
-    ap.add_argument('--preset', default='/ros_ws/src/scout/config/d455_scout_preset.json')
-    ap.add_argument('--no-preset', action='store_true')
+    ap.add_argument("--watch", action="store_true", help="live min/max range readout")
+    ap.add_argument("--plane", action="store_true", help="plane-fit RMS test (default)")
+    ap.add_argument("--frames", type=int, default=30)
+    ap.add_argument("--preset", default="/ros_ws/src/scout/config/d455_scout_preset.json")
+    ap.add_argument("--no-preset", action="store_true")
     args = ap.parse_args()
 
     preset = None if args.no_preset else args.preset
@@ -160,5 +160,5 @@ def main():
         pipe.stop()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

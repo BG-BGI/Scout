@@ -35,15 +35,16 @@ import time
 
 import numpy as np
 import tf2_ros
-from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data, QoSProfile, QoSDurabilityPolicy
 from nav_msgs.msg import OccupancyGrid
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
 
 from scout.node_util import lookup_matrix, lookup_pose2, run_node
+from scout.qos import LATCHED_QOS
 
 MARK = 2          # log-odds increment per confirmed sighting
 CLEAR = 1         # decrement per see-through ray
@@ -85,9 +86,8 @@ class ClutterMapper(Node):
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
 
-        latched = QoSProfile(depth=1)
-        latched.durability = QoSDurabilityPolicy.TRANSIENT_LOCAL
-        self._grid_pub = self.create_publisher(OccupancyGrid, 'clutter_map', latched)
+        self._grid_pub = self.create_publisher(
+            OccupancyGrid, 'clutter_map', LATCHED_QOS)
         self._points_pub = self.create_publisher(PointCloud2, 'clutter_points', 10)
 
         self.create_subscription(PointCloud2, 'camera/camera/depth/color/points',
@@ -217,7 +217,7 @@ class ClutterMapper(Node):
             wx = mx + x[low] * c - y[low] * s
             wy = my + x[low] * s + y[low] * c
             for ix, iy in zip((wx / self._res).astype(int),
-                              (wy / self._res).astype(int)):
+                              (wy / self._res).astype(int), strict=True):
                 key = (int(ix), int(iy))
                 entry = self._cells.get(key)
                 if entry is None:

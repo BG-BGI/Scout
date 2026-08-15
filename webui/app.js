@@ -1,6 +1,7 @@
 /* Scout web teleop.
  *
- * cmd_vel contract (same as joystick_teleop.py): publish at 25 Hz ONLY while
+ * cmd_vel contract (same as joystick_teleop.py): publish at robot_profile's
+ * publish_hz ONLY while
  * an input is active, then a 0.3 s burst of zeros on release, then silence —
  * so Foxglove / nav2 / the robot-side pad can own /cmd_vel when we're idle.
  * The RoboClaw's 200 ms deadman is the backstop: if this page dies mid-drive,
@@ -12,8 +13,10 @@
 // Cross-surface values (publish rate, stop grace, nav-status names, speed caps)
 // are loaded at startup from robot_profile.yaml (the SSOT the ROS nodes and
 // scout-skills also read); these are the baked fallbacks if the fetch fails.
-let PUBLISH_HZ = 25;
+let PUBLISH_HZ = 25;  // profile-exempt: baked fallback if the profile fetch fails
 let STOP_GRACE_MS = 300;
+let BATT_WARN_V = 17.5;  // profile-exempt: baked fallback if the profile fetch fails
+let BATT_CRIT_V = 16.5;  // profile-exempt: baked fallback if the profile fetch fails
 const STICK_DEADZONE = 0.08;
 const TURN_EXPO = 0.6;
 const TRIGGER_DEADZONE = 0.03;
@@ -210,6 +213,10 @@ async function loadProfile() {
     }
     if (prof.linear_cap) linSlider.max = prof.linear_cap;
     if (prof.angular_cap) angSlider.max = prof.angular_cap;
+    if (prof.linear_floor) linSlider.min = prof.linear_floor;
+    if (prof.angular_floor) angSlider.min = prof.angular_floor;
+    if (prof.battery_warn_v) BATT_WARN_V = prof.battery_warn_v;
+    if (prof.battery_critical_v) BATT_CRIT_V = prof.battery_critical_v;
     if (prof.topic_cmd_vel_web) {
       cmdVel = new ROSLIB.Topic({
         ros, name: prof.topic_cmd_vel_web, messageType: 'geometry_msgs/msg/Twist',
@@ -251,7 +258,8 @@ batteryTopic.subscribe((msg) => {
     ? ' · ' + Math.round(msg.percentage * 100) + '%' : '';
   batteryBadge.textContent = msg.voltage.toFixed(1) + ' V' + pct;
   batteryBadge.className = 'badge' +
-    (msg.voltage <= 16.5 ? ' batt-bad' : msg.voltage <= 17.5 ? ' batt-warn' : '');
+    (msg.voltage <= BATT_CRIT_V ? ' batt-bad' :
+     msg.voltage <= BATT_WARN_V ? ' batt-warn' : '');
 });
 
 // --- tricks -------------------------------------------------------------------------

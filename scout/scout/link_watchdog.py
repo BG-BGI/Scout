@@ -31,42 +31,33 @@ import socket
 import subprocess
 import time
 
+from action_msgs.msg import GoalStatusArray
 from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseArray, PoseStamped
 from nav2_msgs.action import NavigateThroughPoses
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import (
-    DurabilityPolicy,
-    HistoryPolicy,
-    QoSProfile,
-    ReliabilityPolicy,
-)
 
 from scout.node_util import run_node
+from scout.qos import LATCHED_QOS
 
-NAV_ACTIONS = ("navigate_to_pose", "navigate_through_poses")
+NAV_ACTIONS = ('navigate_to_pose', 'navigate_through_poses')
 # action_msgs/GoalStatus: STATUS_ACCEPTED=1, STATUS_EXECUTING=2.
 ACTIVE_STATUSES = (1, 2)
 
 # Action status topics are reliable + transient_local; a volatile subscriber
 # would never see the latched last message after a restart.
-STATUS_QOS = QoSProfile(
-    reliability=ReliabilityPolicy.RELIABLE,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    history=HistoryPolicy.KEEP_LAST,
-    depth=1,
-)
+STATUS_QOS = LATCHED_QOS
 
 
 def _default_gateway() -> str | None:
     try:
         out = subprocess.run(
-            ["ip", "route", "show", "default"],
+            ['ip', 'route', 'show', 'default'],
             capture_output=True, text=True, timeout=2.0,
         ).stdout.split()
-        return out[out.index("via") + 1] if "via" in out else None
-    except Exception:
+        return out[out.index('via') + 1] if 'via' in out else None
+    except Exception:  # noqa: BLE001 — any failure (no ip, no route, timeout) = no gateway
         return None
 
 
@@ -99,14 +90,13 @@ class LinkWatchdog(Node):
             PoseStamped, '/goal_pose', self._on_goal_pose, 10)
         self.create_subscription(
             PoseArray, '/route_poses', self._on_route, 10)
-        from action_msgs.msg import GoalStatusArray
         for action in NAV_ACTIONS:
             self.create_subscription(
-                GoalStatusArray, f'/{action}/_action/status',
+                GoalStatusArray, '/%s/_action/status' % action,
                 lambda msg, a=action: self._on_status(a, msg), STATUS_QOS)
 
         self._cancel_clients = {
-            a: self.create_client(CancelGoal, f'/{a}/_action/cancel_goal')
+            a: self.create_client(CancelGoal, '/%s/_action/cancel_goal' % a)
             for a in NAV_ACTIONS
         }
         self._goal_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)

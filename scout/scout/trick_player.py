@@ -23,15 +23,16 @@ import math
 import time
 
 from rclpy.node import Node
+from scout_interfaces.srv import PlayTrick
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scout.cmd_vel_source import CmdVelSource
+from scout.core.status import format_trick_status
 from scout.core.tricks import TRICK_LED, TRICKS, validate_tricks
 from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
-from scout_interfaces.srv import PlayTrick
 
 # Cross-surface caps live in robot_profile.yaml (SSOT). The stop-burst is now
 # owned by CmdVelSource (also profile-driven).
@@ -45,9 +46,12 @@ class TrickPlayer(Node):
     def __init__(self):
         super().__init__('trick_player')
 
-        self.declare_parameter('publish_hz', 30.0)
-        self.declare_parameter('min_pivot_rate', 0.35)
-        self.declare_parameter('battery_floor_volts', 17.0)
+        # Parameter defaults come from robot_profile.yaml (SSOT) so every
+        # surface agrees; a launch file can still override per scenario.
+        self.declare_parameter('publish_hz', float(_PROFILE['publish_hz']))
+        self.declare_parameter('min_pivot_rate', float(_PROFILE['angular_floor']))
+        self.declare_parameter('battery_floor_volts',
+                               float(_PROFILE['battery_activity_floor_v']))
 
         publish_hz = float(self.get_parameter('publish_hz').value)
         self._min_pivot_rate = float(self.get_parameter('min_pivot_rate').value)
@@ -156,10 +160,10 @@ class TrickPlayer(Node):
         """'idle', or 'name|#RRGGBB|mode' so led_status just renders it."""
         msg = String()
         if self._trick is None:
-            msg.data = 'idle'
+            msg.data = format_trick_status()
         else:
             color, mode = TRICK_LED[self._trick]
-            msg.data = '%s|%s|%s' % (
+            msg.data = format_trick_status(
                 self._trick, self._segment_color or color, mode)
         self._status_pub.publish(msg)
 
