@@ -79,9 +79,10 @@ open. §8.5.**
 **F. Nav/autonomy additions (2026-08-15 corpus+nav2 audit) — NONE started. §9.**
 15. **N1 nav2_collision_monitor** — safety stage after twist_mux; protects ALL
     cmd_vel sources. Robot-coupled. §9.1.
-16. **N4 fail-fast bring-up** (respawn / OnProcessExit→Shutdown) — offline-
-    codeable; buys most of F4 cheaply. §9.2.
-17. **N5 SC11 rclpy no-sync-service-call rule** — Mac-verifiable, minutes. §9.3.
+16. **N4 fail-fast bring-up** — ✅ CODE COMPLETE (ADR-0015); Pi kill-test
+    verify open. §9.2.
+17. **N5 SC11 rclpy no-sync-service-call rule** — ✅ DONE (test_conventions
+    SC11 + ADR-0013 row; zero remediation needed). §9.3.
 18. **N9 `ros2 doctor --report` in deploy runbook** — zero code. §9.4.
 19. **N6 Fast DDS async publish + UDP-frag sysctls** — measure-first. §9.5.
 20. **N7 keepout/speed costmap filters** — ask operator first. §9.6.
@@ -628,7 +629,8 @@ developed + validated with ros2 running.
   `stop_recording` / `recording_status` tools calling the Trigger services via
   `rosbridge.py`. webui: a REC toggle lit from `record/active`.
 - **Confirm `captures/` is bind-mounted to the host** in `docker-compose.yaml` so
-  bags reach the operator (add the mount if missing). ADR-0015.
+  bags reach the operator (add the mount if missing). New ADR at build time
+  (0015 was taken by fail-fast bring-up).
 - **⚠ QoS overrides are mandatory or the bag silently misses `/imu/data`:**
   `gyro_calibrator` publishes best-effort (same trap as the EKF QoS note), and
   a reliable-by-default recorder subscription receives nothing. Ship
@@ -660,7 +662,7 @@ Robot-coupled: it is pure live-action (cancel + feedback) behavior.
 - webui: two distinct controls — **CANCEL NAV** → `/nav/cancel` (stops the goal,
   robot stays drivable) vs the existing **STOP** → `/estop/engage` (hard, locks
   twist_mux + active-brake). Show `/nav_state` near the map. `robot.launch.py` +
-  `setup.py`. ADR-0016.
+  `setup.py`. New ADR at build time (0016 was taken by collision monitor).
 - Verify (robot): dispatch a goal, CANCEL NAV → motion stops, still drivable,
   `/nav_state` = `canceled`; STOP still hard-estops. **Watch from host
   `docker compose logs`, never a throwaway container during a live goal** (the
@@ -685,7 +687,8 @@ the spike afterwards.**
   `on_deactivate`). Manage with upstream `nav2_lifecycle_manager` in
   `robot.launch.py` (explicit `node_names` order, `autostart: true`).
 - Add a `run_lifecycle_node` variant to `node_util.py` (keep the single-entry
-  discipline). ADR-0017 (which nodes are managed and why; which stay plain).
+  discipline). New ADR at build time (which nodes are managed and why; which
+  stay plain).
 - Verify (robot): `ros2 lifecycle get <node>` = `active`; `set <node>
   deactivate`/`activate` cycles without a container restart; ordered autostart.
 
@@ -762,7 +765,7 @@ on-blocks then floor: drive at an obstacle → slowdown zone trims speed, stop
 zone zeroes it; confirm added latency doesn't break the 200 ms deadman
 (CM republishes at input rate).
 
-### 9.2 N4 — fail-fast bring-up via launch event handlers (offline-codeable)
+### 9.2 N4 — fail-fast bring-up ✅ CODE COMPLETE (ADR-0015) — Pi kill-test open
 
 `robot.launch.py` starts 20 nodes; a dead rplidar/realsense/roboclaw process
 today leaves a half-running stack (only led_node has respawn). Humble-native,
@@ -777,7 +780,7 @@ policy and why. Verify (Pi): `kill -9` a driver PID inside the container →
 respawn case comes back publishing; shutdown case recycles the service and
 the stack returns healthy.
 
-### 9.3 N5 — SC11: no sync service/action calls in rclpy callbacks (Mac, minutes)
+### 9.3 N5 — SC11: no sync service/action calls ✅ DONE (test_conventions + ADR-0013)
 
 Humble docs (Sync-Vs-Async how-to): `Client.call()` from inside any
 subscription/timer/service callback deadlocks **with no warning, no

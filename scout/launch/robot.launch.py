@@ -12,16 +12,31 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
     IncludeLaunchDescription,
     OpaqueFunction,
+    RegisterEventHandler,
 )
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from launch import LaunchDescription
 from scout.robot_profile import merged_params, resolve_config_dir
+
+
+def _fail_fast(node, why):
+    """Fail-fast tier (ADR-0015): this node dying leaves the stack lying about
+    itself (dead motion chain / dead yaw / dead TF), so its exit shuts the
+    whole launch down and compose `restart: unless-stopped` recycles the
+    service cleanly instead of limping half-alive."""
+    return RegisterEventHandler(OnProcessExit(
+        target_action=node,
+        on_exit=[EmitEvent(event=Shutdown(reason=why))],
+    ))
 
 
 def _camera_setup(context, *args, **kwargs):
@@ -48,6 +63,49 @@ def generate_launch_description():
 
     enable_joystick = LaunchConfiguration('enable_joystick')
 
+    # Fail-fast tier (ADR-0015): named so OnProcessExit can target them.
+    # The camera stays outside the tier — it lives behind rs_launch.py's own
+    # include, so there is no Node action here to target; its death surfaces
+    # as /imu/data silence -> EKF yaw stale -> health_monitor.
+    twist_mux = Node(
+        package='twist_mux',
+        executable='twist_mux',
+        name='twist_mux',
+        output='screen',
+        parameters=[os.path.join(config, 'twist_mux.yaml')],
+        remappings=[('cmd_vel_out', '/cmd_vel_out')],
+    )
+    estop = Node(
+        package='scout',
+        executable='estop',
+        output='screen',
+    )
+    roboclaw = Node(
+        package='roboclaw_driver',
+        executable='roboclaw_driver_node',
+        name='roboclaw_driver',
+        output='screen',
+        parameters=[os.path.join(config, 'roboclaw.yaml')],
+        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_out')],
+    )
+    gyro_calibrator = Node(
+        package='scout',
+        executable='gyro_calibrator',
+        output='screen',
+        remappings=[
+            ('imu_in', '/camera/camera/imu'),
+            ('imu_out', '/imu/data'),
+        ],
+    )
+    ekf = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[os.path.join(config, 'ekf.yaml')],
+        remappings=[('/odometry/filtered', '/odom')],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             'enable_joystick',
@@ -71,34 +129,16 @@ def generate_launch_description():
         # twist_mux forwards the highest-priority fresh one to /cmd_vel_out. Lives
         # in this container so the whole motion chain (mux + driver) dies together.
         # See scout/config/twist_mux.yaml and ADR-0001.
-        Node(
-            package='twist_mux',
-            executable='twist_mux',
-            name='twist_mux',
-            output='screen',
-            parameters=[os.path.join(config, 'twist_mux.yaml')],
-            remappings=[('cmd_vel_out', '/cmd_vel_out')],
-        ),
+        twist_mux,
 
         # Software e-stop: publishes the twist_mux /estop lock heartbeat (5 Hz,
         # fail-safe) and active-brakes on /cmd_vel_stop when engaged.
         # /estop/engage | /estop/release (Trigger).
-        Node(
-            package='scout',
-            executable='estop',
-            output='screen',
-        ),
+        estop,
 
         # Bare node: roboclaw_driver.launch.py cannot remap, and /odom belongs to
         # the EKF. Driven by the mux output, not raw /cmd_vel.
-        Node(
-            package='roboclaw_driver',
-            executable='roboclaw_driver_node',
-            name='roboclaw_driver',
-            output='screen',
-            parameters=[os.path.join(config, 'roboclaw.yaml')],
-            remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_out')],
-        ),
+        roboclaw,
 
         Node(
             package='scout',
@@ -126,34 +166,23 @@ def generate_launch_description():
             respawn_delay=2.0,
         ),
 
+        # respawn: USB-serial hiccups (CP2102) are recoverable; a lidar gap
+        # degrades slam/nav2 but the robot stays drivable (ADR-0015 tier 2).
         Node(
             package='rplidar_ros',
             executable='rplidar_node',
             name='rplidar_node',
             output='screen',
             parameters=[os.path.join(config, 'rplidar.yaml')],
+            respawn=True,
+            respawn_delay=2.0,
         ),
 
         OpaqueFunction(function=_camera_setup),
 
-        Node(
-            package='scout',
-            executable='gyro_calibrator',
-            output='screen',
-            remappings=[
-                ('imu_in', '/camera/camera/imu'),
-                ('imu_out', '/imu/data'),
-            ],
-        ),
+        gyro_calibrator,
 
-        Node(
-            package='robot_localization',
-            executable='ekf_node',
-            name='ekf_filter_node',
-            output='screen',
-            parameters=[os.path.join(config, 'ekf.yaml')],
-            remappings=[('/odometry/filtered', '/odom')],
-        ),
+        ekf,
 
         Node(
             package='scout',
@@ -210,11 +239,15 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # respawn: gamepad unplug/replug kills the evdev handle; come back
+        # instead of losing teleop until a container restart (ADR-0015 tier 2).
         Node(
             package='scout',
             executable='joystick_teleop',
             output='screen',
             condition=IfCondition(enable_joystick),
+            respawn=True,
+            respawn_delay=2.0,
         ),
 
         # Link-loss watchdog: 5 s without gateway reachability cancels+stashes
@@ -230,6 +263,8 @@ def generate_launch_description():
         # apriltag.yaml for why the all-families fan-out was reverted.
         # /detections + a TF frame per tag off the D455 color stream. Tag
         # MEANING (names/roles/home) lives in scout-skills' registry.
+        # respawn: vision-only feature; a crash loses tag refresh, not motion
+        # (ADR-0015 tier 2).
         Node(
             package='apriltag_ros',
             executable='apriltag_node',
@@ -241,5 +276,15 @@ def generate_launch_description():
                 ('camera_info', '/camera/camera/color/camera_info'),
                 ('detections', '/detections'),
             ],
+            respawn=True,
+            respawn_delay=2.0,
         ),
+
+        # Fail-fast tier: these dying makes the stack lie (see _fail_fast).
+        _fail_fast(twist_mux, 'twist_mux exited — cmd_vel arbitration dead'),
+        _fail_fast(estop, 'estop exited — mux lock heartbeat dead'),
+        _fail_fast(roboclaw, 'roboclaw_driver exited — drivetrain dead'),
+        _fail_fast(gyro_calibrator,
+                   'gyro_calibrator exited — EKF yaw source dead'),
+        _fail_fast(ekf, 'ekf exited — /odom + odom->base_link dead'),
     ])
