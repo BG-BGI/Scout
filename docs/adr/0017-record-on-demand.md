@@ -46,6 +46,23 @@ Snapshot mode (`--snapshot-mode` + the recorder's `~/snapshot` service —
 rosbag2 #850/#844, in Humble) is a **follow-up commit** after the continuous
 path Pi-verifies; continuous is what 5b needs.
 
+## Addendum (2026-08-17, first Pi verification)
+
+**Discovered: the recorder subprocess must be a Discovery Server SUPER
+CLIENT, not just this node.** `ros2 bag record <names>` isn't given each
+topic's type on the CLI, so it resolves types (and matches publishers) by
+enumerating the ROS graph — the exact operation Discovery Server v2 blinds
+for a plain client (the same "near-empty graph" trap documented for
+`ros2 topic list`/`ros2 doctor`). Without the fix, `/record/start` reports
+`success: true`, a valid-looking `.db3` is created, and `/record/stop` looks
+clean — but the bag has **zero messages and a sentinel int64-max
+timestamp**, with no error anywhere. Confirmed by isolation: a manual
+`ros2 bag record -o … /odom` as a plain client captured 0 messages over an
+actively-publishing topic; the identical command with
+`FASTRTPS_DEFAULT_PROFILES_FILE=super_client.xml` captured every message.
+Fix: `bag_recorder._on_start` spawns the child with that env var set,
+independent of whatever profile the node itself runs under.
+
 ## Consequences
 
 - Any surface can capture a diagnosis bag with one call; the 5b bag is
