@@ -386,6 +386,34 @@ estopBtn.addEventListener('click', () => {
     .callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
 });
 
+// --- rosbag record-on-demand (bag_recorder, ADR-0017) ----------------------------------
+// State comes from the latched /record/active, so a reloaded page still shows
+// a recording started elsewhere (skills MCP, shell). The service response
+// carries the bag directory.
+const recState = document.getElementById('rec-state');
+const recResult = document.getElementById('rec-result');
+function recSrv(name) {
+  const srv = new ROSLIB.Service({
+    ros, name: '/record/' + name, serviceType: 'std_srvs/srv/Trigger',
+  });
+  return () => srv.callService(new ROSLIB.ServiceRequest({}),
+    (res) => { recResult.textContent = res.message; },
+    (err) => { recResult.textContent = 'error: ' + err; });
+}
+document.getElementById('rec-start').addEventListener('click', recSrv('start'));
+document.getElementById('rec-stop').addEventListener('click', recSrv('stop'));
+new ROSLIB.Topic({
+  ros, name: '/record/active', messageType: 'std_msgs/msg/Bool',
+}).subscribe((msg) => {
+  recState.textContent = msg.data ? '● REC' : 'idle';
+  recState.classList.toggle('rec-live', msg.data);
+});
+new ROSLIB.Topic({
+  ros, name: '/record/path', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  if (msg.data) recResult.textContent = msg.data;
+});
+
 // --- map + tap-to-navigate ------------------------------------------------------------
 // Grid drawn cell-per-pixel on an offscreen canvas, blitted flipped (row 0 of an
 // OccupancyGrid is the bottom row in world coords). Robot pose from slam_toolbox's
@@ -574,6 +602,47 @@ function drawMap() {
     mapCtx.restore();
   }
 
+  // Saved zones (latched /zones, ADR-0019): keepout red, speed amber.
+  Object.entries(zoneList).forEach(([name, zn]) => {
+    const col = zn.type === 'keepout' ? '255,64,64' : '255,180,40';
+    mapCtx.fillStyle = 'rgba(' + col + ',0.22)';
+    mapCtx.strokeStyle = 'rgba(' + col + ',0.8)';
+    mapCtx.lineWidth = 1.5;
+    mapCtx.beginPath();
+    zn.polygon.forEach(([x, y], i) => {
+      const c = worldToCanvas(x, y);
+      i ? mapCtx.lineTo(c.x, c.y) : mapCtx.moveTo(c.x, c.y);
+    });
+    mapCtx.closePath();
+    mapCtx.fill();
+    mapCtx.stroke();
+    const c0 = worldToCanvas(zn.polygon[0][0], zn.polygon[0][1]);
+    mapCtx.fillStyle = 'rgba(' + col + ',0.9)';
+    mapCtx.font = '11px sans-serif';
+    mapCtx.fillText(zn.type === 'speed' ? name + ' ' + zn.speed_pct + '%' : name,
+      c0.x + 4, c0.y - 4);
+  });
+
+  // Zone being drawn right now.
+  if (zonePts.length) {
+    const col = zoneMode === 'keepout' ? '#ff4040' : '#ffb428';
+    mapCtx.strokeStyle = col;
+    mapCtx.fillStyle = col;
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath();
+    zonePts.forEach((p, i) => {
+      const c = worldToCanvas(p.x, p.y);
+      i ? mapCtx.lineTo(c.x, c.y) : mapCtx.moveTo(c.x, c.y);
+    });
+    mapCtx.stroke();
+    zonePts.forEach((p) => {
+      const c = worldToCanvas(p.x, p.y);
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 4, 0, 2 * Math.PI);
+      mapCtx.fill();
+    });
+  }
+
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
     mapCtx.fillStyle = '#40a0ff';
@@ -615,6 +684,12 @@ mapCanvas.addEventListener('click', (ev) => {
     drawMap();
     return;
   }
+  if (zoneMode) {
+    zonePts.push(canvasToWorld(ev));
+    zoneBtn(zoneMode).textContent = 'Finish (' + zonePts.length + ')';
+    drawMap();
+    return;
+  }
   const r = mapCanvas.getBoundingClientRect();
   const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
   const cy = (ev.clientY - r.top) * (mapCanvas.height / r.height);
@@ -634,35 +709,31 @@ mapCanvas.addEventListener('click', (ev) => {
   navState.textContent = 'goal sent (' + wx.toFixed(2) + ', ' + wy.toFixed(2) + ')';
 });
 
-// Cancel = the NavigateToPose action's hidden cancel service; zeroed request
-// cancels every active goal. This is the button Foxglove never had.
+// Cancel = nav_manager's dispatcher-aware /nav/cancel (ADR-0018): stops
+// patrol, pauses explore, then zero-uuid cancels BOTH bt_navigator actions —
+// a bare action cancel would be re-overridden by patrol/explore within ~1 s.
+// Robot stays drivable (unlike E-STOP).
 const cancelNavSrv = new ROSLIB.Service({
-  ros, name: '/navigate_to_pose/_action/cancel_goal',
-  serviceType: 'action_msgs/srv/CancelGoal',
+  ros, name: '/nav/cancel', serviceType: 'std_srvs/srv/Trigger',
 });
 function cancelNav() {
-  cancelNavSrv.callService(new ROSLIB.ServiceRequest({
-    goal_info: {
-      goal_id: { uuid: new Array(16).fill(0) },
-      stamp: { sec: 0, nanosec: 0 },
-    },
-  }),
-  () => { navState.textContent = 'goal cancelled'; },
-  (err) => { navState.textContent = 'cancel failed: ' + err; });
+  cancelNavSrv.callService(new ROSLIB.ServiceRequest({}),
+    (res) => { navState.textContent = res.message; },
+    (err) => { navState.textContent = 'cancel failed: ' + err; });
 }
 document.getElementById('cancel-goal').addEventListener('click', cancelNav);
 
-// Nav status readout from the action's status topic (action_msgs/GoalStatus:
-// 1 accepted, 2 executing, 3 canceling, 4 succeeded, 5 canceled, 6 aborted).
-const navStatusTopic = new ROSLIB.Topic({
-  ros, name: '/navigate_to_pose/_action/status',
-  messageType: 'action_msgs/msg/GoalStatusArray',
-});
-let NAV_STATUS = { 1: 'accepted', 2: 'driving', 3: 'canceling', 4: 'arrived', 5: 'canceled', 6: 'aborted' };
-navStatusTopic.subscribe((msg) => {
-  if (!msg.status_list.length) return;
-  const s = msg.status_list[msg.status_list.length - 1].status;
-  if (NAV_STATUS[s]) navState.textContent = NAV_STATUS[s];
+// Nav readout from nav_manager's consolidated /nav_state — covers BOTH
+// actions (taps, routes, patrols). Latched, so a reloaded page catches up.
+// Grammar (core.status, SC9): 'idle' | '<status>|<dist 2dp or empty>|<recoveries>'.
+new ROSLIB.Topic({
+  ros, name: '/nav_state', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  const [state, dist, recov] = msg.data.split('|');
+  let text = state;
+  if (dist) text += ' — ' + dist + ' m left';
+  if (recov && recov !== '0') text += ' (' + recov + ' recoveries)';
+  navState.textContent = text;
 });
 
 // --- patrol ---------------------------------------------------------------------------
@@ -781,6 +852,85 @@ areaBtn.addEventListener('click', () => {
     polygon: { points: areaPts.map((p) => ({ x: p.x, y: p.y, z: 0 })) },
   }));
   areaReset('Planning coverage…');
+});
+
+// --- keepout/speed zones (zone_manager, ADR-0019) ---------------------------------------
+// Same draw interaction as the coverage area; the polygon travels as a
+// |-grammar /zone_cmd string (frozen in scout.core.zones + test_zones.py):
+//   add|<type>|<speed_pct or empty>|x,y;x,y;...  |  delete|<name>  |  clear|
+// Saved zones come back on the latched /zones as JSON (the store schema).
+const zoneCmdPub = new ROSLIB.Topic({
+  ros, name: '/zone_cmd', messageType: 'std_msgs/msg/String',
+});
+ros.on('connection', () => zoneCmdPub.advertise());
+const zoneStateEl = document.getElementById('zone-state');
+const zoneResult = document.getElementById('zone-result');
+const zoneListEl = document.getElementById('zone-list');
+const zoneSpeedPct = document.getElementById('zone-speed-pct');
+zoneSpeedPct.addEventListener('input', () => {
+  document.getElementById('zone-speed-out').textContent = zoneSpeedPct.value;
+});
+let zoneMode = null;   // 'keepout' | 'speed' | null
+let zonePts = [];
+let zoneList = {};     // {name: {type, polygon, speed_pct?}} from /zones
+
+function zoneBtn(mode) {
+  return document.getElementById(mode === 'keepout' ? 'zone-keepout' : 'zone-speed');
+}
+function zoneReset(msg) {
+  if (zoneMode) zoneBtn(zoneMode).classList.remove('selected');
+  document.getElementById('zone-keepout').textContent = 'Draw keepout';
+  document.getElementById('zone-speed').textContent = 'Draw speed zone';
+  zoneMode = null;
+  zonePts = [];
+  if (msg) zoneResult.textContent = msg;
+  drawMap();
+}
+function zoneDraw(mode) {
+  if (zoneMode === mode) {   // Finish pressed
+    if (zonePts.length < 3) {
+      zoneReset('Zone cancelled (needs 3+ points).');
+      return;
+    }
+    const pts = zonePts.map((p) => p.x.toFixed(3) + ',' + p.y.toFixed(3)).join(';');
+    const spd = mode === 'speed' ? zoneSpeedPct.value : '';
+    zoneCmdPub.publish(new ROSLIB.Message({
+      data: 'add|' + mode + '|' + spd + '|' + pts,
+    }));
+    zoneReset('Zone sent. First-ever zone needs a nav2 restart; edits after that apply live.');
+    return;
+  }
+  zoneReset();
+  zoneMode = mode;
+  zoneBtn(mode).textContent = 'Finish (0)';
+  zoneBtn(mode).classList.add('selected');
+  zoneResult.textContent = 'Tap the map to outline the '
+    + (mode === 'speed' ? zoneSpeedPct.value + '% speed' : 'keepout')
+    + ' zone (3+ points), then press Finish.';
+}
+document.getElementById('zone-keepout').addEventListener('click', () => zoneDraw('keepout'));
+document.getElementById('zone-speed').addEventListener('click', () => zoneDraw('speed'));
+
+new ROSLIB.Topic({
+  ros, name: '/zones', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  try { zoneList = JSON.parse(msg.data) || {}; } catch (e) { zoneList = {}; }
+  const names = Object.keys(zoneList).sort();
+  zoneStateEl.textContent = names.length ? names.length + ' zone(s)' : 'none';
+  zoneListEl.innerHTML = '';
+  names.forEach((name) => {
+    const zn = zoneList[name];
+    const li = document.createElement('li');
+    li.textContent = name + (zn.type === 'speed' ? ' (' + zn.speed_pct + '%) ' : ' ');
+    const del = document.createElement('button');
+    del.textContent = '✕';
+    del.addEventListener('click', () => {
+      zoneCmdPub.publish(new ROSLIB.Message({ data: 'delete|' + name }));
+    });
+    li.appendChild(del);
+    zoneListEl.appendChild(li);
+  });
+  drawMap();
 });
 
 // --- explore (explore_lite, compose profile `explore`) ---------------------------------

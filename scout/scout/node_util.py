@@ -6,11 +6,15 @@ lives here, not in scout.core).
   rclpy.shutdown() at all).
 - lookup_pose2 / lookup_matrix: the TF-exception-wrapped lookups that were
   duplicated across follow_me, clutter_mapper and patrol_capture.
+- cancel_nav_goals: the zeroed-uuid cancel-all on the bt_navigator actions,
+  shared by link_watchdog and nav_manager (ADR-0018) so a third copy of the
+  CancelGoal plumbing never appears.
 """
 
 import numpy as np
 import rclpy
 import tf2_ros
+from action_msgs.srv import CancelGoal
 from rclpy.executors import ExternalShutdownException
 
 from scout.core.geometry import planar_yaw, quat_to_matrix
@@ -41,6 +45,22 @@ def run_node(node_cls, *, on_shutdown=None, args=None):
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+def cancel_nav_goals(clients, active=None):
+    """Fire a zeroed-uuid CancelGoal (= cancel ALL goals) at each ready cancel
+    client. `clients` is {action_name: Client}; `active` optionally filters to
+    the actions currently holding a goal (link_watchdog's stash logic). Fully
+    async (SC11 — a sync call here deadlocks the executor silently); returns
+    the action names actually fired so the caller can report them."""
+    fired = []
+    for action, client in clients.items():
+        if active is not None and not active.get(action):
+            continue
+        if client.service_is_ready():
+            client.call_async(CancelGoal.Request())
+            fired.append(action)
+    return fired
 
 
 def lookup_pose2(tf_buffer, target, source):

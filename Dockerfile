@@ -165,6 +165,15 @@ RUN git clone https://github.com/robo-friends/m-explore-ros2.git /tmp/m-explore-
     && build-overlay --packages-up-to explore_lite \
     && rm -rf "$OVERLAY/src/explore" "$OVERLAY/src/explore_lite_msgs"
 
+# rosbag2 for bag_recorder (ADR-0017): ros:humble-ros-core ships NO ros2bag.
+# The metapackage pulls the CLI verb, transport, sqlite3 storage and the
+# python API. Own layer below the source forks so adding it cost no fork
+# rebuild; cheap (~30 s) if it ever changes.
+RUN apt-get update && apt-get install -y \
+    ros-humble-rosbag2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Version stamp for the ros_overlay_install volume (ADR-0005). MUST stay the last
 # layer that writes $OVERLAY/install: the entrypoint compares the image's stamp
 # against the volume's copy and refuses to start on a mismatch, turning the

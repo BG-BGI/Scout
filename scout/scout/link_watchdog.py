@@ -38,7 +38,7 @@ from nav2_msgs.action import NavigateThroughPoses
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
-from scout.node_util import run_node
+from scout.node_util import cancel_nav_goals, run_node
 from scout.qos import LATCHED_QOS
 
 NAV_ACTIONS = ('navigate_to_pose', 'navigate_through_poses')
@@ -186,12 +186,7 @@ class LinkWatchdog(Node):
         elif self._active['navigate_to_pose'] and self._last_pose:
             self._stash_pose = self._last_pose
         had_goal = any(self._active.values())
-        for action, client in self._cancel_clients.items():
-            if not self._active[action]:
-                continue
-            if client.service_is_ready():
-                req = CancelGoal.Request()  # zeroed uuid = cancel all
-                client.call_async(req)
+        cancel_nav_goals(self._cancel_clients, active=self._active)
         self.get_logger().warn(
             'link down — paused nav (%s)'
             % ('goal stashed for resume' if had_goal else 'no active goal'))

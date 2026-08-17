@@ -310,3 +310,6 @@ input[type=color] { width: 100%; height: 2.2rem; border: none; background: none;
 }
 
 .dim { color: var(--dim); font-size: 0.8rem; line-height: 1.4; }
+
+/* Live-recording marker (bag_recorder /record/active). */
+.rec-live { color: var(--bad); font-weight: 700; }

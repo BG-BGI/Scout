@@ -37,6 +37,10 @@ This file names the concepts and maps the running system.
   the current pose as a waypoint. See ADR-0011.
 - **coverage box** — a polygon dragged on the web map; planned into a serpentine
   route (`scout.core.coverage`).
+- **zone (keepout / speed)** — a named polygon in `maps/zones.json` (per map,
+  type + speed value) rasterized to a nav2 costmap-filter mask PGM by
+  `zone_manager`. The JSON is the source of truth; the PGM is a derived
+  artifact. See ADR-0019.
 - **standoff / seek / reacquire** — follow_me's target distance; its lost-target
   pursuit to the loss anchor; its motion-gated re-lock after occlusion.
 - **tag registry vs detection coverage** — the AprilTag *meaning* (names, roles,
@@ -72,6 +76,9 @@ Core stack (`robot.launch.py`, compose `robot`):
 | link_watchdog | `/goal_pose`,`/route_poses`, action status | `/goal_pose`, cancels | — |
 | tilt_monitor | `/imu/data` | `/tilt_alarm`,`/explore/resume` | — |
 | apriltag | color | `/detections` + tag TF | — |
+| nav_manager | both actions' status+feedback | `/nav_state` (latched), `/explore/resume` | `/nav/cancel` |
+| bag_recorder | — | `/record/active`,`/record/path` (latched) | `/record/{start,stop}` |
+| zone_manager | `/zone_cmd` | `/zones` (latched), mask PGMs | — |
 
 Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
 (navigation_launch.py → `/cmd_vel` at lowest mux priority), `foxglove_bridge`,
@@ -83,13 +90,19 @@ Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
 - `maps/tags.db` — AprilTag registry (sqlite); gitignored.
 - `maps/*.posegraph`,`*.data` — slam_toolbox serialized maps; gitignored.
 - `maps/clutter.npz` — persistent clutter grid (only under slam localization).
+- `maps/zones.json` — keepout/speed zone polygons (ADR-0019); gitignored. The
+  `maps/zone_{keepout,speed}.pgm/.yaml` next to it are derived filter masks.
 - `captures/<runstamp>/` — patrol photos + manifest.
+- `captures/bags/<UTC>/` — rosbags from bag_recorder (ADR-0017).
 
 ## Status wire formats (std_msgs/String, split on `|`)
 
 - `/trick_status`: `idle` | `name|#RRGGBB|mode`
 - `/follow_status`: `idle` | `searching` | `seeking` | `locked|dist|deg` | `blocked`
 - `/patrol_status`: `idle|<n>` | `<state>|<n>|<i>/<n>` | `plan|<text>`
+- `/nav_state`: `idle` | `<status_name>|<dist 2dp or empty>|<recoveries>` (ADR-0018)
+- `/zone_cmd` (command, grammar in `core.zones`): `add|<type>|<pct or empty>|x,y;…`
+  | `delete|<name>` | `clear|` — `/zones` replies with the store's JSON schema
 
 Kept as strings deliberately (ADR-0012); consumers on both sides of the
 rosbridge boundary parse them, so the formats are frozen by tests —

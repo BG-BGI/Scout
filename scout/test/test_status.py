@@ -57,3 +57,17 @@ def test_patrol_round_trip():
 @pytest.mark.parametrize('state', ['driving', 'settling', 'capturing'])
 def test_patrol_progress_is_one_based(state):
     assert s.format_patrol_status(state, 3, 0).endswith('|1/3')
+
+
+def test_nav_state_exact_strings():
+    assert s.format_nav_state('idle') == 'idle'
+    assert s.format_nav_state('driving', 3.7, 1) == 'driving|3.70|1'
+    # No feedback yet: the distance field is EMPTY, never a fake 0.00.
+    assert s.format_nav_state('accepted') == 'accepted||0'
+    assert s.format_nav_state('canceled', 0.42, 2) == 'canceled|0.42|2'
+
+
+def test_nav_state_round_trip():
+    assert s.parse_nav_state('driving|3.70|1') == ('driving', 3.7, 1)
+    assert s.parse_nav_state('accepted||0') == ('accepted', None, 0)
+    assert s.parse_nav_state('idle') == ('idle', None, None)

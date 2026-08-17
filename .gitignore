@@ -17,6 +17,9 @@ maps/*.yaml
 # scout-skills (waypoint store + AprilTag registry) — never committed.
 maps/waypoints.json
 maps/tags.db
+# Zone store + derived nav2 filter masks (zone_manager, ADR-0019). The
+# zone_*.pgm/.yaml are already covered by the *.pgm/*.yaml lines above.
+maps/zones.json
 captures/*
 !captures/.gitkeep
 

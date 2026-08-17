@@ -126,6 +126,33 @@
     </details>
 
     <details class="panel">
+      <summary><h2>Zones <span id="zone-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="zone-keepout">Draw keepout</button>
+        <button id="zone-speed">Draw speed zone</button>
+      </div>
+      <label>Zone speed <output id="zone-speed-out">40</output>%
+        <input type="range" id="zone-speed-pct" min="10" max="90" step="10" value="40">
+      </label>
+      <ul id="zone-list" class="dim"></ul>
+      <div id="zone-result" class="dim">Draw like a patrol area: tap 3+ points
+        on the map, press the same button to finish. Keepout = no-go; speed =
+        % of normal speed inside. The FIRST zone needs a nav2 restart; later
+        edits apply live. Zones need a saved map (slam localization/continue).</div>
+    </details>
+
+    <details class="panel">
+      <summary><h2>Recording <span id="rec-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="rec-start" class="primary">Start REC</button>
+        <button id="rec-stop">Stop REC</button>
+      </div>
+      <div id="rec-result" class="dim">Records the diagnosis topic set to
+        captures/bags/ on the Pi. Auto-stops at the profile limit; splitting
+        is disabled, so stop before the SD card minds.</div>
+    </details>
+
+    <details class="panel">
       <summary><h2>Lights</h2></summary>
       <div class="grid tight" id="led-modes">
         <button data-mode="off">Off</button>

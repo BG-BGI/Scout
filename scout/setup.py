@@ -48,6 +48,9 @@ setup(
             'patrol_capture = scout.patrol_capture:main',
             'link_watchdog = scout.link_watchdog:main',
             'estop = scout.estop:main',
+            'bag_recorder = scout.bag_recorder:main',
+            'nav_manager = scout.nav_manager:main',
+            'zone_manager = scout.zone_manager:main',
         ],
     },
 )

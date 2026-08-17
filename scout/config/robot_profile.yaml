@@ -68,3 +68,13 @@ robot_profile:
 
   # --- map rendering ---
   occupied_threshold: 50   # nav2 lethal convention (render.py + webui split)
+
+  # --- rosbag record-on-demand (bag_recorder, ADR-0017) ---
+  # Cross-surface: skills MCP + webui trigger recordings; the default topic
+  # set is the diagnosis kit (odom chain, scan, cmd_vel, health). Override per
+  # run with `ros2 param set /bag_recorder topics "[...]"` before /record/start.
+  record_topics: ["/odom", "/wheel_odom", "/imu/data", "/scan", "/cmd_vel_out", "/roboclaw_status", "/battery", "/diagnostics", "/tf", "/tf_static"]
+  # Auto-stop guard: bag splitting is banned (Humble split-playback bug), so
+  # the node SIGINTs the recorder itself after this long. Raise deliberately
+  # for long captures.
+  record_max_duration_s: 600

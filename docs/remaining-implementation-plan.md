@@ -63,12 +63,12 @@ checklist below.
 ROS 2 Humble capabilities the stack lacks.
 9. **F1 unified diagnostics — CODE COMPLETE, gate-green (64 pass / 1 skip).**
    Only Pi/browser verification + the webui/Foxglove surface remain. §8.1.
-10. **F2 rosbag2 record-on-demand** — NOT started (robot-coupled: the value is
-    the `ros2 bag record` subprocess lifecycle). §8.2.
-11. **F3 nav2 cancel + `/nav_state` feedback** — NOT started (robot-coupled:
-    live action cancel/feedback semantics). §8.3.
-12. **F4 managed lifecycle bring-up** — NOT started (robot-coupled: transition/
-    ordering behavior; largest effort, lowest ROI — spike last). §8.4.
+10. **F2 rosbag2 record-on-demand** — ✅ CODE COMPLETE (2026-08-17, ADR-0017);
+    Pi verify open (continuous mode; snapshot is a follow-up commit). §8.2.
+11. **F3 nav2 cancel + `/nav_state` feedback** — ✅ CODE COMPLETE (2026-08-17,
+    ADR-0018); robot verify open. §8.3.
+12. **F4 managed lifecycle bring-up** — DEFERRED (2026-08-17 grill): moved to
+    the §9.9 rejected/deferred list, superseded-for-now by N4. §8.4.
 
 **E. Humble-capability adoptions (2026-08-15 audit) — CODE COMPLETE, Pi verify
 open. §8.5.**
@@ -90,7 +90,9 @@ open. §8.5.**
 19. **N6 Fast DDS async publish + UDP-frag sysctls** — XML landed DISABLED
     (`scout/config/sensor_publish_profiles.xml`, enable recipe in its header);
     sysctls + enablement stay measure-first on the Pi. §9.5.
-20. **N7 keepout/speed costmap filters** — ask operator first. §9.6.
+20. **N7 keepout/speed costmap filters** — ✅ CODE COMPLETE (2026-08-17,
+    ADR-0019: core.zones + zone_manager + webui drawing + nav2 wiring);
+    Pi verify open (needs a saved map + one nav2 restart after first zone). §9.6.
 21. **N8 MPPI controller A/B overlay** — robot-coupled, after N1. §9.7.
 22. **N10 EKF process-noise tuning** — robot-coupled measurement. §9.8.
     (N2/N3 are amendments folded into F2/F1 above, not separate items.)
@@ -341,7 +343,8 @@ arg on `robot.launch.py` in favor of `profile` (operator decision — recommend 
 
 **Operator decisions:** (a) tight profile inherits post-fork base fixes like
 `observation_persistence 1.0/2.0` — recommend yes (that inheritance is the point
-of overlays); (b) drop `camera_config` arg — recommend yes.
+of overlays); (b) drop `camera_config` arg — ✅ DECIDED + executed (arg gone
+from robot.launch.py, verified 2026-08-17).
 
 ---
 
@@ -501,8 +504,13 @@ def free_space_profile(r, bearing, *, half_fov, nbins)   # clutter's np.maximum.
 ```
 **Keep the two clearing policies as separate methods** — they are genuinely
 different algorithms (live-point deletion vs polar ray-bin decrement); forcing
-one shape changes behavior. Unify voxel keying on `floor(w/res)` (follow_me
-currently rounds — a half-cell shift below its 0.05 m noise floor; call it out).
+one shape changes behavior. **Voxel-keying unification is TWO-STEP (2026-08-17
+grill):** commit 1 extracts `core.depth_grid` preserving each caller's keying
+(GridConfig round/floor flag: round for follow_me — `follow_me.py:423` keys on
+`np.round(w/v)*v` float coords; floor int indices for clutter) so the bag diff
+below must be EXACT; commit 2 flips follow_me round→floor and re-runs the diff,
+accepting only ≤half-cell (0.025 m) corridor-min deltas. An exact diff and a
+keying change cannot coexist in one commit.
 Also `scout/scout/core/scan.py`: follow_me's cluster extraction + corridor
 metrics + the **180°-backwards-mount** encoding (`scan_yaw_offset=pi`).
 
@@ -512,8 +520,13 @@ seen-through cell; live-point clearing spares blind-zone voxels; corridor min
 with target exclusion; `to_arrays`/`from_arrays` round-trip pre-satisfies dwell;
 **scan yaw_offset=pi maps scan angle π to bearing 0** (the backwards-mount
 regression). Then adopt **clutter_mapper first** (commit), then **follow_me**
-(commit). Optional: a `rosbags`-fed Mac diff of old-vs-new corridor mins on a
-recorded depth bag before merging — the best behavior-preservation check.
+(commit). **REQUIRED merge gate (2026-08-17 grill — was mislabeled Optional;
+§0-C.8 was always right): a `rosbags`-fed Mac diff of old-vs-new corridor mins
++ confirmed-cell sets on a recorded depth bag** (record via F2 with `topics`
+extended to the depth cloud + /tf + /tf_static + /odom — one short
+operator-confirmed drive). **Old reference = frozen golden copy** of the old
+~180 lines in `scout/test/golden_depth_ref.py` (pure functions, TF/pose
+injected, no rclpy; marked delete-after-5b) — no rclpy stubs, no Pi replay.
 **Bench-verify** each: clutter mark/see-through-clear; follow acquire/avoid.
 
 ### 5c. run_node in every node — ✅ DONE (ADR-0013 pass, SC1)
@@ -542,18 +555,20 @@ owns.
 
 ---
 
-## 7. Suggested order for the next session
-0. **Commit the uncommitted ADR-0013 convention pass** (see §0) — run `ruff
-   check .` + pytest first; that's the definition of done for it.
-1. Deploy + on-blocks verify **M3** (prerequisite for any floor work).
-2. **M7 core** (`core/waypoints.py` + tests) — Mac-verifiable, lands clean.
-3. **M4** (needs Pi param-dump; highest functional value after M3).
-4. **M5** (one rebuild + volume migration).
-5. **M7 adoption + migration**, then the one remaining M6 deferral: **5b
-   depth_grid/scan** (Mac tests, then adopt clutter_mapper → follow_me, with
-   bench checks). 5a/5c/5d are already done.
-6. Comment-dedup pass (note: SC8 already test-enforces "no re-hardcoded profile
-   values", so that slice is done; this is the prose-rationale cleanup).
+## 7. Order (refreshed 2026-08-17 grill — supersedes the stale pre-§8/§9 list)
+1. **Pi-verify batch, one session:** A1–A4 (M3 on-blocks gate first — blocks
+   all floor work; N1 changed its checklist, verify together) + §8.5 E-items
+   (composition, discovery server) + F1 + N4 verifies.
+2. **F2 rosbag recorder** (small, robot-coupled) — it is the instrument that
+   records the depth bag 5b's required diff needs. Continuous first; snapshot
+   is a second commit.
+3. **5b depth_grid/scan** — golden-ref bag diff (EXACT), adopt clutter_mapper →
+   follow_me, then the round→floor keying flip commit (≤half-cell diff), bench
+   checks per §5b.
+4. **F3 nav cancel + `/nav_state`** — dispatcher-aware, `|`-format.
+5. **N7 keepout/speed zones** — webui authoring + zones.json, per §9.6.
+6. **N8 / N10** as measurements demand; N6b only if dropouts observed.
+7. Comment-dedup pass (§6) any time; F4 stays deferred (§9.9).
 
 Every milestone is an independent commit; deploy + verify per-milestone. Update
 the relevant ADR if a decision changes during execution.
@@ -563,9 +578,11 @@ the relevant ADR if a decision changes during execution.
 ## 8. New feature additions (2026-08-15) — ROS 2 capabilities the stack lacks
 
 Grounded in the ROS 2 Humble docs. All are pure-Python scout nodes → built by
-`build_package` (colcon overlay), **no base-image rebuild** (diagnostic_msgs /
-rosbag2 / nav2_msgs / rclpy.lifecycle already in `scout:latest` via nav2 +
-robot_localization — confirm with `ros2 interface show` / `ros2 pkg list`).
+`build_package` (colcon overlay). diagnostic_msgs / nav2_msgs /
+rclpy.lifecycle are in `scout:latest` via nav2 + robot_localization, but
+**rosbag2 was NOT** (base is ros:humble-ros-core; nothing pulls it) —
+`ros-humble-rosbag2` added to the Dockerfile 2026-08-17 (own layer below the
+forks, above the stamp), so F2 costs one image rebuild + `down -v` migration.
 Split by the operator's rule: what develops+validates offline is landed now
 (F1); what needs the robot in the loop to develop is specced here.
 
@@ -615,7 +632,7 @@ levels in pure `scout.core.health`. ADR-0014. Landed: `scout/scout/health_monito
   the documented silent best-effort/reliable mismatch class. rclpy Humble
   supports both via `SubscriptionEventCallbacks`/`PublisherEventCallbacks`.
 
-### 8.2 F2 — rosbag2 record-on-demand (robot-coupled — NOT started)
+### 8.2 F2 — rosbag2 record-on-demand ✅ CODE COMPLETE (2026-08-17, ADR-0017) — Pi verify open
 
 **Why:** all bench/calibration tooling was deleted; rosbag2 is the ROS-native
 permanent replacement for "rebuild the instrument". Robot-coupled: the feature IS
@@ -625,8 +642,23 @@ developed + validated with ros2 running.
   (`std_srvs/Trigger`), publishes `record/active` (Bool) + last bag path (String),
   both latched (`scout.qos.LATCHED_QOS`). On start, spawn `ros2 bag record` as a
   subprocess (robust vs the rosbag2_py in-process threading caveats) into
-  `captures/<UTC-timestamp>/`; clean SIGINT on stop; refuse double-start.
-- **(N2, 2026-08-15 audit) Add snapshot mode as the third service:** spawn with
+  `captures/bags/<UTC-timestamp>/` (2026-08-17 grill: own subtree —
+  `captures/<runstamp>/` is the patrol-photo namespace, CONTEXT.md); clean
+  SIGINT on stop; refuse double-start.
+- **Topic selection (2026-08-17 grill):** declare a `topics` node parameter
+  (string array) defaulting to the profile `record_topics`; a non-default set
+  (e.g. + the depth cloud for the 5b bag) is `ros2 param set /bag_recorder
+  topics [...]` before `record/start` — Trigger carries no payload and a custom
+  .srv is against the ADR-0012 stance. Read at spawn time; a running recording
+  is unaffected.
+- **Runaway guard (2026-08-17 grill):** the split flags below are banned, so a
+  forgotten recording fills the SD card — auto-stop timer in the node,
+  profile-owned `record_max_duration_s` (default ~600 s), SIGINTs the child and
+  publishes the stop on `record/active`. Deliberate long captures raise the
+  param.
+- **(N2, 2026-08-15 audit) Snapshot mode — SECOND commit (2026-08-17 grill),
+  after continuous start/stop lands + Pi-verifies (continuous is what 5b
+  needs; Humble support confirmed — rosbag2 #850/#844):** spawn with
   `--snapshot-mode` (buffers in RAM, writes nothing until triggered);
   `record/snapshot` (Trigger) calls the recorder's `~/snapshot` service to
   flush the buffer to disk — "capture the last N seconds before the incident"
@@ -644,9 +676,10 @@ developed + validated with ros2 running.
 - scout-skills MCP (`docker/scout-skills/server.py`): `start_recording` /
   `stop_recording` / `recording_status` tools calling the Trigger services via
   `rosbridge.py`. webui: a REC toggle lit from `record/active`.
-- **Confirm `captures/` is bind-mounted to the host** in `docker-compose.yaml` so
-  bags reach the operator (add the mount if missing). New ADR at build time
-  (0015 was taken by fail-fast bring-up).
+- ✅ Mount question answered (2026-08-17): the `&base` `.:/ros_ws/src/` root
+  bind already puts `captures/` on the host — no new mount. The node resolves
+  the captures root through `robot_profile` (SC6 owns the bind path). New ADR
+  at build time.
 - **⚠ QoS overrides are mandatory or the bag silently misses `/imu/data`:**
   `gyro_calibrator` publishes best-effort (same trap as the EKF QoS note), and
   a reliable-by-default recorder subscription receives nothing. Ship
@@ -658,23 +691,31 @@ developed + validated with ros2 running.
   `record/stop`; `ros2 bag info captures/<ts>` lists topics + counts —
   **including a nonzero `/imu/data` count** — bag opens on the host.
 
-### 8.3 F3 — nav2 cancel + `/nav_state` feedback (robot-coupled — NOT started)
+### 8.3 F3 — nav2 cancel + `/nav_state` feedback ✅ CODE COMPLETE (2026-08-17, ADR-0018) — robot verify open
 
 **Why:** documented sharp edges — no operator nav-cancel (only the `nav_cancel`
 skill / compose restart), "goal failed ≠ robot stops", no visible nav progress.
 Robot-coupled: it is pure live-action (cancel + feedback) behavior.
 - New `scout/scout/nav_manager.py`:
-  - `/nav/cancel` (`std_srvs/Trigger`) → cancel BOTH `navigate_to_pose` and
-    `navigate_through_poses` via `CancelGoal` clients (reuse the exact pattern in
-    `link_watchdog.py:_pause`, zeroed-uuid = cancel all). Extract that into a
-    shared `node_util.cancel_nav_goals(clients)` and have link_watchdog adopt it
+  - `/nav/cancel` (`std_srvs/Trigger`) is **dispatcher-aware (2026-08-17
+    grill)**: an action cancel alone is instantly re-overridden — patrol_capture
+    advances/retries on goal end, explore re-dispatches frontiers,
+    link_watchdog mirrors `/route_poses`; a goal-only cancel mid-patrol stops
+    the robot for ~1 s. So: call `/patrol/stop` + publish `/explore/resume
+    false` (Bool — tilt_monitor.py:39 already drives it) FIRST, then cancel
+    BOTH `navigate_to_pose` and `navigate_through_poses` via `CancelGoal`
+    clients (reuse the exact pattern in `link_watchdog.py:_pause`, zeroed-uuid
+    = cancel all). Extract that into a shared
+    `node_util.cancel_nav_goals(clients)` and have link_watchdog adopt it
     (avoids a third copy). **⚠ Async-only (SC11, §9.3): the cancel fires from
     inside a Trigger service callback — a sync `Client.call()` there deadlocks
     silently (no warning, no exception). `call_async` + done-callback only.**
   - Subscribe both actions' `feedback` + `_action/status`; republish a
-    consolidated `/nav_state` (String JSON: status name from
-    `robot_profile.goal_status_names`, `distance_remaining`,
-    `number_of_recoveries`), latched.
+    consolidated `/nav_state`, latched. **Wire format is the SC9 `|`-grammar,
+    NOT JSON (2026-08-17 grill — JSON would be a second wire dialect against
+    ADR-0012/CONTEXT.md):** `idle` | `<status_name>|<dist_m>|<recoveries>`,
+    status name from `robot_profile.goal_status_names`; formatter+parser in
+    `core.status`, exact strings frozen in `test_status.py`.
 - webui: two distinct controls — **CANCEL NAV** → `/nav/cancel` (stops the goal,
   robot stays drivable) vs the existing **STOP** → `/estop/engage` (hard, locks
   twist_mux + active-brake). Show `/nav_state` near the map. `robot.launch.py` +
@@ -684,7 +725,7 @@ Robot-coupled: it is pure live-action (cancel + feedback) behavior.
   `docker compose logs`, never a throwaway container during a live goal** (the
   documented starvation-abort).
 
-### 8.4 F4 — managed lifecycle bring-up (robot-coupled — NOT started, spike last)
+### 8.4 F4 — managed lifecycle bring-up (DEFERRED 2026-08-17 → §9.9; spec kept for the record)
 
 **Why:** `robot.launch.py` starts ~19 nodes at once though real ordering deps
 exist (EKF needs camera+description+gyro; slam/nav2 need EKF). Lifecycle gives
@@ -833,14 +874,23 @@ lowers but doesn't eliminate exposure (loopback still fragments > MTU). Land
 (b) only if `/scan`/depth dropouts are actually observed — record baseline
 `ros2 topic hz` under load first.
 
-### 9.6 N7 — costmap filters: keepout + speed-restriction zones (ask operator first)
+### 9.6 N7 — costmap filters: keepout + speed zones ✅ CODE COMPLETE (2026-08-17, ADR-0019) — Pi verify open
 
-nav2 1.1.20 ships `KeepoutFilter`/`SpeedFilter`. Mask PGM drawn over the
-saved map (stairs, cable zones, slow-near-X), served by a standalone
-`map_server` + `costmap_filter_info_server`, filter plugin added to both
-costmaps. Fits the maps/ + overlay machinery (mask per map). Only build if
-the operator actually wants zones — no current documented need. Medium
-effort; robot only for the final drive test.
+nav2 1.1.20 ships `KeepoutFilter`/`SpeedFilter`. Operator confirmed BOTH filter
+types, with **webui polygon authoring from the start** (coverage-box drag
+pattern reuse), slotted after F3 (its CANCEL NAV is the safety net during zone
+drive tests). Design (2026-08-17 grill):
+- **Source of truth: `maps/zones.json`** — named polygons + type
+  (`keepout|speed`) + speed value, keyed per map (waypoints-v2 pattern,
+  ADR-0011). The mask PGM+yaml are **derived artifacts**, so zones stay
+  editable/deletable in the webui.
+- **Pure `core/zones.py`** rasterizes polygons → mask grid (SC7: 1:1 test + a
+  node importer). A `zone_manager` node subscribes to the webui-drawn polygons,
+  writes `maps/<map>_keepout.pgm`/`<map>_speed.pgm` + yaml, and hot-reloads via
+  map_server's `load_map` service (async — SC11).
+- nav2 side: standalone `map_server` + `costmap_filter_info_server` per filter,
+  filter plugin added to both costmaps. Fits the maps/ + overlay machinery.
+- ADR at build time. Robot only for the final drive test.
 
 ### 9.7 N8 — MPPI controller A/B (robot-coupled; after 9.1)
 
@@ -864,6 +914,10 @@ drive, sane vs the known drift numbers.
 
 ### 9.9 Surveyed and REJECTED/DEFERRED (recorded so the audit isn't redone)
 
+- **F4 managed lifecycle bring-up (deferred 2026-08-17 grill)** — N4's
+  respawn/OnProcessExit policies landed and buy most of the motivation (dead
+  node ≠ half-running stack). Reopen only on a concrete wedged-node incident
+  that a respawn/shutdown policy didn't cover. Spec preserved in §8.4.
 - **SmacPlanner/Theta\*** — NavFn measured fine; no planning failure to fix.
   Revisit only if pipe work shows path-quality problems.
 - **Assisted-teleop action wiring** — superseded by 9.1 (CM protects teleop

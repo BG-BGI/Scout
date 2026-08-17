@@ -1018,6 +1018,52 @@ async def estop(engaged: bool) -> dict:
     }
 
 
+# --- rosbag record-on-demand (bag_recorder node, ADR-0017) -------------------
+
+
+@mcp.tool
+async def start_recording() -> dict:
+    """Start a rosbag recording of the diagnosis topic set (odom chain, scan,
+    cmd_vel, health) into captures/bags/<UTC>/ on the robot. Refuses if one is
+    already running; auto-stops after the profile's record_max_duration_s.
+    Returns the bag directory."""
+    async with RosBridge() as rb:
+        values = await rb.call_service("/record/start", "std_srvs/srv/Trigger")
+    return {
+        "started": values.get("success"),
+        "bag": values.get("message"),
+    }
+
+
+@mcp.tool
+async def stop_recording() -> dict:
+    """Stop the running rosbag recording (clean SIGINT — the bag is finalized
+    and playable). Returns the bag directory; refuses if nothing is recording."""
+    async with RosBridge() as rb:
+        values = await rb.call_service("/record/stop", "std_srvs/srv/Trigger")
+    return {
+        "stopped": values.get("success"),
+        "bag": values.get("message"),
+    }
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def recording_status() -> dict:
+    """Whether a rosbag recording is running, and the current/last bag path
+    (both latched by bag_recorder, so this answers even long after the fact)."""
+    async with RosBridge() as rb:
+        active = await rb.subscribe_once(
+            "/record/active", "std_msgs/msg/Bool", timeout=2.0)
+        path = await rb.subscribe_once(
+            "/record/path", "std_msgs/msg/String", timeout=2.0)
+    if active is None:
+        return {"active": None, "detail": "bag_recorder not reachable"}
+    return {
+        "active": active.get("data"),
+        "bag": (path or {}).get("data") or None,
+    }
+
+
 # --- frontier exploration (explore_lite, compose profile `explore`) ---------
 #
 # The container is profile-gated and STAYS operator-started (`docker compose

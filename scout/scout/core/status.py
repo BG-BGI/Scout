@@ -38,6 +38,25 @@ def parse_trick_status(data):
     return name, color, mode
 
 
+def format_nav_state(status_name, distance_m=None, recoveries=0):
+    """/nav_state (nav_manager, ADR-0018): bare 'idle' before any goal;
+    otherwise '<status_name>|<dist 2dp or empty>|<recoveries>' — distance is
+    empty (not a fake 0.00) until the first action feedback arrives."""
+    if status_name == 'idle':
+        return 'idle'
+    dist = '' if distance_m is None else '%.2f' % distance_m
+    return '%s|%s|%d' % (status_name, dist, recoveries)
+
+
+def parse_nav_state(data):
+    """(status_name, distance_m or None, recoveries or None)."""
+    parts = data.split('|')
+    if len(parts) == 1:
+        return parts[0], None, None
+    dist = float(parts[1]) if parts[1] else None
+    return parts[0], dist, int(parts[2])
+
+
 def format_patrol_plan(text):
     """'plan|<free text>' progress feedback during route planning."""
     return 'plan|%s' % text

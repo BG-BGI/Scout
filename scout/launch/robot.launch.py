@@ -286,6 +286,34 @@ def generate_launch_description():
             respawn_delay=2.0,
         ),
 
+        # Dispatcher-aware nav cancel (/nav/cancel) + consolidated /nav_state
+        # feedback from both bt_navigator actions (ADR-0018). Read-only until
+        # the cancel service is called; no motion of its own.
+        Node(
+            package='scout',
+            executable='nav_manager',
+            output='screen',
+        ),
+
+        # rosbag2 record-on-demand: /record/start|stop (Trigger), latched
+        # /record/active + /record/path. Inert until called; owns the
+        # `ros2 bag record` subprocess + the auto-stop guard (ADR-0017).
+        Node(
+            package='scout',
+            executable='bag_recorder',
+            output='screen',
+        ),
+
+        # Keepout/speed zones: /zone_cmd (webui polygons) -> maps/zones.json
+        # -> derived filter masks + hot-reload of nav2's mask servers
+        # (ADR-0019). Like clutter persistence, only meaningful under slam
+        # localization/continue — keep map_name in step with slam's map:=.
+        Node(
+            package='scout',
+            executable='zone_manager',
+            output='screen',
+        ),
+
         # Link-loss watchdog: 5 s without gateway reachability cancels+stashes
         # nav goals, link recovery within 2 min re-dispatches them, longer
         # drops them. Born of the WiFi-dead-zone runaway (2026-08-14).
