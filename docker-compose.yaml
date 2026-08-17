@@ -134,6 +134,19 @@ services:
   rosbridge:
     <<: *base
     restart: unless-stopped
+    # ⚠ rosbridge_library's call_service does a get_service_names_and_types()
+    # pre-check before dispatching. Under Fast DDS Discovery Server v2 a plain
+    # client's graph view is topic-filtered to only the endpoints it holds
+    # (measured: 6 services), so EVERY web-UI service call (/patrol/*,
+    # /follow_me/*, trick play, estop) failed with "Service ... does not exist"
+    # while topic pub/sub (joystick, /goal_pose) kept working — topics skip the
+    # graph query. SUPER_CLIENT gives rosbridge the full graph from the server
+    # (measured: 283 services incl. /patrol/start). Adding `environment:` here
+    # overrides the &base merge, so all three vars are re-listed.
+    environment:
+      - ROS_LOCALHOST_ONLY=1
+      - ROS_DISCOVERY_SERVER=127.0.0.1:11811
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml
     command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 
   # Static files for the web UI (http://scout.local). Serves the bind-mounted
