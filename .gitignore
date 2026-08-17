@@ -29,3 +29,6 @@ captures/*
 
 # Local profile selection (see .env.example); never committed.
 .env
+
+# traction-control Phase 0 slip capture CSVs (instrument output, not source)
+scout/slip_logs/
