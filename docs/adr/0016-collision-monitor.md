@@ -79,21 +79,30 @@ physically leaves the box. Nav2's `velocity_polygon` shape type exists to
 solve exactly this (direction-dependent zone) but isn't adopted here — would
 need re-verification and is deferred.
 
-**Immediate fix: a bounded, logged bypass**, `scout/scout/collision_bypass.py`.
-`/collision_monitor/bypass_engage` PAUSEs `collision_monitor` via
-`lifecycle_manager_safety`'s `manage_nodes` service (`ManageLifecycleNodes`,
-command values STARTUP=0/PAUSE=1/RESUME=2/RESET=3/SHUTDOWN=4 — verified
-against the Humble `.srv`) — the manager's own sanctioned pause/resume
-surface, not a raw lifecycle `change_state` call (which would fight the
-manager's bond-failure detection: the manager owns the bond to
-collision_monitor and PAUSE/RESUME correctly tears it down and recreates it,
-where an external deactivate would look like an unexpected failure).
-`/collision_monitor/bypass_release` RESUMEs it. Auto-releases after
-`bypass_max_duration_s` (default 30 s — enough to back away, not a general
-disable) and logs a WARN every ~5 s while active. `/collision_monitor/bypassed`
-(latched Bool) is the one source of truth for "is the safety stage off" —
-webui/skills should surface it prominently, not bury it.
+**First fix attempt was WRONG, caught on hardware.** `bypass_engage` initially
+PAUSEd `collision_monitor` via `lifecycle_manager_safety`'s `manage_nodes`
+service — the timing worked exactly as designed (auto-release fired on
+schedule), but the robot stayed stuck. Root cause, confirmed against
+upstream source (`nav2_collision_monitor/src/collision_monitor_node.cpp`):
+`on_deactivate()` deactivates the OUTPUT publisher while leaving the input
+subscription alive, so a paused node doesn't pass `/cmd_vel_out` through
+unfiltered — it silently swallows it, and `/cmd_vel_safe` goes dark. Same
+"stuck" symptom as the original lockout, different mechanism, and it only
+showed up when actually tested on the robot.
 
-Verify (Pi): trigger a stop lockout, confirm `bypass_engage` frees motion,
-confirm auto-release re-engages the stop after 30 s with no operator action,
-confirm `bypass_release` re-engages immediately when called.
+**Actual fix: toggle the polygon's `enabled` parameter live, node stays
+ACTIVE.** nav2_collision_monitor declares `<PolygonName>.enabled` as a plain
+ROS parameter per polygon with a `dynamicParametersCallback` that applies
+immediately — no lifecycle transition (confirmed in `polygon.cpp`).
+`bypass_engage` calls `collision_monitor`'s own `set_parameters` service to
+set `PolygonStop.enabled=false`; `PolygonSlow` stays enabled throughout
+(harmless — it only caps speed, and extra caution while backing out is a
+feature). `bypass_release` sets it back to `true`. Same bounded contract as
+before: `bypass_max_duration_s` (default 30 s) auto-releases, a WARN logs
+every ~5 s while active, `/collision_monitor/bypassed` (latched Bool) is the
+one status source webui/skills surface prominently.
+
+Verify (Pi): trigger a stop lockout, confirm `bypass_engage` ACTUALLY frees
+motion this time (not just that the service call succeeds), confirm
+auto-release re-engages the stop after 30 s with no operator action, confirm
+`bypass_release` re-engages immediately when called.

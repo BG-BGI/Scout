@@ -220,8 +220,10 @@ def generate_launch_description():
         # lockout (a plain `polygon` STOP zone zeroes cmd_vel regardless of
         # commanded direction — verified 2026-08-17 on hardware, no reverse-
         # to-escape path exists). /collision_monitor/bypass_{engage,release}
-        # PAUSE/RESUME collision_monitor via lifecycle_manager_safety; auto-
-        # releases after 30 s. See ADR-0016 addendum.
+        # live-toggle PolygonStop.enabled via collision_monitor's own
+        # set_parameters service — NOT a lifecycle pause (that silently
+        # blocks cmd_vel entirely instead of passing it through, also
+        # discovered on hardware). Auto-releases after 30 s. ADR-0016 addendum.
         Node(
             package='scout',
             executable='collision_bypass',
