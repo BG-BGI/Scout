@@ -1,0 +1,13 @@
+# Scrape target is a literal hostname -- Prometheus config has no env-var
+# interpolation. Edit `targets` below if scout.local doesn't resolve on your
+# network (e.g. use the Pi's LAN IP instead).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: scout
+    static_configs:
+      - targets: ["scout.local:9100"]
+        labels:
+          robot: scout

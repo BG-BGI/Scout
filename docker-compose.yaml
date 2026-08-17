@@ -203,6 +203,55 @@ services:
       # this mount is ever missing.
       - ./scout/config/robot_profile.yaml:/robot_profile.yaml:ro
 
+  # --- Observability stack (profile: observability) ---
+  # Opt-in, same as `explore`: `docker compose --profile observability up -d`.
+  # Feeds a localhost-only Prometheus/Grafana/Dozzle stack over LAN (see
+  # observability/ in the repo root) -- nothing in this profile stores data
+  # on the Pi itself, it only exposes ports for a dev machine to scrape/pull.
+
+  # Container CPU/mem/net/restarts + ROS topic Hz + DDS pub/sub counts,
+  # scraped by localhost Prometheus at http://<pi>:9100/metrics. Read-only
+  # docker socket mount -- this container can observe but never act.
+  observability_exporter:
+    build: docker/observability-exporter
+    image: scout-observability-exporter:latest
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["observability"]
+    environment:
+      - COMPOSE_PROJECT=scout
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Read + safe-restart MCP endpoint for Claude (http://<pi>:9002/mcp,
+  # streamable-http). rw docker socket -- restart_container needs it, but the
+  # tool itself refuses `robot` unconditionally (see server.py docstring).
+  # ⚠ No auth -- LAN-trust only, same caveat as ros_mcp/scout_skills.
+  observability_mcp:
+    build: docker/observability-mcp
+    image: scout-observability-mcp:latest
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["observability"]
+    environment:
+      - COMPOSE_PROJECT=scout
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Log-streaming agent for the localhost Dozzle UI (dozzle --remote-agent).
+  # Read-only socket; agent-mode Dozzle ships no web UI of its own here, so
+  # this container is invisible unless something connects to :7007.
+  dozzle_agent:
+    image: amir20/dozzle:latest
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["observability"]
+    command: agent
+    environment:
+      - DOZZLE_AGENT_ADDR=:7007
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
 volumes:
   ros_ws_build:
   ros_ws_log:

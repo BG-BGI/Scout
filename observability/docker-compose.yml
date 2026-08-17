@@ -1,0 +1,60 @@
+# Localhost observability stack for Scout -- run on your dev machine, NOT
+# on the Pi. Pulls container metrics, ROS topic Hz, and DDS pub/sub counts
+# from the Pi's observability_exporter (:9100) and streams logs from its
+# dozzle_agent (:7007). Nothing here touches the robot or its drivetrain --
+# read-only against the Pi's LAN-exposed metrics/log endpoints.
+#
+# Prereq on the Pi (once):
+#   docker compose --profile observability up -d
+#
+# Usage here:
+#   cp .env.example .env   # set PI_HOST if scout.local doesn't resolve
+#   docker compose up -d
+#   open http://localhost:3000   (Grafana, admin/admin on first login)
+#   open http://localhost:8081   (Dozzle -- live/aggregated logs, all 4+ services)
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+    # Prometheus's own config file has no env-var interpolation, so the
+    # scrape target in prometheus.yml is a literal hostname, not ${PI_HOST}.
+    # Edit prometheus.yml directly if scout.local doesn't resolve for you.
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+
+  # Dozzle in "hub" mode: no docker.sock of its own, just fans out to the
+  # Pi's dozzle_agent over the network. Add more --remote-agent flags here
+  # if a second robot/Pi ever joins.
+  dozzle:
+    image: amir20/dozzle:latest
+    restart: unless-stopped
+    ports:
+      - "8081:8080"
+    environment:
+      - DOZZLE_REMOTE_AGENT=${PI_HOST:-scout.local}:7007
+
+volumes:
+  prometheus_data:
+  grafana_data:
