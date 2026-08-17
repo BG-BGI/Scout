@@ -1,0 +1,42 @@
+captures:
+- battery_v: 18.299999237060547
+  photo: wp01.jpg
+  pose:
+    x: -1.997
+    y: -2.607
+    yaw: 3.107
+  reached: true
+  target:
+    x: -1.796
+    y: -2.528
+    yaw: 3.142
+  time: '2026-08-17 20:16:32'
+  waypoint: 1
+- battery_v: 18.299999237060547
+  photo: wp02.jpg
+  pose:
+    x: -2.354
+    y: -2.557
+    yaw: 3.117
+  reached: true
+  target:
+    x: -2.446
+    y: -2.528
+    yaw: 3.142
+  time: '2026-08-17 20:16:36'
+  waypoint: 2
+- battery_v: 18.200000762939453
+  photo: wp03.jpg
+  pose:
+    x: -1.3
+    y: -1.318
+    yaw: 3.656
+  reached: false
+  target:
+    x: -1.346
+    y: -1.528
+    yaw: 0.0
+  time: '2026-08-17 20:18:38'
+  waypoint: 3
+ended: stopped by operator
+route: patrol

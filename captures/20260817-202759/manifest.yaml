@@ -1,0 +1,159 @@
+captures:
+- battery_v: 18.100000381469727
+  photo: wp01.jpg
+  pose:
+    x: 0.227
+    y: -3.15
+    yaw: -0.044
+  reached: true
+  target:
+    x: 0.138
+    y: -3.24
+    yaw: 0.0
+  time: '2026-08-17 20:28:22'
+  waypoint: 1
+- battery_v: 18.100000381469727
+  photo: wp02.jpg
+  pose:
+    x: 1.046
+    y: -3.214
+    yaw: -0.019
+  reached: true
+  target:
+    x: 1.188
+    y: -3.24
+    yaw: 0.0
+  time: '2026-08-17 20:28:27'
+  waypoint: 2
+- battery_v: 18.100000381469727
+  photo: wp03.jpg
+  pose:
+    x: 1.863
+    y: -2.366
+    yaw: 3.006
+  reached: true
+  target:
+    x: 1.838
+    y: -2.24
+    yaw: 3.142
+  time: '2026-08-17 20:28:48'
+  waypoint: 3
+- battery_v: 18.100000381469727
+  photo: wp04.jpg
+  pose:
+    x: -1.254
+    y: -2.304
+    yaw: 2.88
+  reached: true
+  target:
+    x: -1.362
+    y: -2.24
+    yaw: 3.142
+  time: '2026-08-17 20:28:59'
+  waypoint: 4
+- battery_v: 18.100000381469727
+  photo: wp05.jpg
+  pose:
+    x: -1.333
+    y: -1.244
+    yaw: 0.239
+  reached: true
+  target:
+    x: -1.462
+    y: -1.24
+    yaw: 0.0
+  time: '2026-08-17 20:29:22'
+  waypoint: 5
+- battery_v: 18.100000381469727
+  photo: wp06.jpg
+  pose:
+    x: -0.892
+    y: -1.198
+    yaw: -0.185
+  reached: true
+  target:
+    x: -0.862
+    y: -1.24
+    yaw: 0.0
+  time: '2026-08-17 20:29:28'
+  waypoint: 6
+- battery_v: 18.100000381469727
+  photo: wp07.jpg
+  pose:
+    x: -0.788
+    y: -1.217
+    yaw: -0.185
+  reached: true
+  target:
+    x: -0.662
+    y: -1.24
+    yaw: 0.0
+  time: '2026-08-17 20:29:31'
+  waypoint: 7
+- battery_v: 18.100000381469727
+  photo: wp08.jpg
+  pose:
+    x: -0.403
+    y: -1.262
+    yaw: 0.001
+  reached: true
+  target:
+    x: -0.262
+    y: -1.24
+    yaw: 0.0
+  time: '2026-08-17 20:29:37'
+  waypoint: 8
+- battery_v: 18.100000381469727
+  photo: wp09.jpg
+  pose:
+    x: 0.113
+    y: -1.251
+    yaw: 0.008
+  reached: true
+  target:
+    x: 0.238
+    y: -1.24
+    yaw: 0.0
+  time: '2026-08-17 20:29:42'
+  waypoint: 9
+- battery_v: 18.100000381469727
+  photo: wp10.jpg
+  pose:
+    x: 0.774
+    y: -1.209
+    yaw: -0.004
+  reached: true
+  target:
+    x: 0.938
+    y: -1.24
+    yaw: 0.0
+  time: '2026-08-17 20:29:47'
+  waypoint: 10
+- battery_v: 18.100000381469727
+  photo: wp11.jpg
+  pose:
+    x: 0.057
+    y: -0.297
+    yaw: 2.945
+  reached: true
+  target:
+    x: -0.062
+    y: -0.24
+    yaw: 3.142
+  time: '2026-08-17 20:30:19'
+  waypoint: 11
+- battery_v: 18.100000381469727
+  photo: wp12.jpg
+  pose:
+    x: -1.573
+    y: -0.289
+    yaw: 3.034
+  reached: true
+  target:
+    x: -1.712
+    y: -0.24
+    yaw: 3.142
+  time: '2026-08-17 20:30:26'
+  waypoint: 12
+ended: route complete
+route: patrol
