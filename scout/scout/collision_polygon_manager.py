@@ -93,8 +93,16 @@ class CollisionPolygonManager(Node):
         p = self.declare_parameter
         self._max_duration = float(
             p('bypass_max_duration_s', 30.0).value)
-        self._turn_enter = float(p('turn_enter_rad_s', 0.15).value)
-        self._turn_exit = float(p('turn_exit_rad_s', 0.05).value)
+        # 0.8/0.4 (raised from 0.15/0.05 on 2026-08-17): path-following curves
+        # command modest yaw (<0.5 rad/s) while driving straight PAST a side
+        # obstacle; at the old 0.15 enter-threshold that armed the WIDE turn
+        # polygon (±0.21 side), which then tripped a stop on the side object
+        # and flapped stop/continue near the boundary. Real in-place pivots run
+        # ~1.2 rad/s (rotate_to_heading / max_vel_theta), so 0.8 keeps the
+        # narrow straight polygon (±0.175) active through curves and only arms
+        # the wide polygon for genuine pivots where the chassis sweeps sideways.
+        self._turn_enter = float(p('turn_enter_rad_s', 0.8).value)
+        self._turn_exit = float(p('turn_exit_rad_s', 0.4).value)
         self._turn_exit_dwell = float(p('turn_exit_dwell_s', 0.3).value)
 
         self._bypassed = False
