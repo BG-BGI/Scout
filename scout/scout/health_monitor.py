@@ -39,11 +39,18 @@ class HealthMonitor(Node):
 
     def __init__(self):
         super().__init__('health_monitor')
-        # scout.core.health redeclares the DiagnosticStatus bytes to stay ROS-
-        # free; fail loudly here if upstream ever renumbers them.
-        assert (health.OK, health.WARN, health.ERROR, health.STALE) == (
-            DiagnosticStatus.OK, DiagnosticStatus.WARN,
-            DiagnosticStatus.ERROR, DiagnosticStatus.STALE)
+        # scout.core.health redeclares the DiagnosticStatus values as plain
+        # ints to stay ROS-free (ADR-0012); fail loudly here if upstream ever
+        # renumbers them. ⚠ Some rosidl_generator_py versions represent
+        # `byte`-typed msg constants as single-byte `bytes` (b'\x00') rather
+        # than int (seen on a diagnostic_msgs version bump) — normalize both
+        # representations before comparing; a real renumber still trips this.
+        def _as_int(v):
+            return v[0] if isinstance(v, bytes) else int(v)
+        assert (health.OK, health.WARN, health.ERROR, health.STALE) == tuple(
+            _as_int(v) for v in (
+                DiagnosticStatus.OK, DiagnosticStatus.WARN,
+                DiagnosticStatus.ERROR, DiagnosticStatus.STALE))
 
         prof = _load_profile()
         self._warn_v = float(prof['battery_warn_v'])
