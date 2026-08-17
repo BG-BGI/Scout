@@ -216,6 +216,18 @@ def generate_launch_description():
 
         OpaqueFunction(function=_safety_setup),
 
+        # Bounded, logged escape hatch for the direction-blind PolygonStop
+        # lockout (a plain `polygon` STOP zone zeroes cmd_vel regardless of
+        # commanded direction — verified 2026-08-17 on hardware, no reverse-
+        # to-escape path exists). /collision_monitor/bypass_{engage,release}
+        # PAUSE/RESUME collision_monitor via lifecycle_manager_safety; auto-
+        # releases after 30 s. See ADR-0016 addendum.
+        Node(
+            package='scout',
+            executable='collision_bypass',
+            output='screen',
+        ),
+
         gyro_calibrator,
 
         ekf,

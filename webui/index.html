@@ -49,6 +49,11 @@
       <span id="gamepad-state">no gamepad</span>
       <span id="gamepad-debug"></span>
     </div>
+    <!-- Collision-monitor bypass: only for the direction-blind stop lockout
+         (a plain polygon STOP zone zeroes cmd_vel in EVERY direction, even
+         reverse, once tripped — ADR-0016 addendum). Bounded + loud: the
+         node auto-releases after ~30s regardless of this button. -->
+    <button id="cm-bypass">BYPASS COLLISION SAFETY</button>
   </section>
 
   <aside>

@@ -386,6 +386,32 @@ estopBtn.addEventListener('click', () => {
     .callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
 });
 
+// --- collision-monitor bypass (ADR-0016 addendum) --------------------------------------
+// Escape hatch for the direction-blind PolygonStop lockout: a plain polygon
+// STOP zone zeroes cmd_vel in EVERY direction (even reverse) once tripped, so
+// there is no way to drive out without this. Bounded — collision_bypass
+// auto-releases ~30s after engage regardless of what this button does next.
+const cmBypassBtn = document.getElementById('cm-bypass');
+const cmBypassEngageSrv = new ROSLIB.Service({
+  ros, name: '/collision_monitor/bypass_engage', serviceType: 'std_srvs/srv/Trigger',
+});
+const cmBypassReleaseSrv = new ROSLIB.Service({
+  ros, name: '/collision_monitor/bypass_release', serviceType: 'std_srvs/srv/Trigger',
+});
+let cmBypassed = false;
+new ROSLIB.Topic({
+  ros, name: '/collision_monitor/bypassed', messageType: 'std_msgs/msg/Bool',
+}).subscribe((msg) => {
+  cmBypassed = msg.data;
+  cmBypassBtn.classList.toggle('bypassed', cmBypassed);
+  cmBypassBtn.textContent = cmBypassed
+    ? 'SAFETY BYPASSED — tap to restore' : 'BYPASS COLLISION SAFETY';
+});
+cmBypassBtn.addEventListener('click', () => {
+  (cmBypassed ? cmBypassReleaseSrv : cmBypassEngageSrv)
+    .callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
+});
+
 // --- rosbag record-on-demand (bag_recorder, ADR-0017) ----------------------------------
 // State comes from the latched /record/active, so a reloaded page still shows
 // a recording started elsewhere (skills MCP, shell). The service response

@@ -64,3 +64,36 @@ is superseded by guarding the single choke point instead.
 - On-robot verify (remaining-plan §9.1): on blocks — obstacle in the slowdown
   box trims `/cmd_vel_safe`, in the stop box zeroes it, `polygon_stop` /
   `polygon_slowdown` render in Foxglove; then a floor pass with every source.
+
+## Addendum (2026-08-17, first on-hardware verify): direction-blind stop lockout
+
+Stop-zone triggering and release were verified working correctly on hardware.
+But discovered the same session: **a plain `polygon` STOP zone gives no way
+to drive out of it.** Confirmed against upstream source
+(`nav2_collision_monitor/src/polygon.cpp`): `getPointsInside`/
+`isTriggeredInternal` take only a geometric point count — never the
+commanded Twist's direction. So once triggered on a static obstacle, CM
+zeroes `/cmd_vel_safe` for EVERY commanded direction, including a reverse
+command meant to back away, and the robot is stuck until the obstacle
+physically leaves the box. Nav2's `velocity_polygon` shape type exists to
+solve exactly this (direction-dependent zone) but isn't adopted here — would
+need re-verification and is deferred.
+
+**Immediate fix: a bounded, logged bypass**, `scout/scout/collision_bypass.py`.
+`/collision_monitor/bypass_engage` PAUSEs `collision_monitor` via
+`lifecycle_manager_safety`'s `manage_nodes` service (`ManageLifecycleNodes`,
+command values STARTUP=0/PAUSE=1/RESUME=2/RESET=3/SHUTDOWN=4 — verified
+against the Humble `.srv`) — the manager's own sanctioned pause/resume
+surface, not a raw lifecycle `change_state` call (which would fight the
+manager's bond-failure detection: the manager owns the bond to
+collision_monitor and PAUSE/RESUME correctly tears it down and recreates it,
+where an external deactivate would look like an unexpected failure).
+`/collision_monitor/bypass_release` RESUMEs it. Auto-releases after
+`bypass_max_duration_s` (default 30 s — enough to back away, not a general
+disable) and logs a WARN every ~5 s while active. `/collision_monitor/bypassed`
+(latched Bool) is the one source of truth for "is the safety stage off" —
+webui/skills should surface it prominently, not bury it.
+
+Verify (Pi): trigger a stop lockout, confirm `bypass_engage` frees motion,
+confirm auto-release re-engages the stop after 30 s with no operator action,
+confirm `bypass_release` re-engages immediately when called.

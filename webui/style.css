@@ -197,6 +197,27 @@ aside  { order: 3; }
 }
 @keyframes estop-pulse { 50% { filter: brightness(1.4); } }
 
+/* Collision-monitor bypass (ADR-0016 addendum): outline amber = available,
+   solid pulsing red = the safety stage is CURRENTLY off (bounded, loud). */
+#cm-bypass {
+  width: 100%;
+  margin-top: 8px;
+  padding: var(--s2);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+  background: transparent;
+  border: 2px solid var(--warn);
+  border-radius: 12px;
+  cursor: pointer;
+}
+#cm-bypass.bypassed {
+  color: #fff;
+  background: var(--bad);
+  animation: estop-pulse 1s infinite;
+}
+
 #pad {
   position: relative;
   width: min(70vw, 260px);

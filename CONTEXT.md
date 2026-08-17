@@ -79,6 +79,7 @@ Core stack (`robot.launch.py`, compose `robot`):
 | nav_manager | both actions' status+feedback | `/nav_state` (latched), `/explore/resume` | `/nav/cancel` |
 | bag_recorder | — | `/record/active`,`/record/path` (latched) | `/record/{start,stop}` |
 | zone_manager | `/zone_cmd` | `/zones` (latched), mask PGMs | — |
+| collision_bypass | — | `/collision_monitor/bypassed` (latched) | `bypass_{engage,release}` |
 
 Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
 (navigation_launch.py → `/cmd_vel` at lowest mux priority), `foxglove_bridge`,

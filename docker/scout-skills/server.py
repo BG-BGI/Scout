@@ -1018,6 +1018,30 @@ async def estop(engaged: bool) -> dict:
     }
 
 
+# --- collision-monitor bypass (collision_bypass node, ADR-0016 addendum) -----
+#
+# Escape hatch for the direction-blind PolygonStop lockout: a plain polygon
+# STOP zone zeroes cmd_vel in EVERY direction (even reverse) once tripped,
+# with no reverse-to-escape path. Bounded — collision_bypass auto-releases
+# ~30s after engage regardless of whether release is ever called.
+
+
+@mcp.tool
+async def collision_bypass(engaged: bool) -> dict:
+    """Bounded bypass of the last-hop collision safety stage. engaged=true
+    lets the robot drive out of a stuck PolygonStop lockout (auto-releases
+    after ~30s on its own); engaged=false restores it immediately. Not a
+    general safety disable — use only to escape a lockout, then release."""
+    svc = ("/collision_monitor/bypass_engage" if engaged
+           else "/collision_monitor/bypass_release")
+    async with RosBridge() as rb:
+        values = await rb.call_service(svc, "std_srvs/srv/Trigger")
+    return {
+        "bypass": "engaged" if engaged else "released",
+        "message": values.get("message"),
+    }
+
+
 # --- rosbag record-on-demand (bag_recorder node, ADR-0017) -------------------
 
 
