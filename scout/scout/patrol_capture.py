@@ -101,9 +101,11 @@ class PatrolCapture(Node):
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._nav = ActionClient(self, NavigateToPose, 'navigate_to_pose')
 
-        self.create_subscription(CompressedImage,
-                                 'camera/camera/color/image_raw/compressed',
-                                 self._on_frame, qos_profile_sensor_data)
+        # Compressed-image subscription is created only for the duration of a
+        # run (_on_start / _finish) — otherwise rclpy deserializes every
+        # camera frame forever just to have _on_frame store-and-discard it,
+        # which measured as real idle CPU cost.
+        self._frame_sub = None
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
         self._grid = None
         self.create_subscription(OccupancyGrid, 'map', self._on_grid, 1)
@@ -281,6 +283,11 @@ class PatrolCapture(Node):
         os.makedirs(self._run_dir, exist_ok=True)
         self._results = []
         self._wp_i = 0
+        self._last_frame = None
+        if self._frame_sub is None:
+            self._frame_sub = self.create_subscription(
+                CompressedImage, 'camera/camera/color/image_raw/compressed',
+                self._on_frame, qos_profile_sensor_data)
         self._send_goal(0)
         response.success = True
         response.message = 'patrol started: %d waypoints -> %s' \
@@ -374,6 +381,9 @@ class PatrolCapture(Node):
     def _finish(self, reason):
         self._cancel_nav()
         self._state = 'idle'
+        if self._frame_sub is not None:
+            self.destroy_subscription(self._frame_sub)
+            self._frame_sub = None
         if reason:
             self.get_logger().info('Patrol: %s' % reason)
             if self._run_dir:

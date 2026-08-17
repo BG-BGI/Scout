@@ -171,10 +171,12 @@ class FollowMe(Node):
 
         self._cmd = CmdVelSource(self, 'follow', hz=publish_hz)
         self._status_pub = self.create_publisher(String, 'follow_status', 10)
-        self.create_subscription(LaserScan, 'scan', self._on_scan,
-                                 qos_profile_sensor_data)
-        self.create_subscription(PointCloud2, 'camera/camera/depth/color/points',
-                                 self._on_depth, qos_profile_sensor_data)
+        # Scan/depth subscriptions are created only while active (_on_start /
+        # _halt) — otherwise rclpy deserializes every lidar scan and every
+        # depth frame forever just to have _on_scan/_on_depth immediately
+        # discard them, which measured as real idle CPU cost.
+        self._scan_sub = None
+        self._depth_sub = None
         self.create_service(Trigger, 'follow_me/start', self._on_start)
         self.create_service(Trigger, 'follow_me/stop', self._on_stop)
         self.create_timer(1.0 / publish_hz, self._tick)
@@ -195,6 +197,12 @@ class FollowMe(Node):
         self._lost_heading = None
         self._search_tracks = []
         self._vx_out = 0.0
+        if self._scan_sub is None:
+            self._scan_sub = self.create_subscription(
+                LaserScan, 'scan', self._on_scan, qos_profile_sensor_data)
+            self._depth_sub = self.create_subscription(
+                PointCloud2, 'camera/camera/depth/color/points',
+                self._on_depth, qos_profile_sensor_data)
         self._set_status('searching')
         response.success = True
         response.message = 'following: searching for a target in the front sector'
@@ -219,6 +227,11 @@ class FollowMe(Node):
         self._lost_heading = None
         self._search_tracks = []
         self._vx_out = 0.0
+        if self._scan_sub is not None:
+            self.destroy_subscription(self._scan_sub)
+            self.destroy_subscription(self._depth_sub)
+            self._scan_sub = None
+            self._depth_sub = None
         self._set_status('idle')
 
     # --- perception ---------------------------------------------------------------

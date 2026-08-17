@@ -38,6 +38,7 @@ import tf2_ros
 from nav_msgs.msg import OccupancyGrid
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.serialization import deserialize_message
 from sensor_msgs.msg import PointCloud2, PointField
 from sensor_msgs_py import point_cloud2
 from std_msgs.msg import Header
@@ -90,8 +91,15 @@ class ClutterMapper(Node):
             OccupancyGrid, 'clutter_map', LATCHED_QOS)
         self._points_pub = self.create_publisher(PointCloud2, 'clutter_points', 10)
 
+        # raw=True: the depth cloud arrives every camera frame (~30 Hz) but
+        # only one in ~10 is ever processed (_period). Deserializing a
+        # PointCloud2 is the expensive part, so it's skipped entirely for
+        # frames that would be thrown away by the period/TF check below —
+        # deserializing every frame just to discard most of them measured as
+        # real CPU cost.
         self.create_subscription(PointCloud2, 'camera/camera/depth/color/points',
-                                 self._on_depth, qos_profile_sensor_data)
+                                 self._on_depth_raw, qos_profile_sensor_data,
+                                 raw=True)
         self.create_service(Trigger, 'clutter/save', self._on_save)
         self.create_service(Trigger, 'clutter/clear', self._on_clear)
         self.create_timer(1.0, self._publish)
@@ -176,14 +184,17 @@ class ClutterMapper(Node):
         self._cam_rot, self._cam_trans = result
         return True
 
-    def _on_depth(self, msg: PointCloud2):
+    def _on_depth_raw(self, raw_msg):
         now = time.monotonic()
         if now - self._last_proc < self._period:
             return
-        if self._cam_rot is None and not self._resolve_camera_tf(msg.header.frame_id):
-            return
         pose = self._map_pose()
         if pose is None:
+            return
+        self._on_depth(deserialize_message(raw_msg, PointCloud2), now, pose)
+
+    def _on_depth(self, msg: PointCloud2, now, pose):
+        if self._cam_rot is None and not self._resolve_camera_tf(msg.header.frame_id):
             return
         self._last_proc = now
         try:
