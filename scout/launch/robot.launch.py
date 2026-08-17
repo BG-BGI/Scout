@@ -216,17 +216,18 @@ def generate_launch_description():
 
         OpaqueFunction(function=_safety_setup),
 
-        # Bounded, logged escape hatch for the direction-blind PolygonStop
-        # lockout (a plain `polygon` STOP zone zeroes cmd_vel regardless of
-        # commanded direction — verified 2026-08-17 on hardware, no reverse-
-        # to-escape path exists). /collision_monitor/bypass_{engage,release}
-        # live-toggle PolygonStop.enabled via collision_monitor's own
-        # set_parameters service — NOT a lifecycle pause (that silently
-        # blocks cmd_vel entirely instead of passing it through, also
-        # discovered on hardware). Auto-releases after 30 s. ADR-0016 addendum.
+        # Direction-aware stop zone (narrow sides while driving straight,
+        # wide while turning — a plain `polygon` STOP shape is direction-
+        # blind by nav2 design, found on hardware passing between two
+        # obstacles) + the bounded bypass escape hatch, one node so both
+        # features share ownership of collision_monitor's stop-polygon
+        # enabled flags without racing. Live-toggles via collision_monitor's
+        # own set_parameters — NOT a lifecycle pause (that silently blocks
+        # cmd_vel instead of passing it through, also found on hardware).
+        # ADR-0016 addendum.
         Node(
             package='scout',
-            executable='collision_bypass',
+            executable='collision_polygon_manager',
             output='screen',
         ),
 

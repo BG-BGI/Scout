@@ -102,7 +102,53 @@ before: `bypass_max_duration_s` (default 30 s) auto-releases, a WARN logs
 every ~5 s while active, `/collision_monitor/bypassed` (latched Bool) is the
 one status source webui/skills surface prominently.
 
-Verify (Pi): trigger a stop lockout, confirm `bypass_engage` ACTUALLY frees
-motion this time (not just that the service call succeeds), confirm
-auto-release re-engages the stop after 30 s with no operator action, confirm
-`bypass_release` re-engages immediately when called.
+Verified working correctly (bypass_engage frees motion, auto-release
+re-arms the stop, bypass_release re-arms immediately).
+
+## Addendum 2 (2026-08-17, same session): the stop zone is direction-blind, not just PAUSE-broken
+
+Passing between two obstacles narrower than the default stop box's ~0.42 m
+gap tripped a full stop even though the 0.334 m chassis physically fit and
+was driving straight through, not toward, either obstacle. Root cause is the
+same geometric-only check as the PAUSE bug above: `PolygonStop` is a single
+STATIC box, symmetric on all four sides, with zero awareness of the commanded
+Twist's direction (confirmed against `polygon.cpp` again — `getPointsInside`/
+`isTriggeredInternal` take only a point count). nav2's native fix,
+`velocity_polygon` (a shape that switches based on the commanded velocity),
+merged into nav2 Iron (Feb 2024) — after Humble had already frozen for new
+features. Confirmed **absent** from this image: zero `VelocityPolygon`
+symbols in the installed `libnav2_collision_monitor_core.so`. Building it
+from source would need a newer `nav2_util`/`nav2_costmap_2d` than Humble's
+apt provides (unconfirmed compatibility) or a full distro upgrade (touches
+every other from-source pin in this repo) — not worth it for one feature.
+
+**Fix: reimplement the mechanism ourselves**, using the same live-parameter
+path proven by the bypass. `collision_monitor.yaml` now declares TWO
+mutually-exclusive stop polygons: `PolygonStopStraight` (±0.175 side —
+footprint + ~1 cm, default-enabled) and `PolygonStopTurn` (±0.21 side — the
+original margin, default-disabled). `scout/scout/collision_polygon_manager.py`
+(renamed from `collision_bypass.py`, merged in — both features mutate the
+same two `enabled` flags and would race as separate nodes) subscribes
+`/cmd_vel_out` — the same commanded Twist collision_monitor reads, so it
+reacts to what's about to be commanded rather than lagging behind measured
+odometry — and toggles which polygon is enabled based on `|angular.z|`
+(hysteresis: enter "turning" above `turn_enter_rad_s` (0.15), only return to
+"straight" after staying below `turn_exit_rad_s` (0.05) for `turn_exit_dwell_s`
+(0.3 s), avoiding flapping). Forward margin (~7 cm) is unchanged in both —
+braking distance doesn't depend on whether the robot is turning. Only
+`|angular.z|` matters: this is a skid-steer, never holonomic.
+`/collision_monitor/zone_mode` (latched String) reports which is active.
+
+One-tick latency is inherent (this node and collision_monitor both receive
+the same `/cmd_vel_out` message via DDS fan-out with no ordering guarantee,
+so a transition applies from the NEXT message onward) — at 20–50 Hz that's
+≤50 ms, folded into the existing margin, not a new gap.
+
+`tight_tunnel` overlay collapses both to the same tiny box: turning at all is
+already unsafe in a passage that tight, so there's no wider "turn" allowance
+to fall back to.
+
+Verify (Pi): drive straight between two obstacles narrower than 0.42 m but
+wider than the chassis — confirm no stop; command a real turn/pivot near an
+obstacle — confirm the wide zone still catches it; watch `/collision_monitor/
+zone_mode` transition during a mixed drive (straight → turn → straight).

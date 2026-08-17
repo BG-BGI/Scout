@@ -23,6 +23,21 @@
 # - tight_tunnel: the default side margins would read pipe walls as a stop
 #   condition — the overlay shrinks both boxes to the footprint (see
 #   overlays/tight_tunnel/collision_monitor.yaml).
+#
+# ⚠ STOP zone is direction-blind by nav2 design (verified against
+# nav2_collision_monitor/src/polygon.cpp: getPointsInside/isTriggeredInternal
+# take only a geometric point count, never the commanded Twist). A single
+# symmetric box therefore reads a static obstacle to the SIDE as a stop
+# condition even while driving straight PAST it (found on hardware
+# 2026-08-17 — passing between two obstacles narrower than ~0.42 m tripped
+# the stop though the 0.334 m chassis physically fit). Humble's nav2 predates
+# the native fix (`velocity_polygon`, merged Iron+, absent from this apt
+# build — confirmed empirically, no VelocityPolygon symbol in
+# libnav2_collision_monitor_core.so). So TWO mutually-exclusive stop
+# polygons stand in for it, switched live by `collision_polygon_manager`
+# (ADR-0016 addendum) via collision_monitor's own set_parameters — narrow
+# sides while driving essentially straight, the original wide sides while
+# actually turning/pivoting (which sweeps the chassis sideways for real).
 collision_monitor:
   ros__parameters:
     base_frame_id: "base_link"
@@ -35,17 +50,31 @@ collision_monitor:
     source_timeout: 2.0
     base_shift_correction: true
     stop_pub_timeout: 1.0
-    polygons: ["PolygonStop", "PolygonSlow"]
-    # Footprint is ±0.169 x ±0.167 (mesh bounds, nav2.yaml). Stop box adds
-    # ~7 cm ahead / ~4 cm to the side: at 0.6 m/s the robot covers ~5 cm per
-    # 11.7 Hz scan, so the margin is roughly one scan of travel + coast.
-    PolygonStop:
+    polygons: ["PolygonStopStraight", "PolygonStopTurn", "PolygonSlow"]
+    # Footprint is ±0.169 x ±0.167 (mesh bounds, nav2.yaml). Forward margin
+    # (~7 cm) is unchanged in both — braking distance doesn't depend on
+    # whether the robot is turning. Only the SIDE margin differs:
+    #   Straight (default-enabled): ±0.175 side — footprint + ~1 cm, same as
+    #     the tight_tunnel proportions; lets the robot pass through anything
+    #     it physically fits.
+    #   Turn (default-disabled): ±0.21 side — the original margin, gives
+    #     real sideways-sweep clearance while pivoting/arcing.
+    PolygonStopStraight:
+      type: "polygon"
+      points: [0.24, 0.175, 0.24, -0.175, -0.24, -0.175, -0.24, 0.175]
+      action_type: "stop"
+      max_points: 3
+      enabled: true
+      visualize: true
+      polygon_pub_topic: "polygon_stop_straight"
+    PolygonStopTurn:
       type: "polygon"
       points: [0.24, 0.21, 0.24, -0.21, -0.24, -0.21, -0.24, 0.21]
       action_type: "stop"
       max_points: 3
+      enabled: false
       visualize: true
-      polygon_pub_topic: "polygon_stop"
+      polygon_pub_topic: "polygon_stop_turn"
     PolygonSlow:
       type: "polygon"
       points: [0.45, 0.32, 0.45, -0.32, -0.45, -0.32, -0.45, 0.32]

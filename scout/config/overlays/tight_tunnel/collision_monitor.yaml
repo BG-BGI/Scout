@@ -5,9 +5,16 @@
 # boxes to the physical footprint (+~1 cm): the collision monitor then only
 # fires on genuine contact-imminent points, and clearance decisions stay with
 # nav2's ObstacleFootprint critic (which is tuned for exactly this).
+#
+# The straight/turn split (base collision_monitor.yaml, ADR-0016 addendum)
+# doesn't help INSIDE a pipe — turning at all is already unsafe/impossible in
+# a passage this tight, so both collapse to the same tiny box here; there is
+# no wider "turn" allowance to fall back to.
 collision_monitor:
   ros__parameters:
-    PolygonStop:
+    PolygonStopStraight:
+      points: [0.18, 0.175, 0.18, -0.175, -0.18, -0.175, -0.18, 0.175]
+    PolygonStopTurn:
       points: [0.18, 0.175, 0.18, -0.175, -0.18, -0.175, -0.18, 0.175]
     PolygonSlow:
       points: [0.28, 0.175, 0.28, -0.175, -0.28, -0.175, -0.28, 0.175]

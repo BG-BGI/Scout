@@ -51,7 +51,7 @@ setup(
             'bag_recorder = scout.bag_recorder:main',
             'nav_manager = scout.nav_manager:main',
             'zone_manager = scout.zone_manager:main',
-            'collision_bypass = scout.collision_bypass:main',
+            'collision_polygon_manager = scout.collision_polygon_manager:main',
         ],
     },
 )

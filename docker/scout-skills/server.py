@@ -1018,12 +1018,14 @@ async def estop(engaged: bool) -> dict:
     }
 
 
-# --- collision-monitor bypass (collision_bypass node, ADR-0016 addendum) -----
+# --- collision-monitor bypass (collision_polygon_manager, ADR-0016 addenda) --
 #
 # Escape hatch for the direction-blind PolygonStop lockout: a plain polygon
 # STOP zone zeroes cmd_vel in EVERY direction (even reverse) once tripped,
-# with no reverse-to-escape path. Bounded — collision_bypass auto-releases
-# ~30s after engage regardless of whether release is ever called.
+# with no reverse-to-escape path. Bounded — auto-releases ~30s after engage
+# regardless of whether release is ever called. The same node also toggles
+# a narrow/wide stop zone live based on commanded angular velocity (straight
+# vs turning) — this tool only exposes the manual bypass, not that part.
 
 
 @mcp.tool

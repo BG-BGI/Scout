@@ -389,7 +389,7 @@ estopBtn.addEventListener('click', () => {
 // --- collision-monitor bypass (ADR-0016 addendum) --------------------------------------
 // Escape hatch for the direction-blind PolygonStop lockout: a plain polygon
 // STOP zone zeroes cmd_vel in EVERY direction (even reverse) once tripped, so
-// there is no way to drive out without this. Bounded — collision_bypass
+// there is no way to drive out without this. Bounded — the node
 // auto-releases ~30s after engage regardless of what this button does next.
 const cmBypassBtn = document.getElementById('cm-bypass');
 const cmBypassEngageSrv = new ROSLIB.Service({
@@ -406,6 +406,11 @@ new ROSLIB.Topic({
   cmBypassBtn.classList.toggle('bypassed', cmBypassed);
   cmBypassBtn.textContent = cmBypassed
     ? 'SAFETY BYPASSED — tap to restore' : 'BYPASS COLLISION SAFETY';
+});
+new ROSLIB.Topic({
+  ros, name: '/collision_monitor/zone_mode', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  document.getElementById('cm-zone-mode').textContent = msg.data;
 });
 cmBypassBtn.addEventListener('click', () => {
   (cmBypassed ? cmBypassReleaseSrv : cmBypassEngageSrv)
