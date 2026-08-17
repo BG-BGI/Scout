@@ -33,11 +33,18 @@
 # the stop though the 0.334 m chassis physically fit). Humble's nav2 predates
 # the native fix (`velocity_polygon`, merged Iron+, absent from this apt
 # build — confirmed empirically, no VelocityPolygon symbol in
-# libnav2_collision_monitor_core.so). So TWO mutually-exclusive stop
+# libnav2_collision_monitor_core.so). So THREE mutually-exclusive stop
 # polygons stand in for it, switched live by `collision_polygon_manager`
-# (ADR-0016 addendum) via collision_monitor's own set_parameters — narrow
-# sides while driving essentially straight, the original wide sides while
-# actually turning/pivoting (which sweeps the chassis sideways for real).
+# (ADR-0016 addendum) via collision_monitor's own set_parameters:
+#   - Front  (narrow sides) while driving essentially straight forward,
+#   - Rear   (narrow sides) while reversing — so the STOP is also direction-
+#     aware in vx, not just yaw. This is what lets BackUp recovery escape a
+#     front obstacle: a single symmetric box zeroes the reverse command too
+#     (the STOP is Twist-blind), so an obstacle in front deadlocks the robot
+#     — it "sits there and dies" instead of backing up (found on hardware
+#     2026-08-17, the second face of the same direction-blindness bug).
+#   - Turn   (original wide sides, full box) while actually turning/pivoting,
+#     which sweeps the chassis sideways for real.
 collision_monitor:
   ros__parameters:
     base_frame_id: "base_link"
@@ -50,23 +57,39 @@ collision_monitor:
     source_timeout: 2.0
     base_shift_correction: true
     stop_pub_timeout: 1.0
-    polygons: ["PolygonStopStraight", "PolygonStopTurn", "PolygonSlow"]
-    # Footprint is ±0.169 x ±0.167 (mesh bounds, nav2.yaml). Forward margin
-    # (~7 cm) is unchanged in both — braking distance doesn't depend on
-    # whether the robot is turning. Only the SIDE margin differs:
-    #   Straight (default-enabled): ±0.175 side — footprint + ~1 cm, same as
-    #     the tight_tunnel proportions; lets the robot pass through anything
-    #     it physically fits.
-    #   Turn (default-disabled): ±0.21 side — the original margin, gives
-    #     real sideways-sweep clearance while pivoting/arcing.
-    PolygonStopStraight:
+    polygons: ["PolygonStopFront", "PolygonStopRear", "PolygonStopTurn", "PolygonSlow"]
+    # Footprint is ±0.169 x ±0.167 (mesh bounds, nav2.yaml). THREE
+    # mutually-exclusive stop shapes, exactly one enabled at a time by
+    # collision_polygon_manager from the commanded Twist:
+    #   Front  (default-enabled): guards forward travel. Extends +0.24 ahead
+    #     (~7 cm past the chassis), only -0.06 behind base_link. ±0.175 side
+    #     (footprint + ~1 cm). Disabled while reversing so BackUp recovery can
+    #     escape a front obstacle — the whole reason the split-in-vx exists.
+    #   Rear   (default-disabled): the front box mirrored, guards reverse
+    #     travel so a backing robot still stops before a wall behind it.
+    #   Turn   (default-disabled): full symmetric ±0.24 box, ±0.21 side — the
+    #     original margin, gives real sideways-sweep clearance while
+    #     pivoting/arcing (a pivot sweeps every corner, so guard front+rear).
+    # The ±0.06 overlap at base_link leaves no gap during a front<->rear swap.
+    # Forward stop margin (~7 cm) is identical in all three — braking distance
+    # doesn't depend on direction or turning; only the side margin and which
+    # half is guarded change.
+    PolygonStopFront:
       type: "polygon"
-      points: [0.24, 0.175, 0.24, -0.175, -0.24, -0.175, -0.24, 0.175]
+      points: [0.24, 0.175, 0.24, -0.175, -0.06, -0.175, -0.06, 0.175]
       action_type: "stop"
       max_points: 3
       enabled: true
       visualize: true
-      polygon_pub_topic: "polygon_stop_straight"
+      polygon_pub_topic: "polygon_stop_front"
+    PolygonStopRear:
+      type: "polygon"
+      points: [0.06, 0.175, 0.06, -0.175, -0.24, -0.175, -0.24, 0.175]
+      action_type: "stop"
+      max_points: 3
+      enabled: false
+      visualize: true
+      polygon_pub_topic: "polygon_stop_rear"
     PolygonStopTurn:
       type: "polygon"
       points: [0.24, 0.21, 0.24, -0.21, -0.24, -0.21, -0.24, 0.21]

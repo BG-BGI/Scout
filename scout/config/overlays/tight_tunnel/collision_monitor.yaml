@@ -12,8 +12,14 @@
 # no wider "turn" allowance to fall back to.
 collision_monitor:
   ros__parameters:
-    PolygonStopStraight:
-      points: [0.18, 0.175, 0.18, -0.175, -0.18, -0.175, -0.18, 0.175]
+    # Front/rear split still applies in a pipe (reverse recovery must still
+    # escape a front obstacle), so shrink both halves to the footprint. Turn
+    # collapses to the same tiny box — turning is impossible in a passage this
+    # tight, so there is no wider "turn" allowance to fall back to.
+    PolygonStopFront:
+      points: [0.18, 0.175, 0.18, -0.175, -0.06, -0.175, -0.06, 0.175]
+    PolygonStopRear:
+      points: [0.06, 0.175, 0.06, -0.175, -0.18, -0.175, -0.18, 0.175]
     PolygonStopTurn:
       points: [0.18, 0.175, 0.18, -0.175, -0.18, -0.175, -0.18, 0.175]
     PolygonSlow:

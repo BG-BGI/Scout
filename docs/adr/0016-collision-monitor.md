@@ -152,3 +152,32 @@ Verify (Pi): drive straight between two obstacles narrower than 0.42 m but
 wider than the chassis — confirm no stop; command a real turn/pivot near an
 obstacle — confirm the wide zone still catches it; watch `/collision_monitor/
 zone_mode` transition during a mixed drive (straight → turn → straight).
+
+## Addendum 2026-08-17b — reverse split unblocks BackUp recovery
+
+**Symptom:** nav2 hits an obstacle and dies in place instead of recovering.
+The upstream BT's RoundRobin recovery *includes* `BackUp`, but the reverse
+command it issues is zeroed by the collision monitor: a single symmetric stop
+box counts scan points geometrically and never inspects the Twist (same
+direction-blindness as the side-obstacle case above, in the fore/aft axis).
+An obstacle in the front stop box therefore vetoes the reverse escape too —
+the robot deadlocks against the thing that stopped it, burns 6 RecoveryNode
+retries, and aborts.
+
+**Fix:** split the STOP zone in vx as well as yaw. `PolygonStopStraight` is
+replaced by `PolygonStopFront` (front half, +0.24/−0.06, ±0.175 side,
+default-enabled) and `PolygonStopRear` (mirror, +0.06/−0.24, default-
+disabled); `PolygonStopTurn` (full symmetric wide box) is unchanged.
+`collision_polygon_manager` now derives a 3-way mode from `/cmd_vel_out` —
+turn > reverse > forward — enabling exactly one polygon. Reversing frees the
+front half so `BackUp` escapes a front obstacle while the rear box still
+stops it before a wall behind. Reverse uses the same enter/exit/dwell
+hysteresis as turn (`reverse_enter_m_s` 0.03 / `reverse_exit_m_s` 0.01 /
+`reverse_exit_dwell_s` 0.3). `zone_mode` now reports `forward|reverse|turn`.
+The ±0.06 overlap at base_link leaves no coverage gap during a front↔rear
+swap. `tight_tunnel` overlay carries the same front/rear split at footprint
+size.
+
+**Verify (Pi):** park an obstacle ~0.20 m in front, send a nav goal past it,
+confirm the robot backs up (not just sits) and re-plans; watch `zone_mode` go
+`forward→reverse` as `BackUp` fires and a rear obstacle still stops the backup.
