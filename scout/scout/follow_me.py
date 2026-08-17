@@ -166,15 +166,17 @@ class FollowMe(Node):
         self._last_depth_proc = 0.0
         self._cam_rot = None           # camera optical -> base_link, cached
         self._cam_trans = None
-        self._tf_buffer = tf2_ros.Buffer()
-        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+        # TF buffer/listener, scan sub and depth sub are all created only
+        # while active (_on_start / _halt) — every TF lookup in this node
+        # (_odom_pose, _resolve_camera_tf) is only ever reached from
+        # _on_scan/_on_depth/_tick, which are themselves active-gated, so an
+        # idle TransformListener was doing nothing but deserializing the
+        # whole system's /tf traffic for free — measured as real idle CPU.
+        self._tf_buffer = None
+        self._tf_listener = None
 
         self._cmd = CmdVelSource(self, 'follow', hz=publish_hz)
         self._status_pub = self.create_publisher(String, 'follow_status', 10)
-        # Scan/depth subscriptions are created only while active (_on_start /
-        # _halt) — otherwise rclpy deserializes every lidar scan and every
-        # depth frame forever just to have _on_scan/_on_depth immediately
-        # discard them, which measured as real idle CPU cost.
         self._scan_sub = None
         self._depth_sub = None
         self.create_service(Trigger, 'follow_me/start', self._on_start)
@@ -198,6 +200,8 @@ class FollowMe(Node):
         self._search_tracks = []
         self._vx_out = 0.0
         if self._scan_sub is None:
+            self._tf_buffer = tf2_ros.Buffer()
+            self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
             self._scan_sub = self.create_subscription(
                 LaserScan, 'scan', self._on_scan, qos_profile_sensor_data)
             self._depth_sub = self.create_subscription(
@@ -232,6 +236,13 @@ class FollowMe(Node):
             self.destroy_subscription(self._depth_sub)
             self._scan_sub = None
             self._depth_sub = None
+            # tf2_ros.TransformListener has no public teardown; its two
+            # subscriptions (tf_sub/tf_static_sub) are the standard
+            # workaround to actually stop it rather than just dropping refs.
+            self.destroy_subscription(self._tf_listener.tf_sub)
+            self.destroy_subscription(self._tf_listener.tf_static_sub)
+            self._tf_listener = None
+            self._tf_buffer = None
         self._set_status('idle')
 
     # --- perception ---------------------------------------------------------------
