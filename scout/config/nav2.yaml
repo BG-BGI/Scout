@@ -217,13 +217,16 @@ controller_server:
 
       # --- DWB: kinematics -------------------------------------------------------------
       debug_trajectory_details: True
-      # 0.6 m/s (raised from 0.35 on 2026-08-14 — LLM-driven operation felt timid), still
-      # well under the driver's 1.0 m/s ceiling. Scan smear at 12.3 Hz lidar rotation is
-      # ~5 cm/rev at 0.6, about one 5 cm map cell (was ~3 cm at 0.35; 8 cm at 1.0). The
-      # tight_tunnel profile overlay (config/overlays/tight_tunnel/nav2.yaml) keeps 0.35 —
-      # precision work stays slow; open-floor driving does not have to.
-      max_vel_x: 0.6
-      max_speed_xy: 0.6
+      # 0.35 m/s (lowered from 0.6 on 2026-08-17 — robot wedged on a thin table leg; at
+      # 0.6 the leg strobed in the local costmap faster than observation_persistence 1.0
+      # could hold it, and stopping distance was too long). 0.6 was raised 2026-08-14 for
+      # LLM-driven operation feeling timid, but thin-obstacle marking is the binding
+      # constraint on open floor with furniture. Scan smear at 12.3 Hz is ~3 cm/rev at
+      # 0.35 (was ~5 cm at 0.6). The tight_tunnel overlay already pins 0.35 for precision.
+      # If detection holds at 0.35, raise local obstacle_layer observation_persistence
+      # (1.0 -> ~2.0) as the durable fix, then this can go back up.
+      max_vel_x: 0.35
+      max_speed_xy: 0.35
       # ⚠ Reverse is OFF for now (0.0, so DWB only samples forward motion and in-place
       # rotation). A pipe with no room to turn around will eventually need it — set this
       # to about -0.15 and expect DWB to be mediocre at it, since it only samples
