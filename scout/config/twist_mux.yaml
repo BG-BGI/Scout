@@ -1,18 +1,21 @@
-# twist_mux: the cmd_vel arbiter. Every motion producer publishes to its own
-# per-source topic; twist_mux forwards the highest-priority input that is fresh
-# (published within its timeout) to /cmd_vel_out, which the collision monitor
-# guards into /cmd_vel_safe for roboclaw_driver (ADR-0016).
+# twist_mux (FINAL stage): the human-override arbiter. Merges the two HUMAN
+# teleop sources with the collision-guarded autonomous stream and the e-stop
+# brake, and forwards the winner straight to the driver — teleop does NOT pass
+# through the collision monitor (operator decision 2026-08-17).
 #
-# Topology (see ADR-0001): nav2 keeps publishing plain /cmd_vel (velocity_smoother
-# AND behavior_server's direct output both land there) — that IS the nav input at
-# the lowest priority, so upstream nav2 needs no change and any legacy raw /cmd_vel
-# publisher still drives, just below everyone else. The per-source topic names are
-# mirrored in robot_profile.yaml (the publishers read them from there).
+# Two-stage topology (ADR-0001 rev, ADR-0016 rev):
+#   autonomous:  trick/follow/skills/nav -> twist_mux_auto -> /cmd_vel_auto
+#                -> collision_monitor -> /cmd_vel_safe  (guarded)
+#   human:       joystick, web  ------------------------------\
+#   guarded auto:/cmd_vel_safe  (prio 10) --------------------- THIS mux -> /cmd_vel_out -> roboclaw
+#   brake:       /cmd_vel_stop (prio 255)
+# So the collision monitor still vetoes every AUTONOMOUS source, while a human
+# on the joystick or the webui keeps full authority (they can see the robot).
+# See scout/config/twist_mux_auto.yaml and collision_monitor.yaml.
 #
-# Priorities: physical operator (joystick) > remote human (web/Foxglove) > the
-# autonomous behaviors (trick > follow > skills) > nav2. The `stop` input sits
-# ABOVE the estop lock so the estop node can actively brake through an engaged
-# lock (see the locks section + ADR-0001).
+# Priorities: brake > physical operator (joystick) > remote human (web) >
+# collision-guarded autonomous. The `stop` input sits ABOVE the estop lock so
+# the estop node can actively brake through an engaged lock (see locks + ADR-0001).
 twist_mux:
   ros__parameters:
     topics:
@@ -28,26 +31,18 @@ twist_mux:
         topic: /cmd_vel_web
         timeout: 0.5
         priority: 90
-      trick:
-        topic: /cmd_vel_trick
-        timeout: 0.5
-        priority: 60
-      follow:
-        topic: /cmd_vel_follow
-        timeout: 0.5
-        priority: 50
-      skills:
-        topic: /cmd_vel_skills
-        timeout: 0.5
-        priority: 40
-      nav:
-        topic: /cmd_vel
+      auto:
+        # Collision-monitor output: the guarded merge of every autonomous
+        # source (twist_mux_auto -> collision_monitor -> /cmd_vel_safe).
+        topic: /cmd_vel_safe
         timeout: 0.5
         priority: 10
     locks:
       # estop lock blocks every input BELOW priority 200 (joystick 100, web 90,
-      # ...), but the stop input at 255 stays above it so /cmd_vel_stop can pass
-      # for active braking while everything else is locked out.
+      # auto 10) — human teleop included — but the stop input at 255 stays above
+      # it so /cmd_vel_stop can pass for active braking while everything else is
+      # locked out. The e-stop still binds teleop; only the collision monitor
+      # was removed from the teleop path.
       #
       # Fail-safe: the estop node publishes /estop at 5 Hz, so a 1.0 s timeout
       # means a dead estop node (no heartbeat) goes stale = LOCKED and parks the

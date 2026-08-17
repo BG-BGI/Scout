@@ -1,10 +1,12 @@
 # nav2_collision_monitor — the last-hop safety stage (ADR-0016).
 #
-# Sits BETWEEN twist_mux and the driver:
-#   /cmd_vel_out (mux winner) -> collision_monitor -> /cmd_vel_safe -> roboclaw
-# so it guards EVERY motion source (joystick, webui, tricks, follow_me,
-# skills, nav2), unlike nav2's costmaps which only constrain nav goals. It is
-# what stands between a latched/runaway command and furniture.
+# Sits on the AUTONOMOUS branch, between twist_mux_auto and the final mux:
+#   twist_mux_auto (autonomous winner) -> /cmd_vel_auto -> collision_monitor
+#   -> /cmd_vel_safe -> final twist_mux (`auto`, prio 10) -> roboclaw
+# so it guards every AUTONOMOUS source (tricks, follow_me, skills, nav2),
+# unlike nav2's costmaps which only constrain nav goals. Human teleop
+# (joystick, webui) bypasses it and keeps full authority (operator decision
+# 2026-08-17) — the operator can see the robot; the estop lock still binds it.
 #
 # Verified against nav2 1.1.20 source: the per-polygon point threshold is
 # `max_points` (points > max_points triggers; renamed min_points only in
@@ -49,7 +51,10 @@ collision_monitor:
   ros__parameters:
     base_frame_id: "base_link"
     odom_frame_id: "odom"
-    cmd_vel_in_topic: "/cmd_vel_out"
+    # Guards the AUTONOMOUS stream only (twist_mux_auto winner). Human teleop
+    # (joystick/web) bypasses this stage entirely — operator decision
+    # 2026-08-17. /cmd_vel_safe re-enters the final twist_mux as `auto` (prio 10).
+    cmd_vel_in_topic: "/cmd_vel_auto"
     cmd_vel_out_topic: "/cmd_vel_safe"
     # Matches the stack-wide 0.5 tolerance (nav2.yaml) — the 0.1 upstream
     # default throws on the Pi's TF latency.

@@ -56,7 +56,7 @@ def _camera_setup(context, *args, **kwargs):
 
 
 def _safety_setup(context, *args, **kwargs):
-    # Last-hop collision monitor (ADR-0016): /cmd_vel_out -> /cmd_vel_safe.
+    # Autonomous-branch collision monitor (ADR-0016): /cmd_vel_auto -> /cmd_vel_safe.
     # Profile-aware (tight_tunnel shrinks the polygons), so resolved here like
     # the camera config. It is a lifecycle node — the manager activates it.
     profile = LaunchConfiguration('profile').perform(context)
@@ -99,6 +99,17 @@ def generate_launch_description():
     # The camera stays outside the tier — it lives behind rs_launch.py's own
     # include, so there is no Node action here to target; its death surfaces
     # as /imu/data silence -> EKF yaw stale -> health_monitor.
+    # Stage 1: autonomous-only arbiter -> /cmd_vel_auto -> collision_monitor.
+    twist_mux_auto = Node(
+        package='twist_mux',
+        executable='twist_mux',
+        name='twist_mux_auto',
+        output='screen',
+        parameters=[os.path.join(config, 'twist_mux_auto.yaml')],
+        remappings=[('cmd_vel_out', '/cmd_vel_auto')],
+    )
+    # Stage 2 (final): human teleop + collision-guarded autonomous + estop
+    # brake -> /cmd_vel_out -> driver. Teleop bypasses the collision monitor.
     twist_mux = Node(
         package='twist_mux',
         executable='twist_mux',
@@ -118,9 +129,11 @@ def generate_launch_description():
         name='roboclaw_driver',
         output='screen',
         parameters=[os.path.join(config, 'roboclaw.yaml')],
-        # /cmd_vel_safe = collision-monitor output (ADR-0016); the driver no
-        # longer hears the mux directly.
-        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_safe')],
+        # /cmd_vel_out = FINAL twist_mux output (human teleop + collision-
+        # guarded autonomous + estop brake). Teleop bypasses the collision
+        # monitor; the CM guards only the autonomous branch (/cmd_vel_safe,
+        # the mux's `auto` input). Operator decision 2026-08-17.
+        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_out')],
     )
     gyro_calibrator = Node(
         package='scout',
@@ -162,7 +175,8 @@ def generate_launch_description():
         # cmd_vel arbiter: every motion source publishes its own /cmd_vel_* topic;
         # twist_mux forwards the highest-priority fresh one to /cmd_vel_out. Lives
         # in this container so the whole motion chain (mux + driver) dies together.
-        # See scout/config/twist_mux.yaml and ADR-0001.
+        # See scout/config/twist_mux.yaml, twist_mux_auto.yaml and ADR-0001.
+        twist_mux_auto,
         twist_mux,
 
         # Software e-stop: publishes the twist_mux /estop lock heartbeat (5 Hz,
@@ -360,6 +374,8 @@ def generate_launch_description():
         ),
 
         # Fail-fast tier: these dying makes the stack lie (see _fail_fast).
+        _fail_fast(twist_mux_auto,
+                   'twist_mux_auto exited — autonomous cmd_vel arbitration dead'),
         _fail_fast(twist_mux, 'twist_mux exited — cmd_vel arbitration dead'),
         _fail_fast(estop, 'estop exited — mux lock heartbeat dead'),
         _fail_fast(roboclaw, 'roboclaw_driver exited — drivetrain dead'),

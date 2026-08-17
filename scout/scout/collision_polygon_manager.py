@@ -21,7 +21,7 @@ separate nodes:
    mutually-exclusive stop polygons in collision_monitor.yaml
    (PolygonStopFront, front half + narrow sides; PolygonStopRear, rear half
    + narrow sides; PolygonStopTurn, the original full-box wide sides), and
-   this node watches `/cmd_vel_out` (the SAME commanded Twist
+   this node watches `/cmd_vel_auto` (the SAME commanded Twist
    collision_monitor reads — reacting to what's about to be commanded, not
    lagging behind measured odometry) and live-toggles which one is
    `enabled` via collision_monitor's own `set_parameters` service (the
@@ -29,7 +29,7 @@ separate nodes:
    immediately, no lifecycle transition needed).
 
    ⚠ One-tick latency is inherent: our node and collision_monitor's own
-   subscription both receive the same `/cmd_vel_out` message via DDS fan-out
+   subscription both receive the same `/cmd_vel_auto` message via DDS fan-out
    with no ordering guarantee, so a transition only reliably applies from
    the NEXT commanded message onward, not the one that triggered it. At
    20–50 Hz that is ≤50 ms — folded into the existing stop-box margin, not a
@@ -131,7 +131,9 @@ class CollisionPolygonManager(Node):
             Bool, '/collision_monitor/bypassed', LATCHED_QOS)
         self._mode_pub = self.create_publisher(
             String, '/collision_monitor/zone_mode', LATCHED_QOS)
-        self.create_subscription(Twist, '/cmd_vel_out', self._on_cmd_vel, 10)
+        # collision_monitor's INPUT (the autonomous stream). Teleop bypasses
+        # the CM, so only autonomous commands drive the direction-aware zones.
+        self.create_subscription(Twist, '/cmd_vel_auto', self._on_cmd_vel, 10)
         self.create_service(
             Trigger, '/collision_monitor/bypass_engage', self._on_engage)
         self.create_service(

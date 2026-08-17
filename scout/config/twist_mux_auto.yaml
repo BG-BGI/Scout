@@ -1,0 +1,31 @@
+# twist_mux_auto (STAGE 1): the AUTONOMOUS arbiter. Merges every non-human
+# motion source into one stream, /cmd_vel_auto, which the collision monitor
+# guards into /cmd_vel_safe before it re-enters the final twist_mux as the
+# lowest-priority `auto` input (see twist_mux.yaml, collision_monitor.yaml).
+#
+# Human teleop (joystick, web) is deliberately NOT here — it bypasses the
+# collision monitor and enters the final mux directly (operator decision
+# 2026-08-17). Inter-autonomous priority is preserved here: trick > follow >
+# skills > nav, exactly as before the split.
+#
+# No estop lock and no /cmd_vel_stop input on this stage — both live on the
+# final mux so the e-stop binds teleop AND autonomous in one place.
+twist_mux_auto:
+  ros__parameters:
+    topics:
+      trick:
+        topic: /cmd_vel_trick
+        timeout: 0.5
+        priority: 60
+      follow:
+        topic: /cmd_vel_follow
+        timeout: 0.5
+        priority: 50
+      skills:
+        topic: /cmd_vel_skills
+        timeout: 0.5
+        priority: 40
+      nav:
+        topic: /cmd_vel
+        timeout: 0.5
+        priority: 10
