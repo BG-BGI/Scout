@@ -1,0 +1,302 @@
+captures:
+- battery_v: 18.799999237060547
+  photo: wp01.jpg
+  pose:
+    x: -4.448
+    y: 1.232
+    yaw: -0.241
+  reached: true
+  target:
+    x: -4.519
+    y: 1.112
+    yaw: 0.0
+  time: '2026-08-14 12:41:11'
+  waypoint: 1
+- battery_v: 18.799999237060547
+  photo: wp02.jpg
+  pose:
+    x: -3.856
+    y: 1.108
+    yaw: -0.124
+  reached: true
+  target:
+    x: -3.719
+    y: 1.112
+    yaw: 0.0
+  time: '2026-08-14 12:41:15'
+  waypoint: 2
+- battery_v: 18.799999237060547
+  photo: wp03.jpg
+  pose:
+    x: -2.351
+    y: 2.177
+    yaw: 3.354
+  reached: true
+  target:
+    x: -2.169
+    y: 2.112
+    yaw: 3.142
+  time: '2026-08-14 12:41:49'
+  waypoint: 3
+- battery_v: 18.799999237060547
+  photo: wp04.jpg
+  pose:
+    x: -2.594
+    y: 2.162
+    yaw: 3.01
+  reached: true
+  target:
+    x: -2.819
+    y: 2.112
+    yaw: 3.142
+  time: '2026-08-14 12:41:52'
+  waypoint: 4
+- battery_v: 18.799999237060547
+  photo: wp05.jpg
+  pose:
+    x: -3.322
+    y: 2.174
+    yaw: 3.319
+  reached: true
+  target:
+    x: -3.419
+    y: 2.112
+    yaw: 3.142
+  time: '2026-08-14 12:42:24'
+  waypoint: 5
+- battery_v: 18.799999237060547
+  photo: wp06.jpg
+  pose:
+    x: -3.981
+    y: 2.12
+    yaw: 3.168
+  reached: true
+  target:
+    x: -4.119
+    y: 2.112
+    yaw: 3.142
+  time: '2026-08-14 12:42:28'
+  waypoint: 6
+- battery_v: 18.799999237060547
+  photo: wp07.jpg
+  pose:
+    x: -4.167
+    y: 2.106
+    yaw: 3.145
+  reached: true
+  target:
+    x: -4.319
+    y: 2.112
+    yaw: 3.142
+  time: '2026-08-14 12:42:32'
+  waypoint: 7
+- battery_v: 18.799999237060547
+  photo: wp08.jpg
+  pose:
+    x: -4.728
+    y: 2.084
+    yaw: 3.114
+  reached: true
+  target:
+    x: -4.869
+    y: 2.112
+    yaw: 3.142
+  time: '2026-08-14 12:42:36'
+  waypoint: 8
+- battery_v: 18.799999237060547
+  photo: wp09.jpg
+  pose:
+    x: -5.838
+    y: 2.987
+    yaw: 0.066
+  reached: true
+  target:
+    x: -5.869
+    y: 3.112
+    yaw: 0.0
+  time: '2026-08-14 12:42:48'
+  waypoint: 9
+- battery_v: 18.799999237060547
+  photo: wp10.jpg
+  pose:
+    x: -5.371
+    y: 2.989
+    yaw: -0.102
+  reached: true
+  target:
+    x: -5.119
+    y: 3.112
+    yaw: 0.0
+  time: '2026-08-14 12:42:52'
+  waypoint: 10
+- battery_v: 18.700000762939453
+  photo: wp11.jpg
+  pose:
+    x: -3.319
+    y: 3.048
+    yaw: 0.046
+  reached: true
+  target:
+    x: -3.419
+    y: 3.112
+    yaw: 0.0
+  time: '2026-08-14 12:44:43'
+  waypoint: 11
+- battery_v: 18.700000762939453
+  photo: wp12.jpg
+  pose:
+    x: -2.444
+    y: 3.106
+    yaw: 0.238
+  reached: true
+  target:
+    x: -2.269
+    y: 3.112
+    yaw: 0.0
+  time: '2026-08-14 12:44:50'
+  waypoint: 12
+- battery_v: 18.700000762939453
+  photo: wp13.jpg
+  pose:
+    x: 1.195
+    y: 4.084
+    yaw: 2.993
+  reached: true
+  target:
+    x: 1.331
+    y: 4.112
+    yaw: 3.142
+  time: '2026-08-14 12:45:16'
+  waypoint: 13
+- battery_v: 18.700000762939453
+  photo: wp14.jpg
+  pose:
+    x: -0.944
+    y: 4.007
+    yaw: 3.019
+  reached: true
+  target:
+    x: -1.069
+    y: 4.112
+    yaw: 3.142
+  time: '2026-08-14 12:45:25'
+  waypoint: 14
+- battery_v: 18.700000762939453
+  photo: wp15.jpg
+  pose:
+    x: -2.145
+    y: 3.512
+    yaw: 3.003
+  reached: false
+  target:
+    x: -3.269
+    y: 4.112
+    yaw: 3.142
+  time: '2026-08-14 12:47:27'
+  waypoint: 15
+- battery_v: 18.700000762939453
+  photo: wp16.jpg
+  pose:
+    x: -3.857
+    y: 4.182
+    yaw: 3.322
+  reached: true
+  target:
+    x: -3.769
+    y: 4.112
+    yaw: 3.142
+  time: '2026-08-14 12:48:27'
+  waypoint: 16
+- battery_v: 18.600000381469727
+  photo: wp17.jpg
+  pose:
+    x: -5.251
+    y: 4.317
+    yaw: 3.32
+  reached: true
+  target:
+    x: -5.069
+    y: 4.112
+    yaw: 3.142
+  time: '2026-08-14 12:48:47'
+  waypoint: 17
+- battery_v: 18.700000762939453
+  photo: wp18.jpg
+  pose:
+    x: -6.323
+    y: 4.108
+    yaw: 3.151
+  reached: true
+  target:
+    x: -6.469
+    y: 4.112
+    yaw: 3.142
+  time: '2026-08-14 12:48:53'
+  waypoint: 18
+- battery_v: 18.600000381469727
+  photo: wp19.jpg
+  pose:
+    x: -5.008
+    y: 4.979
+    yaw: 0.236
+  reached: true
+  target:
+    x: -4.969
+    y: 5.112
+    yaw: 0.0
+  time: '2026-08-14 12:49:15'
+  waypoint: 19
+- battery_v: 18.600000381469727
+  photo: wp20.jpg
+  pose:
+    x: -4.325
+    y: 5.094
+    yaw: 0.083
+  reached: true
+  target:
+    x: -4.169
+    y: 5.112
+    yaw: 0.0
+  time: '2026-08-14 12:49:20'
+  waypoint: 20
+- battery_v: 18.600000381469727
+  photo: wp21.jpg
+  pose:
+    x: -4.008
+    y: 5.115
+    yaw: 0.042
+  reached: true
+  target:
+    x: -3.869
+    y: 5.112
+    yaw: 0.0
+  time: '2026-08-14 12:49:23'
+  waypoint: 21
+- battery_v: 18.600000381469727
+  photo: wp22.jpg
+  pose:
+    x: -3.606
+    y: 5.135
+    yaw: -0.099
+  reached: true
+  target:
+    x: -3.469
+    y: 5.112
+    yaw: 0.0
+  time: '2026-08-14 12:49:27'
+  waypoint: 22
+- battery_v: 18.600000381469727
+  photo: wp23.jpg
+  pose:
+    x: -2.853
+    y: 5.038
+    yaw: 3.723
+  reached: false
+  target:
+    x: -2.369
+    y: 5.112
+    yaw: 0.0
+  time: '2026-08-14 12:50:05'
+  waypoint: 23
+ended: stopped by operator
+route_file: /ros_ws/src/maps/patrol_route.yaml

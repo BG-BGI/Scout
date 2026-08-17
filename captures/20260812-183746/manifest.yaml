@@ -1,0 +1,16 @@
+captures:
+- battery_v: 16.399999618530273
+  photo: wp01.jpg
+  pose:
+    x: -0.66
+    y: 0.063
+    yaw: 0.446
+  reached: true
+  target:
+    x: -0.755
+    y: -0.055
+    yaw: 0.666
+  time: '2026-08-12 18:38:10'
+  waypoint: 1
+ended: "battery 16.4 V < 17.0 \u2014 aborted"
+route_file: /ros_ws/src/maps/patrol_route.yaml

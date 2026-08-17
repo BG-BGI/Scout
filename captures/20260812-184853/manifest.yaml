@@ -1,0 +1,68 @@
+captures:
+- battery_v: 20.0
+  photo: wp01.jpg
+  pose:
+    x: -0.642
+    y: 0.024
+    yaw: 0.414
+  reached: true
+  target:
+    x: -0.755
+    y: -0.055
+    yaw: 0.666
+  time: '2026-08-12 18:49:30'
+  waypoint: 1
+- battery_v: 20.100000381469727
+  photo: wp02.jpg
+  pose:
+    x: -0.642
+    y: 0.024
+    yaw: 0.275
+  reached: true
+  target:
+    x: -0.754
+    y: -0.055
+    yaw: 0.064
+  time: '2026-08-12 18:49:34'
+  waypoint: 2
+- battery_v: 20.0
+  photo: wp03.jpg
+  pose:
+    x: -0.642
+    y: 0.024
+    yaw: 0.275
+  reached: true
+  target:
+    x: -0.755
+    y: -0.056
+    yaw: 0.073
+  time: '2026-08-12 18:49:35'
+  waypoint: 3
+- battery_v: 20.100000381469727
+  photo: wp04.jpg
+  pose:
+    x: -0.642
+    y: 0.024
+    yaw: 0.276
+  reached: true
+  target:
+    x: -0.755
+    y: -0.056
+    yaw: 0.073
+  time: '2026-08-12 18:49:37'
+  waypoint: 4
+- battery_v: 20.0
+  photo: wp05.jpg
+  pose:
+    x: -0.049
+    y: -0.015
+    yaw: -0.846
+  reached: true
+  target:
+    x: -0.033
+    y: -0.057
+    yaw: -1.056
+  time: '2026-08-12 18:49:51'
+  waypoint: 5
+ended: stopped by operator
+route_file: /ros_ws/src/maps/patrol_route.yaml

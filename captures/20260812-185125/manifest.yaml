@@ -1,0 +1,133 @@
+captures:
+- battery_v: 20.0
+  photo: wp01.jpg
+  pose:
+    x: -0.193
+    y: 0.115
+    yaw: -0.306
+  reached: true
+  target:
+    x: -0.112
+    y: 0.01
+    yaw: -0.045
+  time: '2026-08-12 18:51:32'
+  waypoint: 1
+- battery_v: 20.0
+  photo: wp02.jpg
+  pose:
+    x: 1.967
+    y: -1.154
+    yaw: -0.378
+  reached: true
+  target:
+    x: 2.1
+    y: -1.123
+    yaw: -0.591
+  time: '2026-08-12 18:51:49'
+  waypoint: 2
+- battery_v: 20.0
+  photo: wp03.jpg
+  pose:
+    x: 3.314
+    y: -1.577
+    yaw: -0.322
+  reached: true
+  target:
+    x: 3.438
+    y: -1.67
+    yaw: -0.142
+  time: '2026-08-12 18:51:56'
+  waypoint: 3
+- battery_v: 20.0
+  photo: wp04.jpg
+  pose:
+    x: 4.513
+    y: -1.404
+    yaw: 0.894
+  reached: true
+  target:
+    x: 4.577
+    y: -1.287
+    yaw: 1.132
+  time: '2026-08-12 18:52:04'
+  waypoint: 4
+- battery_v: 20.0
+  photo: wp05.jpg
+  pose:
+    x: 4.933
+    y: -0.575
+    yaw: 2.231
+  reached: true
+  target:
+    x: 4.936
+    y: -0.438
+    yaw: 2.476
+  time: '2026-08-12 18:52:14'
+  waypoint: 5
+- battery_v: 20.0
+  photo: wp06.jpg
+  pose:
+    x: 2.623
+    y: 1.365
+    yaw: 2.625
+  reached: true
+  target:
+    x: 2.497
+    y: 1.431
+    yaw: 2.568
+  time: '2026-08-12 18:52:25'
+  waypoint: 6
+- battery_v: 19.899999618530273
+  photo: wp07.jpg
+  pose:
+    x: 1.609
+    y: 1.905
+    yaw: 2.319
+  reached: true
+  target:
+    x: 1.547
+    y: 2.024
+    yaw: 2.567
+  time: '2026-08-12 18:52:32'
+  waypoint: 7
+- battery_v: 19.899999618530273
+  photo: wp08.jpg
+  pose:
+    x: 0.396
+    y: 2.852
+    yaw: 2.81
+  reached: true
+  target:
+    x: 0.308
+    y: 2.754
+    yaw: 2.584
+  time: '2026-08-12 18:52:45'
+  waypoint: 8
+- battery_v: 19.899999618530273
+  photo: wp09.jpg
+  pose:
+    x: -2.014
+    y: 3.134
+    yaw: 3.928
+  reached: true
+  target:
+    x: -2.078
+    y: 3.017
+    yaw: 4.09
+  time: '2026-08-12 18:52:56'
+  waypoint: 9
+- battery_v: 19.899999618530273
+  photo: wp10.jpg
+  pose:
+    x: -1.228
+    y: 0.584
+    yaw: -0.806
+  reached: true
+  target:
+    x: -1.134
+    y: 0.476
+    yaw: -0.769
+  time: '2026-08-12 18:53:07'
+  waypoint: 10
+ended: route complete
+route_file: /ros_ws/src/maps/patrol_route.yaml
