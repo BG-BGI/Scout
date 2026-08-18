@@ -40,6 +40,20 @@ from tf import TfTree
 
 mcp = FastMCP("scout-skills")
 
+# Fold ros-mcp's raw ROS primitives into this same endpoint (2026-08-18) so
+# Magnus needs only one connector/one serverUrl instead of two. ros_mcp still
+# runs as its own compose service on 127.0.0.1:9000 (host networking) — this
+# is a live proxy mount, not a fork/vendor of its code, so its 3.1.0 pin and
+# release cadence are untouched. No `prefix` -> tool names stay exactly what
+# they were on port 9000 (ping_robots, publish_once, send_action_goal, ...),
+# so nothing on the Magnus side has to be renamed. `mcp.mount` is sync and
+# only registers the link; ros-mcp's HTTP endpoint just needs to be up by the
+# time a client actually calls a proxied tool, not at import time.
+from fastmcp import Client as _FastMcpClient  # noqa: E402
+
+_ROS_MCP_URL = os.environ.get("ROS_MCP_URL", "http://127.0.0.1:9000/mcp")
+mcp.mount(FastMCP.as_proxy(_FastMcpClient(_ROS_MCP_URL)))
+
 # action_msgs/msg/GoalStatus values.
 NAV_STATUS = {
     0: "unknown",
