@@ -27,6 +27,7 @@ import math
 import os
 from datetime import datetime, timezone
 
+import httpx
 import numpy as np
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -687,14 +688,20 @@ async def nav_cancel() -> dict:
 
 # --- frontier exploration (explore_lite, compose profile `explore`) ---------
 #
-# The container is profile-gated and STAYS operator-started (`docker compose
-# --profile explore up -d explore`) — mounting the docker socket into a
-# no-auth LAN MCP container would let anyone on the LAN root the Pi, so this
-# server only pauses/resumes a running explorer via its /explore/resume Bool
-# subscription. rosapi (launched with rosbridge_websocket) tells us whether
-# the node is up at all.
+# The container is profile-gated: `docker compose --profile explore up -d
+# explore` creates it once, after which `explore_start` below can bring a
+# STOPPED container back up through fleet_status's container API
+# (http://127.0.0.1:9002, docker socket lives THERE, scoped to this compose
+# project) — mounting the docker socket into this no-auth LAN MCP container
+# directly would let anyone on the LAN root the Pi, so lifecycle goes through
+# that narrower API instead. Pause/resume of a RUNNING explorer stays a ROS
+# concern via its /explore/resume Bool subscription; rosapi (launched with
+# rosbridge_websocket) tells us whether the node is up at all.
 
 EXPLORE_RESUME_TOPIC = "/explore/resume"
+FLEET_STATUS_URL = os.environ.get("FLEET_STATUS_URL", "http://127.0.0.1:9002")
+# explore_lite takes a few seconds to boot + subscribe /explore/resume.
+EXPLORE_NODE_WAIT_S = 25.0
 
 # explore_for's auto-pause. Module-level: one budget at a time; a new
 # explore_for replaces it. ⚠ Dies with this server — if the container is
@@ -733,9 +740,10 @@ async def _set_explore(active: bool) -> dict:
     async with RosBridge() as rb:
         if not await _explore_running(rb):
             raise ToolError(
-                "explore node is not running. It is deliberately not startable "
-                "from here — the operator must run "
-                "`docker compose --profile explore up -d explore` on the Pi."
+                "explore node is not running — call explore_start first (it "
+                "restarts the stopped container via fleet_status; if the "
+                "container was never created, the operator must run "
+                "`docker compose --profile explore up -d explore` on the Pi)."
             )
         await rb.publish(
             EXPLORE_RESUME_TOPIC, "std_msgs/msg/Bool", {"data": active}
@@ -745,6 +753,60 @@ async def _set_explore(active: bool) -> dict:
         "explore": "resumed" if active else "paused",
         "robot": robot or "unknown (/pose silent)",
     }
+
+
+@mcp.tool
+async def explore_start() -> dict:
+    """Start the explore container (explore_lite) — ⚠ the robot BEGINS
+    AUTONOMOUS FRONTIER DRIVING within seconds of the node coming up; have
+    your stop path ready (explore_pause + nav_cancel). No-op if the node is
+    already running. Needs the container to have been created once by the
+    operator (`docker compose --profile explore up -d explore`); after that
+    this restarts it from stopped via the fleet-status API. Prefer
+    explore_for immediately after this to bound the run."""
+    async with RosBridge() as rb:
+        if await _explore_running(rb):
+            return {"explore_node": "already running", "started": False}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(
+                f"{FLEET_STATUS_URL}/api/containers/explore/start"
+            )
+    except httpx.HTTPError as e:
+        raise ToolError(
+            f"fleet_status API unreachable at {FLEET_STATUS_URL} ({e!r}) — "
+            "is the fleet_status container up?"
+        ) from e
+    if resp.status_code == 404:
+        raise ToolError(
+            "explore container does not exist yet — the operator must create "
+            "it once on the Pi: `docker compose --profile explore up -d "
+            "explore`. After that, this tool can restart it from stopped."
+        )
+    if resp.status_code != 200:
+        raise ToolError(
+            f"fleet_status refused to start explore: HTTP {resp.status_code} "
+            f"{resp.text[:200]}"
+        )
+    # Container is up; wait for explore_lite to boot and subscribe
+    # /explore/resume so callers can immediately pause/budget it.
+    deadline = asyncio.get_event_loop().time() + EXPLORE_NODE_WAIT_S
+    while True:
+        async with RosBridge() as rb:
+            if await _explore_running(rb):
+                robot = await _robot_pose(rb)
+                return {
+                    "explore_node": "running — robot is now driving itself",
+                    "started": True,
+                    "robot": robot or "unknown (/pose silent)",
+                }
+        if asyncio.get_event_loop().time() > deadline:
+            raise ToolError(
+                "explore container started but the node did not subscribe "
+                f"{EXPLORE_RESUME_TOPIC} within {EXPLORE_NODE_WAIT_S:.0f} s — "
+                "check `docker compose logs explore` on the Pi"
+            )
+        await asyncio.sleep(1.5)
 
 
 @mcp.tool

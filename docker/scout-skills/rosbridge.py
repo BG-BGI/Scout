@@ -27,21 +27,48 @@ class RosBridgeError(RuntimeError):
     pass
 
 
+# One connection at a time, process-wide. rosbridge serializes big frames
+# (a raw D455 image is ~1 MB of base64 JSON) on its side, and a handshake
+# that arrives while it's mid-frame starves past open_timeout — observed as
+# parallel camera_snapshot + rotate calls failing with "timed out during
+# opening handshake". Serializing here means a tool waits its turn instead
+# of erroring; the cost is nav_status polls queue behind a camera pull.
+_conn_lock = asyncio.Lock()
+
+
 class RosBridge:
     def __init__(self, url: str = ROSBRIDGE_URL):
         self._url = url
         self._ws = None
 
     async def __aenter__(self):
-        # max_size=None: a house-sized OccupancyGrid serializes to several MB
-        # of JSON, past websockets' 1 MB default frame cap.
-        self._ws = await websockets.connect(
-            self._url, max_size=None, open_timeout=5
-        )
+        await _conn_lock.acquire()
+        try:
+            # max_size=None: a house-sized OccupancyGrid serializes to several MB
+            # of JSON, past websockets' 1 MB default frame cap.
+            for attempt in (1, 2):
+                try:
+                    self._ws = await websockets.connect(
+                        self._url, max_size=None, open_timeout=10
+                    )
+                    break
+                except (OSError, TimeoutError) as e:
+                    if attempt == 2:
+                        raise RosBridgeError(
+                            "rosbridge websocket connect failed twice "
+                            f"(is the rosbridge container up?): {e!r}"
+                        ) from e
+                    await asyncio.sleep(0.5)
+        except BaseException:
+            _conn_lock.release()
+            raise
         return self
 
     async def __aexit__(self, *exc):
-        await self._ws.close()
+        try:
+            await self._ws.close()
+        finally:
+            _conn_lock.release()
 
     async def _send(self, frame: dict):
         await self._ws.send(json.dumps(frame))
