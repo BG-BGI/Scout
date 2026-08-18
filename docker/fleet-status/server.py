@@ -13,16 +13,25 @@ lifecycle control). Scope is deliberately narrowed here: every action is
 restricted to containers carrying this compose project's label, and this
 service refuses to touch its own container (a self-restart would kill the
 request that triggered it before the response could go out).
+
+Also drives the host's WiFi via `nmcli` (talks to NetworkManager over the
+D-Bus system bus, mounted in at /run/dbus/system_bus_socket). nmcli's
+default (non `--show-secrets`) output never includes PSKs, and every wifi_*
+function here deliberately avoids `--show-secrets` so credentials never
+transit this API even though it has no auth of its own.
 """
 
 import json
 import os
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import docker
 from docker.errors import NotFound
+
+WIFI_IFACE = os.environ.get('WIFI_IFACE', 'wlan0')
 
 PROJECT = os.environ.get('COMPOSE_PROJECT_NAME', 'scout')
 SELF_SERVICE = 'fleet_status'
@@ -159,6 +168,111 @@ def restart_all_bg():
         time.sleep(RESTART_ALL_STAGGER_S)
 
 
+def _nmcli(*args, timeout=15):
+    """Run nmcli, return (ok, stdout/stderr). Never pass --show-secrets."""
+    try:
+        result = subprocess.run(
+            ['nmcli', *args], capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode != 0:
+            return False, result.stderr.strip() or f'nmcli exited {result.returncode}'
+        return True, result.stdout
+    except FileNotFoundError:
+        return False, 'nmcli not installed in this container'
+    except subprocess.TimeoutExpired:
+        return False, 'nmcli timed out'
+
+
+def wifi_status():
+    ok, out = _nmcli('-t', '-f', 'GENERAL.CONNECTION,IP4.ADDRESS', 'device', 'show', WIFI_IFACE)
+    if not ok:
+        return {'connected': False, 'error': out}
+    fields = dict(line.split(':', 1) for line in out.splitlines() if ':' in line)
+    connection = fields.get('GENERAL.CONNECTION', '')
+    ip4 = fields.get('IP4.ADDRESS[1]', '')
+
+    signal = None
+    ok2, out2 = _nmcli('-t', '-f', 'ACTIVE,SSID,SIGNAL', 'device', 'wifi', 'list', 'ifname', WIFI_IFACE)
+    if ok2:
+        for line in out2.splitlines():
+            parts = line.split(':')
+            if len(parts) >= 3 and parts[0] == 'yes':
+                signal = int(parts[-1]) if parts[-1].isdigit() else None
+                break
+
+    return {
+        'connected': bool(connection) and connection != '--',
+        'ssid': connection if connection != '--' else None,
+        'ip4': ip4 or None,
+        'signal': signal,
+    }
+
+
+def wifi_connections():
+    """Known (saved) wifi profiles. nmcli's default output never includes PSKs."""
+    ok, out = _nmcli('-t', '-f', 'NAME,TYPE,AUTOCONNECT,ACTIVE', 'connection', 'show')
+    if not ok:
+        return {'error': out}
+    out_list = []
+    for line in out.splitlines():
+        parts = line.split(':')
+        if len(parts) != 4:
+            continue
+        name, conn_type, autoconnect, active = parts
+        if conn_type != '802-11-wireless':
+            continue
+        out_list.append({
+            'name': name,
+            'autoconnect': autoconnect == 'yes',
+            'active': active == 'yes',
+        })
+    return out_list
+
+
+def wifi_scan():
+    """Nearby SSIDs (rescan). Slower than the other endpoints — call on demand."""
+    ok, out = _nmcli('-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list',
+                      'ifname', WIFI_IFACE, '--rescan', 'yes', timeout=20)
+    if not ok:
+        return {'error': out}
+    seen = set()
+    out_list = []
+    for line in out.splitlines():
+        parts = line.split(':')
+        if len(parts) != 3:
+            continue
+        ssid, signal, security = parts
+        if not ssid or ssid in seen:
+            continue
+        seen.add(ssid)
+        out_list.append({
+            'ssid': ssid,
+            'signal': int(signal) if signal.isdigit() else None,
+            'security': security or None,
+        })
+    out_list.sort(key=lambda r: r['signal'] or 0, reverse=True)
+    return out_list
+
+
+def wifi_connect(name=None, ssid=None, password=None):
+    """Bring up a known profile by name, or a new SSID with a password."""
+    if name:
+        ok, out = _nmcli('connection', 'up', name, timeout=30)
+        return ok, out
+    if ssid:
+        args = ['device', 'wifi', 'connect', ssid, 'ifname', WIFI_IFACE]
+        if password:
+            args += ['password', password]
+        ok, out = _nmcli(*args, timeout=30)
+        return ok, out
+    return False, 'must supply name or ssid'
+
+
+def wifi_forget(name):
+    ok, out = _nmcli('connection', 'delete', name)
+    return ok, out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # docker stats polling every 30s isn't worth the access log
@@ -184,11 +298,50 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, host_stats())
         elif self.path == '/api/containers':
             self._send_json(200, list_containers())
+        elif self.path == '/api/wifi/status':
+            self._send_json(200, wifi_status())
+        elif self.path == '/api/wifi/connections':
+            self._send_json(200, wifi_connections())
+        elif self.path == '/api/wifi/scan':
+            self._send_json(200, wifi_scan())
         else:
             self._send_json(404, {'error': 'not found'})
 
+    def _read_json_body(self):
+        length = int(self.headers.get('Content-Length', 0))
+        if not length:
+            return {}
+        try:
+            return json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            return {}
+
     def do_POST(self):
         parts = self.path.strip('/').split('/')
+
+        if parts[:2] == ['api', 'wifi'] and len(parts) == 3 and parts[2] in ('connect', 'forget'):
+            body = self._read_json_body()
+            if parts[2] == 'connect':
+                ok, out = wifi_connect(
+                    name=body.get('name'), ssid=body.get('ssid'), password=body.get('password'),
+                )
+            else:
+                name = body.get('name')
+                if not name:
+                    self._send_json(400, {'error': 'missing name'})
+                    return
+                conns = wifi_connections()
+                is_active = any(c['name'] == name and c['active'] for c in conns
+                                 if isinstance(conns, list))
+                if is_active and not body.get('force'):
+                    self._send_json(400, {
+                        'error': 'refusing to forget the active connection without force:true '
+                                 '(would strand this session)',
+                    })
+                    return
+                ok, out = wifi_forget(name)
+            self._send_json(200 if ok else 400, {'ok': ok, 'detail': out})
+            return
 
         if parts[:2] == ['api', 'restart-all']:
             threading.Thread(target=restart_all_bg, daemon=True).start()

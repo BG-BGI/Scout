@@ -247,10 +247,14 @@ services:
   # ⚠ No auth — LAN-trust only, same as ros_mcp/scout_skills, but this is the
   # one service that can actually stop/restart the drivetrain/sensor stack —
   # see server.py's docstring before loosening its scope.
+  # ⚠ Also controls the host's WiFi via nmcli over the D-Bus system bus
+  # (mounted below) — privileged: true is needed for nmcli-over-D-Bus to
+  # actually change NetworkManager state, not just read it.
   fleet_status:
     build: docker/fleet-status
     image: scout-fleet-status:latest
     network_mode: host
+    privileged: true
     restart: unless-stopped
     environment:
       - COMPOSE_PROJECT_NAME=scout
@@ -261,6 +265,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
 
 volumes:
   ros_ws_build:

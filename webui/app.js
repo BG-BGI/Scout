@@ -798,3 +798,109 @@ async function refreshSystem() {
 }
 refreshSystem();
 setInterval(refreshSystem, 30000);
+
+// --- network panel: NM known networks + connect/forget ----------------------------
+// Same fleet_status backend, /api/wifi/*. Switching networks risks stranding this
+// very page (served over wlan0), so every mutating action gets an explicit warning
+// in its confirm(). Scan is on-demand only (nmcli rescan is slow) — not polled.
+const netState = document.getElementById('net-state');
+const netStatus = document.getElementById('net-status');
+const netConnections = document.getElementById('net-connections');
+const netRescan = document.getElementById('net-rescan');
+const netScanResults = document.getElementById('net-scan-results');
+const netAddForm = document.getElementById('net-add-form');
+const netAddSsid = document.getElementById('net-add-ssid');
+const netAddPassword = document.getElementById('net-add-password');
+
+function renderNetStatus(s) {
+  if (s.error) {
+    netStatus.textContent = s.error;
+    return;
+  }
+  netStatus.innerHTML = s.connected
+    ? `<span>Connected: ${s.ssid}</span><span>${s.ip4 || ''}</span>${s.signal != null ? `<span>${s.signal}%</span>` : ''}`
+    : '<span>Not connected</span>';
+}
+
+function renderNetConnections(list) {
+  netConnections.innerHTML = '';
+  if (list.error) {
+    netConnections.textContent = list.error;
+    return;
+  }
+  for (const c of list) {
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    row.innerHTML = `
+      <span class="svc-dot ${c.active ? 'running' : 'exited'}"></span>
+      <span class="svc-name">${c.name}</span>
+      <span class="svc-stat">${c.active ? 'active' : c.autoconnect ? 'saved' : 'saved (manual)'}</span>
+      <span class="svc-actions">
+        <button data-act="connect" ${c.active ? 'disabled' : ''}>Connect</button>
+        <button data-act="forget">Forget</button>
+      </span>
+    `;
+    row.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => netAction(c.name, btn.dataset.act, c.active));
+    });
+    netConnections.appendChild(row);
+  }
+}
+
+async function netAction(name, act, wasActive) {
+  const warn = act === 'connect'
+    ? `Switch to "${name}"? If this fails, this page (served over WiFi) may lose connectivity — NetworkManager should fall back automatically.`
+    : `Forget "${name}"? ${wasActive ? 'This is the ACTIVE connection — forgetting it will likely disconnect this session.' : ''}`;
+  if (!confirm(warn)) return;
+  const path = act === 'connect' ? 'connect' : 'forget';
+  const body = act === 'connect' ? { name } : { name, force: wasActive };
+  try {
+    await fetch(`${FLEET_API}/wifi/${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (e) { /* likely stranded mid-switch; next poll (if it comes back) will show it */ }
+  setTimeout(refreshNetwork, 2000);
+}
+
+netRescan.addEventListener('click', async () => {
+  netScanResults.textContent = 'scanning…';
+  try {
+    const results = await fetch(`${FLEET_API}/wifi/scan`).then((r) => r.json());
+    if (results.error) { netScanResults.textContent = results.error; return; }
+    netScanResults.innerHTML = results.map((r) =>
+      `<div class="svc-row"><span class="svc-name">${r.ssid}</span><span class="svc-stat">${r.signal}% ${r.security || 'open'}</span></div>`,
+    ).join('');
+  } catch (e) { netScanResults.textContent = 'scan failed'; }
+});
+
+netAddForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const ssid = netAddSsid.value.trim();
+  const password = netAddPassword.value;
+  if (!ssid) return;
+  if (!confirm(`Connect to "${ssid}"? If this fails, this page (served over WiFi) may lose connectivity.`)) return;
+  try {
+    await fetch(`${FLEET_API}/wifi/connect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ssid, password }),
+    });
+  } catch (e) { /* likely stranded mid-switch */ }
+  netAddPassword.value = '';
+  setTimeout(refreshNetwork, 2000);
+});
+
+async function refreshNetwork() {
+  try {
+    const [status, connections] = await Promise.all([
+      fetch(FLEET_API + '/wifi/status').then((r) => r.json()),
+      fetch(FLEET_API + '/wifi/connections').then((r) => r.json()),
+    ]);
+    netState.textContent = status.connected ? status.ssid : 'disconnected';
+    renderNetStatus(status);
+    renderNetConnections(connections);
+  } catch (e) {
+    netState.textContent = 'offline';
+    netStatus.textContent = 'fleet_status unreachable';
+  }
+}
+refreshNetwork();
+setInterval(refreshNetwork, 30000);
