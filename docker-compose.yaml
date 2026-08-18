@@ -59,6 +59,21 @@ services:
     command: ros2 launch scout robot.launch.py enable_joystick:=true
     # command: ros2 launch scout robot.launch.py enable_joystick:=false camera_config:=realsense_tight_tunnel.yaml
 
+  # App-behavior nodes split out of `robot` for fault isolation (2026-08-18):
+  # trick_player/follow_me/clutter_mapper/patrol_capture are all inert until
+  # triggered and none touch the drivetrain/sensor stack, so a crash or
+  # restart here no longer takes camera/lidar/driver/EKF down with it.
+  behaviors:
+    <<: *base
+    restart: unless-stopped
+    depends_on:
+      - robot
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+    command: sh -c "sleep 3 && ros2 launch scout behaviors.launch.py"
+
   # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
   slam:
     <<: *base

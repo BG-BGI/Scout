@@ -1,6 +1,9 @@
 """Core robot stack: drivetrain, sensors, odom fusion, LED, tilt monitor.
 
-slam / nav2 / foxglove_bridge stay as separate compose services.
+slam / nav2 / foxglove_bridge stay as separate compose services. App-behavior
+nodes (trick_player, follow_me, clutter_mapper, patrol_capture) live in
+behaviors.launch.py / the `behaviors` compose service, split out so a crash
+or restart there doesn't touch the drivetrain/sensor stack here.
 
     ros2 launch scout robot.launch.py
     ros2 launch scout robot.launch.py enable_joystick:=false
@@ -125,41 +128,6 @@ def generate_launch_description():
                 ('explore/resume', '/explore/resume'),
                 ('navigate_to_pose', '/navigate_to_pose'),
             ],
-        ),
-
-        # Trick macros (web UI). Inert until /play_trick is called.
-        Node(
-            package='scout',
-            executable='trick_player',
-            output='screen',
-        ),
-
-        # Lidar follow-me. Inert until /follow_me/start is called.
-        Node(
-            package='scout',
-            executable='follow_me',
-            output='screen',
-        ),
-
-        # Persistent under-lidar clutter layer (chair bases, shoes). Idles
-        # until slam provides map->base_link; saves to /ros_ws/src/maps/.
-        Node(
-            package='scout',
-            executable='clutter_mapper',
-            output='screen',
-            # Persistence off: slam runs mode:=new, so the map frame resets
-            # every boot and a loaded clutter file paints phantom obstacles
-            # at wrong coordinates (poisons nav2 planning). Restore the file
-            # path once slam runs localization/continue on a saved map.
-            parameters=[{'file': ''}],
-        ),
-
-        # Waypoint patrol + pose-stamped photo capture (progress docs).
-        # Inert until /patrol/start; needs slam + nav2 for motion.
-        Node(
-            package='scout',
-            executable='patrol_capture',
-            output='screen',
         ),
 
         # LED arbitration: sole caller of /set_led_mode. Web UI talks to
