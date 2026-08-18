@@ -38,7 +38,10 @@ def generate_launch_description():
             # every boot and a loaded clutter file paints phantom obstacles
             # at wrong coordinates (poisons nav2 planning). Restore the file
             # path once slam runs localization/continue on a saved map.
-            parameters=[{'file': ''}],
+            # process_period 1.0 (up from the 0.3 default): furniture dwells,
+            # so 1 Hz marking loses nothing and the numpy/cell work is the
+            # node's main CPU cost.
+            parameters=[{'file': '', 'process_period': 1.0}],
         ),
 
         # Waypoint patrol + pose-stamped photo capture (progress docs).

@@ -83,9 +83,10 @@ class PatrolCapture(Node):
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._nav = ActionClient(self, NavigateToPose, 'navigate_to_pose')
 
-        self.create_subscription(CompressedImage,
-                                 'camera/camera/color/image_raw/compressed',
-                                 self._on_frame, qos_profile_sensor_data)
+        # Camera frames are only consumed at capture time, and a python
+        # subscriber pays deserialization on every frame regardless of use —
+        # so the subscription exists only while a patrol run is active.
+        self._frame_sub = None
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
         self._grid = None
         self.create_subscription(OccupancyGrid, 'map', self._on_grid, 1)
@@ -313,6 +314,10 @@ class PatrolCapture(Node):
         os.makedirs(self._run_dir, exist_ok=True)
         self._results = []
         self._wp_i = 0
+        if self._frame_sub is None:
+            self._frame_sub = self.create_subscription(
+                CompressedImage, 'camera/camera/color/image_raw/compressed',
+                self._on_frame, qos_profile_sensor_data)
         self._send_goal(0)
         response.success = True
         response.message = 'patrol started: %d waypoints -> %s' \
@@ -391,6 +396,10 @@ class PatrolCapture(Node):
 
     def _finish(self, reason):
         self._cancel_nav()
+        if self._frame_sub is not None:
+            self.destroy_subscription(self._frame_sub)
+            self._frame_sub = None
+            self._last_frame = None
         self._state = 'idle'
         if reason:
             self.get_logger().info('Patrol: %s' % reason)

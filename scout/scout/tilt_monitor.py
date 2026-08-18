@@ -28,6 +28,8 @@ class TiltMonitor(Node):
         self.stillness_gyro = float(
             self.declare_parameter('stillness_gyro', 0.08).value)
         self.hold_s = float(self.declare_parameter('hold_s', 0.5).value)
+        # Per-sample smoothing: effective time constant scales with the input
+        # rate (fed 20 Hz /imu/data_slow, alpha 0.2 -> tau ~0.25 s).
         self.lpf_alpha = float(self.declare_parameter('lpf_alpha', 0.2).value)
 
         self._tilt_lpf = None

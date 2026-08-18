@@ -106,6 +106,7 @@ def generate_launch_description():
             remappings=[
                 ('imu_in', '/camera/camera/imu'),
                 ('imu_out', '/imu/data'),
+                ('imu_out_slow', '/imu/data_slow'),
             ],
         ),
 
@@ -123,7 +124,9 @@ def generate_launch_description():
             executable='tilt_monitor',
             output='screen',
             remappings=[
-                ('imu/data', '/imu/data'),
+                # Decimated 20 Hz stream: tilt detection doesn't need 200 Hz, and
+                # a python node eats ~20% of a core just deserializing the full rate.
+                ('imu/data', '/imu/data_slow'),
                 ('tilt_alarm', '/tilt_alarm'),
                 ('explore/resume', '/explore/resume'),
                 ('navigate_to_pose', '/navigate_to_pose'),
