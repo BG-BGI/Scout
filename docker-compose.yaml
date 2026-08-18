@@ -40,9 +40,22 @@ services:
   # map frame, patrols need the planner, and reboots kept stranding both. The old
   # "latched-goal trap" argument was about killing CLIENTS of a running nav2 — a
   # freshly booted nav2 holds no goal, so autostart adds no unattended motion.
+  #
+  # No `profiles:` => starts on plain `docker compose up -d` (the "dev_mode" set:
+  # camera/motor/LED + webui + bridges, no planner). heavy services below are
+  # gated behind `--profile full` so a boot doesn't fire all 8 launches' worth of
+  # DDS discovery + node bring-up in the same second (measured load avg 13+ on
+  # 4 cores doing that). `deploy.resources.limits.cpus` on each service is a
+  # ceiling, not a reservation -- it exists so one runaway container (nav2's BT,
+  # or a throwaway diagnostic `run`) can't starve the others off the Pi's 4 cores,
+  # which is exactly what aborted a live nav2 goal once (see nav2's comment below).
   robot:
     <<: *base
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
     command: ros2 launch scout robot.launch.py enable_joystick:=true
     # command: ros2 launch scout robot.launch.py enable_joystick:=false camera_config:=realsense_tight_tunnel.yaml
 
@@ -50,10 +63,17 @@ services:
   slam:
     <<: *base
     restart: unless-stopped
-    command: ros2 launch scout slam.launch.py mode:=new
-    # command: ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
-    # command: ros2 launch scout slam.launch.py mode:=localization map:=house
-    # command: ros2 launch scout slam.launch.py mode:=continue map:=office
+    profiles: ["full"]
+    depends_on:
+      - robot
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+    command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=new"
+    # command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml"
+    # command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=localization map:=house"
+    # command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=continue map:=office"
 
   # Path planning and following. Needs `slam` up first for /map and map->odom.
   # Reuses upstream's navigation_launch.py because it owns the cmd_vel plumbing: it
@@ -71,8 +91,15 @@ services:
   nav2:
     <<: *base
     restart: unless-stopped
-    command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2.yaml use_sim_time:=false
-    # command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false
+    profiles: ["full"]
+    depends_on:
+      - slam
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+    command: sh -c "sleep 10 && ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2.yaml use_sim_time:=false"
+    # command: sh -c "sleep 10 && ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false"
 
   # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
   # starts it. Start after robot+slam+nav2 look healthy:
@@ -86,11 +113,19 @@ services:
   explore:
     <<: *base
     profiles: ["explore"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
     command: ros2 launch scout explore.launch.py
 
   foxglove_bridge:
     <<: *base
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
     # network_mode: bridge  # only in WSL
     # ports: ["8765:8765"]  # only in WSL
     command: ros2 run foxglove_bridge foxglove_bridge
@@ -100,6 +135,10 @@ services:
   rosbridge:
     <<: *base
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
     command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 
   # Static files for the web UI (http://scout.local). Serves the bind-mounted
@@ -108,6 +147,10 @@ services:
   webui:
     <<: *base
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
     command: python3 -m http.server 80 --directory /ros_ws/src/webui
 
   # MCP endpoint for Magnus (http://<pi>:9000/mcp, streamable-http). ros-mcp
@@ -124,6 +167,11 @@ services:
     image: scout-ros-mcp:latest
     network_mode: host
     restart: unless-stopped
+    profiles: ["full"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
     command: ros-mcp --transport streamable-http --host 0.0.0.0 --port 9000
 
   # Task-level MCP endpoint for Magnus (http://<pi>:9001/mcp). Same rosbridge-
@@ -150,6 +198,11 @@ services:
     image: scout-skills:latest
     network_mode: host
     restart: unless-stopped
+    profiles: ["full"]
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
     volumes:
       - ./maps:/maps
 
