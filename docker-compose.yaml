@@ -221,6 +221,30 @@ services:
     volumes:
       - ./maps:/maps
 
+  # Backend for the webui System panel (http://<pi>:9002/api/...): host
+  # vitals (cpu/mem/temp/disk/load) + per-container status, and
+  # stop/restart/restart-all buttons. Holds the Docker socket read-write, so
+  # its action endpoints are scoped to only this compose project's
+  # containers (docker/fleet-status/server.py) and it refuses to touch its
+  # own container.
+  # ⚠ No auth — LAN-trust only, same as ros_mcp/scout_skills, but this is the
+  # one service that can actually stop/restart the drivetrain/sensor stack —
+  # see server.py's docstring before loosening its scope.
+  fleet_status:
+    build: docker/fleet-status
+    image: scout-fleet-status:latest
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - COMPOSE_PROJECT_NAME=scout
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/hostfs:ro
+
 volumes:
   ros_ws_build:
   ros_ws_log:

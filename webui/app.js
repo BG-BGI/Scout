@@ -708,3 +708,93 @@ function sendLed() {
   (res) => { ledResult.textContent = res.message; },
   (err) => { ledResult.textContent = 'error: ' + err; });
 }
+
+// --- system panel: host vitals + per-container controls ---------------------------
+// fleet_status (docker/fleet-status) is a standalone REST backend, not a ROS node —
+// it holds the Docker socket, so it runs outside rosbridge entirely. Polls every 30s;
+// any action that can touch the drivetrain (stop/restart/restart-all) gets a confirm()
+// first, same as every other motion-adjacent control in this app.
+const FLEET_API = 'http://' + location.hostname + ':9002/api';
+const sysState = document.getElementById('sys-state');
+const sysVitals = document.getElementById('sys-vitals');
+const sysContainers = document.getElementById('sys-containers');
+const sysRestartAll = document.getElementById('sys-restart-all');
+
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h${m}m` : `${m}m`;
+}
+
+function renderVitals(v) {
+  const tempClass = v.temp_c == null ? '' : v.temp_c >= 80 ? 'bad' : v.temp_c >= 70 ? 'warn' : '';
+  const cpuClass = v.cpu_percent >= 95 ? 'bad' : v.cpu_percent >= 85 ? 'warn' : '';
+  sysVitals.innerHTML = `
+    <span class="${cpuClass}">CPU ${v.cpu_percent}%</span>
+    <span>Load ${v.load_avg.map((n) => n.toFixed(1)).join('/')}</span>
+    <span>Mem ${(v.mem_used_mb / 1024).toFixed(1)}/${(v.mem_total_mb / 1024).toFixed(1)} GB</span>
+    ${v.temp_c != null ? `<span class="${tempClass}">${v.temp_c}°C</span>` : ''}
+    ${v.disk_used_gb != null ? `<span>Disk ${v.disk_used_gb}/${v.disk_total_gb} GB</span>` : ''}
+    <span>Up ${fmtUptime(v.uptime_s)}</span>
+  `;
+}
+
+function renderContainers(list) {
+  sysContainers.innerHTML = '';
+  for (const c of list) {
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    const running = c.status === 'running';
+    row.innerHTML = `
+      <span class="svc-dot ${c.status}"></span>
+      <span class="svc-name">${c.service}</span>
+      <span class="svc-stat">${running ? `${c.cpu_percent}% · ${c.mem_mb}MB` : c.status}</span>
+      <span class="svc-actions">
+        <button data-act="stop" ${!running || c.self ? 'disabled' : ''}>Stop</button>
+        <button data-act="restart" ${c.self ? 'disabled' : ''}>Restart</button>
+      </span>
+    `;
+    row.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => postAction(c.service, btn.dataset.act));
+    });
+    sysContainers.appendChild(row);
+  }
+}
+
+async function postAction(service, action) {
+  if (!confirm(`${action} "${service}"? If it's on the drivetrain path (robot/behaviors/slam/nav2), the robot will coast to a stop.`)) return;
+  try {
+    await fetch(`${FLEET_API}/containers/${service}/${action}`, { method: 'POST' });
+  } catch (e) { /* fleet_status offline; next poll will show it */ }
+  setTimeout(refreshSystem, 1500);
+}
+
+sysRestartAll.addEventListener('click', async () => {
+  if (!confirm('Restart ALL containers? This coasts the robot to a stop and drops nav/mapping until everything relaunches (staggered, ~30-60s).')) return;
+  sysRestartAll.disabled = true;
+  sysRestartAll.textContent = 'Restarting…';
+  try {
+    await fetch(`${FLEET_API}/restart-all`, { method: 'POST' });
+  } catch (e) { /* ignore */ }
+  setTimeout(() => {
+    sysRestartAll.disabled = false;
+    sysRestartAll.textContent = 'Restart All';
+    refreshSystem();
+  }, 10000);
+});
+
+async function refreshSystem() {
+  try {
+    const [stats, containers] = await Promise.all([
+      fetch(FLEET_API + '/stats').then((r) => r.json()),
+      fetch(FLEET_API + '/containers').then((r) => r.json()),
+    ]);
+    sysState.textContent = `${containers.filter((c) => c.status === 'running').length}/${containers.length} up`;
+    renderVitals(stats);
+    renderContainers(containers);
+  } catch (e) {
+    sysState.textContent = 'offline';
+    sysVitals.textContent = 'fleet_status unreachable';
+  }
+}
+refreshSystem();
+setInterval(refreshSystem, 30000);
