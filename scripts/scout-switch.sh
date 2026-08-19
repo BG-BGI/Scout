@@ -35,10 +35,19 @@ docker compose --profile build run --rm build_package
 # Bring up only the always-on services this branch's compose defines.
 # slam + nav2 are always-on since patrol_capture: marking waypoints needs the
 # map frame and patrols need the planner, and a deploy must not strand them.
-WANT="robot rosbridge webui foxglove_bridge slam nav2 ros_mcp scout_skills"
+WANT="robot behaviors rosbridge webui foxglove_bridge fleet_status slam nav2 ros_mcp scout_skills"
 HAVE=$(docker compose config --services)
 UP=""
 for s in $WANT; do echo "$HAVE" | grep -qx "$s" && UP="$UP $s"; done
+# Pi 5 has no RTC: on a cold boot the clock starts wrong and NTP corrects it
+# with a step, not a slew. If slam/nav2 are already running when that step
+# lands, every TF-timestamped topic (laser, camera_depth_optical_frame) looks
+# like it jumped in time, and the pose graph/costmaps poison for the session
+# (map stops updating, localization drifts wildly, goals just spin in place).
+# Block here so sensor-driving containers never start before the step happens.
+echo "waiting for NTP time sync..."
+until [ "$(timedatectl show -p NTPSynchronized --value)" = "yes" ]; do sleep 1; done
+
 # --remove-orphans clears containers for services the new branch doesn't define.
 docker compose up -d --remove-orphans $UP
 

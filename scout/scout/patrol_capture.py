@@ -380,6 +380,10 @@ class PatrolCapture(Node):
 
     def _finish(self, reason):
         self._cancel_nav()
+        if self._frame_sub is not None:
+            self.destroy_subscription(self._frame_sub)
+            self._frame_sub = None
+            self._last_frame = None
         self._state = 'idle'
         if self._frame_sub is not None:
             self.destroy_subscription(self._frame_sub)

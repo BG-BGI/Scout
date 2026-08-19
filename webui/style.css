@@ -91,8 +91,8 @@ aside  { order: 3; }
     height: 100%;
   }
   #stage { grid-area: stage; flex-direction: row; min-height: 0; }
-  #stage #nav { flex: 1 1 auto; }
-  #stage #camera-panel { flex: 0 1 400px; align-self: flex-start; max-height: 100%; }
+  #stage #nav { flex: 1 1 0; }
+  #stage #camera-panel { flex: 1 1 0; align-self: flex-start; max-height: 100%; }
   #stage #camera-panel img { object-fit: contain; }
   #drive { grid-area: drive; }
   aside  { grid-area: aside; overflow-y: auto; min-height: 0; padding-right: 2px; }
@@ -284,6 +284,15 @@ label { display: flex; flex-direction: column; gap: var(--s1); font-size: 0.85re
 label output { color: var(--text); }
 input[type=range] { width: 100%; accent-color: var(--accent); height: 1.8rem; }
 input[type=color] { width: 100%; height: 2.2rem; border: none; background: none; }
+input[type=text], input[type=password] {
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  color: var(--text);
+  border-radius: 6px;
+  padding: var(--s2);
+  font: inherit;
+}
+input[type=text]:focus, input[type=password]:focus { outline: none; border-color: var(--accent); }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s2); }
 .grid.tight { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
@@ -334,3 +343,50 @@ input[type=color] { width: 100%; height: 2.2rem; border: none; background: none;
 
 /* Live-recording marker (bag_recorder /record/active). */
 .rec-live { color: var(--bad); font-weight: 700; }
+
+/* --- system panel: host vitals + per-container controls ------------------------- */
+#sys-vitals { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
+#sys-vitals span.bad { color: var(--bad); }
+#sys-vitals span.warn { color: var(--warn); }
+
+#sys-containers { display: flex; flex-direction: column; gap: var(--s2); }
+.svc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2);
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.svc-name { font-weight: 600; min-width: 84px; }
+.svc-stat { color: var(--dim); margin-right: auto; white-space: nowrap; }
+.svc-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--dim); }
+.svc-dot.running { background: var(--accent); }
+.svc-dot.exited, .svc-dot.dead { background: var(--bad); }
+.svc-dot.restarting { background: var(--warn); }
+.svc-actions { display: flex; gap: var(--s1); }
+.svc-actions button {
+  padding: var(--s1) var(--s2);
+  min-height: 32px;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.svc-actions button:disabled { opacity: 0.35; cursor: default; }
+
+#sys-restart-all {
+  padding: var(--s2);
+  min-height: 44px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  cursor: pointer;
+}

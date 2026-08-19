@@ -1093,3 +1093,199 @@ function sendLed() {
   (res) => { ledResult.textContent = res.message; },
   (err) => { ledResult.textContent = 'error: ' + err; });
 }
+
+// --- system panel: host vitals + per-container controls ---------------------------
+// fleet_status (docker/fleet-status) is a standalone REST backend, not a ROS node —
+// it holds the Docker socket, so it runs outside rosbridge entirely. Polls every 30s;
+// any action that can touch the drivetrain (stop/restart/restart-all) gets a confirm()
+// first, same as every other motion-adjacent control in this app.
+const FLEET_API = 'http://' + location.hostname + ':9003/api';
+const sysState = document.getElementById('sys-state');
+const sysVitals = document.getElementById('sys-vitals');
+const sysContainers = document.getElementById('sys-containers');
+const sysRestartAll = document.getElementById('sys-restart-all');
+
+function fmtUptime(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h${m}m` : `${m}m`;
+}
+
+function renderVitals(v) {
+  const tempClass = v.temp_c == null ? '' : v.temp_c >= 80 ? 'bad' : v.temp_c >= 70 ? 'warn' : '';
+  const cpuClass = v.cpu_percent >= 95 ? 'bad' : v.cpu_percent >= 85 ? 'warn' : '';
+  sysVitals.innerHTML = `
+    <span class="${cpuClass}">CPU ${v.cpu_percent}%</span>
+    <span>Load ${v.load_avg.map((n) => n.toFixed(1)).join('/')}</span>
+    <span>Mem ${(v.mem_used_mb / 1024).toFixed(1)}/${(v.mem_total_mb / 1024).toFixed(1)} GB</span>
+    ${v.temp_c != null ? `<span class="${tempClass}">${v.temp_c}°C</span>` : ''}
+    ${v.disk_used_gb != null ? `<span>Disk ${v.disk_used_gb}/${v.disk_total_gb} GB</span>` : ''}
+    <span>Up ${fmtUptime(v.uptime_s)}</span>
+  `;
+}
+
+function renderContainers(list) {
+  sysContainers.innerHTML = '';
+  for (const c of list) {
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    const running = c.status === 'running';
+    row.innerHTML = `
+      <span class="svc-dot ${c.status}"></span>
+      <span class="svc-name">${c.service}</span>
+      <span class="svc-stat">${running ? `${c.cpu_percent}% · ${c.mem_mb}MB` : c.status}</span>
+      <span class="svc-actions">
+        <button data-act="stop" ${!running || c.self ? 'disabled' : ''}>Stop</button>
+        <button data-act="restart" ${c.self ? 'disabled' : ''}>Restart</button>
+      </span>
+    `;
+    row.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => postAction(c.service, btn.dataset.act));
+    });
+    sysContainers.appendChild(row);
+  }
+}
+
+async function postAction(service, action) {
+  if (!confirm(`${action} "${service}"? If it's on the drivetrain path (robot/behaviors/slam/nav2), the robot will coast to a stop.`)) return;
+  try {
+    await fetch(`${FLEET_API}/containers/${service}/${action}`, { method: 'POST' });
+  } catch (e) { /* fleet_status offline; next poll will show it */ }
+  setTimeout(refreshSystem, 1500);
+}
+
+sysRestartAll.addEventListener('click', async () => {
+  if (!confirm('Restart ALL containers? This coasts the robot to a stop and drops nav/mapping until everything relaunches (staggered, ~30-60s).')) return;
+  sysRestartAll.disabled = true;
+  sysRestartAll.textContent = 'Restarting…';
+  try {
+    await fetch(`${FLEET_API}/restart-all`, { method: 'POST' });
+  } catch (e) { /* ignore */ }
+  setTimeout(() => {
+    sysRestartAll.disabled = false;
+    sysRestartAll.textContent = 'Restart All';
+    refreshSystem();
+  }, 10000);
+});
+
+async function refreshSystem() {
+  try {
+    const [stats, containers] = await Promise.all([
+      fetch(FLEET_API + '/stats').then((r) => r.json()),
+      fetch(FLEET_API + '/containers').then((r) => r.json()),
+    ]);
+    sysState.textContent = `${containers.filter((c) => c.status === 'running').length}/${containers.length} up`;
+    renderVitals(stats);
+    renderContainers(containers);
+  } catch (e) {
+    sysState.textContent = 'offline';
+    sysVitals.textContent = 'fleet_status unreachable';
+  }
+}
+refreshSystem();
+setInterval(refreshSystem, 30000);
+
+// --- network panel: NM known networks + connect/forget ----------------------------
+// Same fleet_status backend, /api/wifi/*. Switching networks risks stranding this
+// very page (served over wlan0), so every mutating action gets an explicit warning
+// in its confirm(). Scan is on-demand only (nmcli rescan is slow) — not polled.
+const netState = document.getElementById('net-state');
+const netStatus = document.getElementById('net-status');
+const netConnections = document.getElementById('net-connections');
+const netRescan = document.getElementById('net-rescan');
+const netScanResults = document.getElementById('net-scan-results');
+const netAddForm = document.getElementById('net-add-form');
+const netAddSsid = document.getElementById('net-add-ssid');
+const netAddPassword = document.getElementById('net-add-password');
+
+function renderNetStatus(s) {
+  if (s.error) {
+    netStatus.textContent = s.error;
+    return;
+  }
+  netStatus.innerHTML = s.connected
+    ? `<span>Connected: ${s.ssid}</span><span>${s.ip4 || ''}</span>${s.signal != null ? `<span>${s.signal}%</span>` : ''}`
+    : '<span>Not connected</span>';
+}
+
+function renderNetConnections(list) {
+  netConnections.innerHTML = '';
+  if (list.error) {
+    netConnections.textContent = list.error;
+    return;
+  }
+  for (const c of list) {
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    row.innerHTML = `
+      <span class="svc-dot ${c.active ? 'running' : 'exited'}"></span>
+      <span class="svc-name">${c.name}</span>
+      <span class="svc-stat">${c.active ? 'active' : c.autoconnect ? 'saved' : 'saved (manual)'}</span>
+      <span class="svc-actions">
+        <button data-act="connect" ${c.active ? 'disabled' : ''}>Connect</button>
+        <button data-act="forget">Forget</button>
+      </span>
+    `;
+    row.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => netAction(c.name, btn.dataset.act, c.active));
+    });
+    netConnections.appendChild(row);
+  }
+}
+
+async function netAction(name, act, wasActive) {
+  const warn = act === 'connect'
+    ? `Switch to "${name}"? If this fails, this page (served over WiFi) may lose connectivity — NetworkManager should fall back automatically.`
+    : `Forget "${name}"? ${wasActive ? 'This is the ACTIVE connection — forgetting it will likely disconnect this session.' : ''}`;
+  if (!confirm(warn)) return;
+  const path = act === 'connect' ? 'connect' : 'forget';
+  const body = act === 'connect' ? { name } : { name, force: wasActive };
+  try {
+    await fetch(`${FLEET_API}/wifi/${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+  } catch (e) { /* likely stranded mid-switch; next poll (if it comes back) will show it */ }
+  setTimeout(refreshNetwork, 2000);
+}
+
+netRescan.addEventListener('click', async () => {
+  netScanResults.textContent = 'scanning…';
+  try {
+    const results = await fetch(`${FLEET_API}/wifi/scan`).then((r) => r.json());
+    if (results.error) { netScanResults.textContent = results.error; return; }
+    netScanResults.innerHTML = results.map((r) =>
+      `<div class="svc-row"><span class="svc-name">${r.ssid}</span><span class="svc-stat">${r.signal}% ${r.security || 'open'}</span></div>`,
+    ).join('');
+  } catch (e) { netScanResults.textContent = 'scan failed'; }
+});
+
+netAddForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const ssid = netAddSsid.value.trim();
+  const password = netAddPassword.value;
+  if (!ssid) return;
+  if (!confirm(`Connect to "${ssid}"? If this fails, this page (served over WiFi) may lose connectivity.`)) return;
+  try {
+    await fetch(`${FLEET_API}/wifi/connect`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ssid, password }),
+    });
+  } catch (e) { /* likely stranded mid-switch */ }
+  netAddPassword.value = '';
+  setTimeout(refreshNetwork, 2000);
+});
+
+async function refreshNetwork() {
+  try {
+    const [status, connections] = await Promise.all([
+      fetch(FLEET_API + '/wifi/status').then((r) => r.json()),
+      fetch(FLEET_API + '/wifi/connections').then((r) => r.json()),
+    ]);
+    netState.textContent = status.connected ? status.ssid : 'disconnected';
+    renderNetStatus(status);
+    renderNetConnections(connections);
+  } catch (e) {
+    netState.textContent = 'offline';
+    netStatus.textContent = 'fleet_status unreachable';
+  }
+}
+refreshNetwork();
+setInterval(refreshNetwork, 30000);

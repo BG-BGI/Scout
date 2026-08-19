@@ -177,6 +177,10 @@ class FollowMe(Node):
 
         self._cmd = CmdVelSource(self, 'follow', hz=publish_hz)
         self._status_pub = self.create_publisher(String, 'follow_status', 10)
+        # Scan/depth subscriptions exist only while following: a python
+        # subscriber pays deserialization per message even when its callback
+        # returns immediately, so an idle permanent subscription to these two
+        # topics costs ~15% of a core.
         self._scan_sub = None
         self._depth_sub = None
         self.create_service(Trigger, 'follow_me/start', self._on_start)
@@ -190,6 +194,12 @@ class FollowMe(Node):
 
     # --- services ---------------------------------------------------------------
     def _on_start(self, request, response):
+        if self._scan_sub is None:
+            self._scan_sub = self.create_subscription(
+                LaserScan, 'scan', self._on_scan, qos_profile_sensor_data)
+            self._depth_sub = self.create_subscription(
+                PointCloud2, 'camera/camera/depth/color/points',
+                self._on_depth, qos_profile_sensor_data)
         self._active = True
         self._target = None
         self._clearance_log = []
@@ -222,6 +232,11 @@ class FollowMe(Node):
         return response
 
     def _halt(self):
+        if self._scan_sub is not None:
+            self.destroy_subscription(self._scan_sub)
+            self.destroy_subscription(self._depth_sub)
+            self._scan_sub = None
+            self._depth_sub = None
         self._active = False
         self._target = None
         self._cmd.idle()

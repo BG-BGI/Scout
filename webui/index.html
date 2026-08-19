@@ -161,6 +161,26 @@
     </details>
 
     <details class="panel">
+      <summary><h2>System <span id="sys-state" class="dim">—</span></h2></summary>
+      <div id="sys-vitals" class="dim">loading…</div>
+      <div id="sys-containers"></div>
+      <button id="sys-restart-all">Restart All</button>
+    </details>
+
+    <details class="panel">
+      <summary><h2>Network <span id="net-state" class="dim">—</span></h2></summary>
+      <div id="net-status" class="dim">loading…</div>
+      <div id="net-connections"></div>
+      <button id="net-rescan">Rescan</button>
+      <div id="net-scan-results"></div>
+      <form id="net-add-form" class="grid tight">
+        <input id="net-add-ssid" type="text" placeholder="SSID" autocomplete="off" required>
+        <input id="net-add-password" type="password" placeholder="Password (blank if open)" autocomplete="off">
+        <button type="submit">Connect</button>
+      </form>
+    </details>
+
+    <details class="panel">
       <summary><h2>Lights</h2></summary>
       <div class="grid tight" id="led-modes">
         <button data-mode="off">Off</button>
