@@ -31,10 +31,57 @@ companion bridge). Companion stack: `companion/`.
 Instrument: `scripts/wifi_link_baseline.py <peer-ip> --rate 10 --minutes 30`
 (add `--load /scan` for the loaded profile). CSVs land in `captures/net/`.
 
-| Baseline | Date | RTT p50/p95/p99 ms | Miss % | Dropouts/hr (durations) |
-|---|---|---|---|---|
-| Idle (stack up, no companion subs) | — | — | — | — |
-| Loaded (companion rtabmap subscribed) | — | — | — | — |
+brasfield@scout:~/Desktop/Scout $ sudo python3 scripts/wifi_link_baseline.py 10.1.80.1 --minutes 30 [sudo] password for brasfield: pinging 10.1.80.1 at 10.0 Hz for 30.0 min (dgram socket) -> captures/net/link_10-1-80-1_20260820-085124.csv dropout: 4.4s (5 misses) samples 18000 miss 5 (0.03%) RTT ms p50 4.9 p95 36.0 p99 93.0 max 394.2 dropouts (>=3 misses): 1 (2.0/hr) 4.4s (5 misses) csv: captures/net/link_10-1-80-1_20260820-085124.csv
+
+  GNU nano 8.4             captures/net/link_10-1-80-1_20260820-085124.csv                      
+t_unix,seq,rtt_ms
+1787233884.300,0,2.25
+1787233884.400,1,1.24
+1787233884.502,2,4.03
+1787233884.600,3,1.39
+1787233884.704,4,6.01
+1787233884.801,5,2.71
+1787233884.900,6,1.22
+1787233885.004,7,6.09
+1787233885.102,8,3.22
+1787233885.202,9,4.03
+1787233885.300,10,1.42
+1787233885.400,11,1.42
+1787233885.500,12,1.57
+1787233885.600,13,1.67
+1787233885.700,14,2.20
+1787233885.803,15,4.97
+1787233885.905,16,6.35
+1787233886.002,17,3.94
+1787233886.101,18,2.61
+1787233886.202,19,4.12
+1787233886.304,20,5.69
+1787233886.402,21,4.11
+1787233886.502,22,4.11
+1787233886.600,23,2.12
+1787233886.704,24,5.50
+1787233886.803,25,4.73
+1787233886.903,26,4.92
+1787233887.003,27,4.23
+1787233887.109,28,10.89
+1787233887.200,29,1.70
+1787233887.302,30,4.18
+1787233887.403,31,4.41
+1787233887.502,32,4.13
+1787233887.603,33,4.41
+1787233887.702,34,4.09
+1787233887.805,35,7.16
+1787233887.904,36,5.39
+1787233888.007,37,8.42
+1787233888.103,38,4.82
+1787233888.202,39,4.01
+1787233888.303,40,4.22
+1787233888.402,41,4.09
+1787233888.502,42,4.13
+1787233888.603,43,4.43
+            [ File 'captures/net/link_10-1-80-1_20260820-085124.csv' is unwritable ]
+^G Help         ^O Write Out    ^F Where Is     ^K Cut          ^T Execute      ^C Location
+^X Exit         ^R Read File    ^\ Replace      ^U Paste        ^J Justify      ^/ Go To Line
 
 ## wlan0/DDS lockup re-test (gate for ADR-0020 — spec §0.1)
 
