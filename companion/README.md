@@ -18,8 +18,19 @@ editing BOTH allowlists (`config/zenoh_bridge.json5` here, mirrored in
 cp .env.example .env        # set PI_IP (10.1.80.31)
 docker compose build        # once; plain apt image (or docker load from USB)
 docker compose up -d
-docker compose logs zenoh_bridge | tail   # expect a session with the Pi, no reconnect loop
+docker compose logs zenoh_bridge | tail
 ```
+
+Bridge health, in order (ADR-0022 bring-up findings):
+1. `New ROS 2 bridge detected: <zid>` — TCP session with the Pi is up.
+2. `Route Subscriber ... created` lines — local DDS discovery works. Session
+   up but **zero route lines = the cross-vendor localhost trap**: the bridge
+   needs `ROS_LOCALHOST_ONLY=1` + `ROS_DISTRO=humble` + the `CYCLONEDDS_URI`
+   peer-ping env (all three in docker-compose.yaml) or Fast DDS and Cyclone
+   are mutually deaf on loopback with no error anywhere.
+3. Data: `docker compose exec rtabmap bash -lc "source /opt/ros/humble/setup.bash && ros2 topic echo /scan sensor_msgs/msg/LaserScan --once"`.
+   ⚠ `ros2 topic list` is NOT evidence of data — rtabmap's own subscriptions
+   list the topics even when nothing flows.
 
 View the live map: Foxglove → `ws://10.1.57.18:8766` → `/rtabmap/cloud_map`
 (+ `/rtabmap/mapGraph`). Deliberately a local bridge so the cloud never hauls

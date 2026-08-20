@@ -24,8 +24,10 @@ companion bridge). Companion stack: `companion/`.
 |---|---|
 | `ROS_DOMAIN_ID` | **17** on every service, both machines (load-bearing locally, cosmetic across the bridge) |
 | Discovery | **Simple discovery on loopback, `ROS_LOCALHOST_ONLY=1`, both machines.** The Fast DDS Discovery Server + `super_client.xml` are retired (ADR-0022: the zenoh bridge is CycloneDDS-based and can't join a server graph). Throwaway-container discovery false negatives are back — judge liveness from logs/data topics |
-| Cross-machine | `eclipse/zenoh-bridge-ros2dds:1.10.0`, one per machine: Pi listens `tcp/:7447`, companion (10.1.57.18) dials out. Allowlists in `scout/config/zenoh_bridge.json5` / `companion/config/zenoh_bridge.json5`, kept mirrored; Pi accepts nothing inbound |
+| Cross-machine | `eclipse/zenoh-bridge-ros2dds:1.10.0`, one per machine: Pi listens `tcp/:7447`, companion (10.1.57.18) dials out. Allowlists in `scout/config/zenoh_bridge.json5` / `companion/config/zenoh_bridge.json5`, kept mirrored; Pi accepts nothing inbound. **Verified working end-to-end 2026-08-20** (`/scan` at full rate on the companion) |
 | ⚠ | The `ROS_LOCALHOST_ONLY` **env var overrides** the bridge's config key — compose sets it on both bridge services; don't trust the json5 alone |
+| ⚠ | Three bridge env vars are all load-bearing (ADR-0022 bring-up findings): `ROS_LOCALHOST_ONLY=1`, `ROS_DISTRO=humble` (assumes iron otherwise), and the `CYCLONEDDS_URI` peer-ping config — without the last, Fast DDS and the Cyclone bridge are **mutually deaf on loopback** (session up, zero routes, no error anywhere) |
+| Debugging | Bridge health reads in this order: session line (`New ROS 2 bridge detected`) → `Route Publisher/Subscriber created` lines → `ros2 topic echo <topic> <type> --once` on the companion. `ros2 topic list` there is a false signal (subscriptions list topics with zero data flowing) |
 
 ## Re-test outcome (2026-08-20)
 

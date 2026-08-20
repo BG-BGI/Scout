@@ -53,6 +53,34 @@ dials out. Each machine keeps its own loopback-only DDS graph.**
   listens, Pi dials) or request that single port — the bridge works either
   direction.
 
+## Bring-up findings (verified working end-to-end 2026-08-20)
+
+- **⚠ THE CROSS-VENDOR LOCALHOST DISCOVERY TRAP — the bridge and a Fast DDS
+  graph are mutually deaf under `ROS_LOCALHOST_ONLY=1` without extra config.**
+  Symptom: bridge session established (`New ROS 2 bridge detected` in both
+  logs), allowlist loaded, **zero `Route Publisher created` lines**, no data.
+  Mechanism: Fast DDS in localhost mode disables multicast and unicast-
+  announces SPDP only to participant indices 0–3 on 127.0.0.1; the
+  CycloneDDS-based bridge multicasts SPDP on `lo` (which Fast DDS isn't
+  listening to) and, with ~30 participants on the host, sits at an index far
+  above 3 — neither side ever hears the other. Fix (bridge side only, both
+  machines): make Cyclone unicast-ping a wide index range —
+  `CYCLONEDDS_URI=<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>`
+  — Fast DDS participants reply to whoever pings their SPDP port. Verified:
+  routes appear within seconds of the bridge restart.
+- **Set `ROS_DISTRO=humble` on the bridge containers** — the image ships no
+  ROS and the plugin assumes `iron` otherwise (upstream issue #21,
+  `ros_discovery_info` format differences).
+- **Diagnosis order that worked:** (1) session line in both bridge logs —
+  proves TCP; (2) `Route Publisher/Subscriber created` lines — proves local
+  DDS discovery; (3) `ros2 topic echo <topic> <type> --once` on the companion
+  — proves data. **`ros2 topic list` on the companion is a false signal**:
+  rtabmap's own subscriptions put `/scan`/`/tf` in the list with zero data
+  flowing.
+- The amd64 image tarball for the offline box loads under the save-time tag
+  `zenoh-bridge-amd64:1.10.0` — retag after load:
+  `docker tag zenoh-bridge-amd64:1.10.0 eclipse/zenoh-bridge-ros2dds:1.10.0`.
+
 ## Consequences
 
 - Latency/HOL: a single TCP stream adds head-of-line blocking under loss —

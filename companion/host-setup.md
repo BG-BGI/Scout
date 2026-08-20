@@ -27,7 +27,9 @@ the Debian box is the primary and a bridged UTM VM the fallback.
    Pi's `.env` and use it for the Foxglove bookmark (`ws://<box>:8766`).
 5. No-internet box: load the two images from USB instead of pulling —
    `scout-companion-amd64.tar.gz` and `zenoh-bridge-ros2dds-amd64.tar.gz`
-   (`gunzip -c <file> | docker load`).
+   (`gunzip -c <file> | docker load`). ⚠ The bridge tarball loads under its
+   save-time tag — retag or compose won't find it:
+   `docker tag zenoh-bridge-amd64:1.10.0 eclipse/zenoh-bridge-ros2dds:1.10.0`
 
 ## Install
 
