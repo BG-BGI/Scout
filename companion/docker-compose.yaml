@@ -71,6 +71,25 @@ services:
         rtabmap_viz:=false
         rviz:=false
 
+  # World-model detector (WORLDMODEL.md, gate 1). Continuous YOLO11n on the
+  # bridged D455 stream -> map-frame object table on /world/objects (latched
+  # std_msgs/String JSON). CPU-only, onnxruntime, no torch. Consumes only
+  # already-bridged topics (color/depth/info/tf) and publishes LOCALLY — the
+  # Pi does not see /world/objects until gate 2 adds it to both allowlists.
+  # Own build context (./detector), NOT the &companion anchor, but the same
+  # local-graph env so it shares this box's DDS with rtabmap.
+  detector:
+    build: ./detector
+    image: scout-companion-detector:latest
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    depends_on:
+      - zenoh_bridge
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+
   # Local Foxglove bridge (:8766) — view /rtabmap/cloud_map from this box
   # without hauling the cloud back through the Pi's :8765.
   foxglove_bridge:
