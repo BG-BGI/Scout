@@ -15,10 +15,12 @@ RUN yolo export model=yolo11n.pt format=onnx imgsz=640 && test -f /yolo11n.onnx
 
 FROM ros:humble-ros-base
 # rclpy, tf2_ros, sensor_msgs/std_msgs are in ros-base. onnxruntime/numpy/
-# pillow are the only extras; ship as apt where possible, pip for onnxruntime.
-# --break-system-packages: ros-base is Ubuntu 22.04 (PEP 668 marked).
-RUN pip3 install --no-cache-dir --break-system-packages \
-        onnxruntime numpy pillow
+# pillow are the only extras. ros-base has python3 but NO pip, so install
+# python3-pip via apt first. Base is Ubuntu 22.04 (jammy): pip 22.x, no PEP-668
+# marker, so plain `pip3 install` works and --break-system-packages would error.
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pip \
+    && pip3 install --no-cache-dir onnxruntime numpy pillow \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=yolo-export /yolo11n.onnx /app/yolo11n.onnx
 COPY detect.py detector_node.py /app/
 WORKDIR /app
