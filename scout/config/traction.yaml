@@ -39,6 +39,6 @@ traction_monitor:
     m2_curve_amps: [0.0]
 
     # --- calibration instrument ---
-    calibration_log: false      # true -> CSV of t, m*_speed, m*_current
+    calibration_log: true     # true -> CSV of t, m*_speed, m*_current
     # "" = <scout src dir>/traction_logs (bind mount, reaches the host)
     log_dir: ""
