@@ -30,6 +30,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=17
       - ROS_LOCALHOST_ONLY=1
+      - ROS_DISTRO=humble
     volumes:
       - ./config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
     command: -c /zenoh_bridge.json5 -e tcp/${PI_IP}:7447

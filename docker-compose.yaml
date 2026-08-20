@@ -42,6 +42,7 @@ services:
     environment:
       - ROS_DOMAIN_ID=17
       - ROS_LOCALHOST_ONLY=1
+      - ROS_DISTRO=humble
     volumes:
       - ./scout/config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
     deploy:
