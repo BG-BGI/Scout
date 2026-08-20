@@ -165,7 +165,9 @@ services:
     command: sh -c "sleep 10 && ros2 launch scout nav2.launch.py profile:=${SCOUT_PROFILE:-default}"
 
   # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
-  # starts it. Start after robot+slam+nav2 look healthy:
+  # starts it. scout-switch pre-creates it in Created state (`compose --profile
+  # explore create explore`), so scout_skills' explore_start can lazily start it
+  # via the fleet_status API — no manual step. Manual start still works:
   #   docker compose --profile explore up -d explore
   # Once running, scout_skills exposes pause/resume (via /explore/resume) to MCP
   # clients — deliberately NOT container start/stop (no docker socket in a

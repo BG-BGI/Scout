@@ -1107,9 +1107,9 @@ async def recording_status() -> dict:
 
 # --- frontier exploration (explore_lite, compose profile `explore`) ---------
 #
-# The container is profile-gated: `docker compose --profile explore up -d
-# explore` creates it once, after which `explore_start` below can bring a
-# STOPPED container back up through fleet_status's container API
+# The container is profile-gated and pre-created (Created state, never
+# started) by scout-switch at deploy time; `explore_start` below brings a
+# Created/STOPPED container up through fleet_status's container API
 # (http://127.0.0.1:9002, docker socket lives THERE, scoped to this compose
 # project) — mounting the docker socket into this no-auth LAN MCP container
 # directly would let anyone on the LAN root the Pi, so lifecycle goes through
@@ -1179,10 +1179,10 @@ async def explore_start() -> dict:
     """Start the explore container (explore_lite) — ⚠ the robot BEGINS
     AUTONOMOUS FRONTIER DRIVING within seconds of the node coming up; have
     your stop path ready (explore_pause + nav_cancel). No-op if the node is
-    already running. Needs the container to have been created once by the
-    operator (`docker compose --profile explore up -d explore`); after that
-    this restarts it from stopped via the fleet-status API. Prefer
-    explore_for immediately after this to bound the run."""
+    already running. The container is pre-created (never started) by
+    scout-switch at deploy time; this starts it from Created/stopped via the
+    fleet-status API. Prefer explore_for immediately after this to bound the
+    run."""
     async with RosBridge() as rb:
         if await _explore_running(rb):
             return {"explore_node": "already running", "started": False}
@@ -1198,9 +1198,9 @@ async def explore_start() -> dict:
         ) from e
     if resp.status_code == 404:
         raise ToolError(
-            "explore container does not exist yet — the operator must create "
-            "it once on the Pi: `docker compose --profile explore up -d "
-            "explore`. After that, this tool can restart it from stopped."
+            "explore container does not exist — scout-switch should have "
+            "pre-created it (`docker compose --profile explore create "
+            "explore` on the Pi recreates it without starting)."
         )
     if resp.status_code != 200:
         raise ToolError(

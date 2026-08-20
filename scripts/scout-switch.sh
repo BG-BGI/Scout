@@ -51,5 +51,15 @@ until [ "$(timedatectl show -p NTPSynchronized --value)" = "yes" ]; do sleep 1; 
 # --remove-orphans clears containers for services the new branch doesn't define.
 docker compose up -d --remove-orphans $UP
 
+# Pre-create (NOT start) the profile-gated explore container so scout_skills'
+# explore_start can lazily start it via fleet_status. `create` leaves it in
+# Created state: no CPU, no node, no motion — and it inherits no restart
+# policy, so it never comes up on boot. Runs after `up` so --remove-orphans
+# can't have swept it on compose versions that treat profile-disabled
+# services as orphans.
+if docker compose --profile explore config --services 2>/dev/null | grep -qx explore; then
+  docker compose --profile explore create explore
+fi
+
 echo "== now on $(git rev-parse --abbrev-ref HEAD) @ $(git rev-parse --short HEAD)"
 docker ps --format '{{.Names}}  {{.Status}}' | grep scout || true
