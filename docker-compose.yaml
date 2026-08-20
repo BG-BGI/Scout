@@ -43,6 +43,11 @@ services:
       - ROS_DOMAIN_ID=17
       - ROS_LOCALHOST_ONLY=1
       - ROS_DISTRO=humble
+      # Cyclone must unicast-ping a wide participant-index range on loopback:
+      # Fast DDS under ROS_LOCALHOST_ONLY announces only to indices 0-3 and
+      # ignores multicast, so without this the two vendors are mutually deaf
+      # (observed: bridge session up, zero routes created).
+      - 'CYCLONEDDS_URI=<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>'
     volumes:
       - ./scout/config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
     deploy:
