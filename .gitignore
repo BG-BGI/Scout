@@ -33,3 +33,6 @@ captures/*
 # traction-control Phase 0 slip capture CSVs (instrument output, not source)
 scout/slip_logs/
 companion/*.tar.gz
+
+# traction calibration CSVs (instrument output, not source)
+scout/traction_logs/

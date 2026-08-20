@@ -222,6 +222,10 @@ def test_sc3_no_raw_lookup_transform():
 SC4_ALLOW = {
     'scout/scout/cmd_vel_source.py': 'the motion contract implementation',
     'scout/scout/estop.py': 'priority-255 brake through the mux lock (ADR-0001)',
+    'scout/scout/traction_monitor.py':
+        'mid-chain per-side derate scaler between the final mux and the '
+        'driver — not a motion source; preserves incoming cadence and zero '
+        'Twists (docs/traction_control_spec.md option (a))',
 }
 
 

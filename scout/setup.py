@@ -42,6 +42,7 @@ setup(
             'health_monitor = scout.health_monitor:main',
             'wheel_joint_relay = scout.wheel_joint_relay:main',
             'tilt_monitor = scout.tilt_monitor:main',
+            'traction_monitor = scout.traction_monitor:main',
             'trick_player = scout.trick_player:main',
             'led_status = scout.led_status:main',
             'follow_me = scout.follow_me:main',

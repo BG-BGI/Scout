@@ -126,17 +126,36 @@ def generate_launch_description():
         executable='estop',
         output='screen',
     )
+    # Traction derate (docs/traction_control_spec.md): sole writer of the
+    # driver's cmd_vel. /cmd_vel_out (final mux output) -> per-side derate
+    # from /roboclaw_status current-vs-speed -> /cmd_vel_trac. Uncalibrated
+    # (empty curves in traction.yaml) it is a pure passthrough.
+    traction_monitor = Node(
+        package='scout',
+        executable='traction_monitor',
+        output='screen',
+        parameters=[os.path.join(config, 'traction.yaml')],
+        remappings=[
+            ('cmd_vel_in', '/cmd_vel_out'),
+            ('cmd_vel_out', '/cmd_vel_trac'),
+            ('roboclaw_status', '/roboclaw_status'),
+            ('traction/derate_left', '/traction/derate_left'),
+            ('traction/derate_right', '/traction/derate_right'),
+            ('traction/status', '/traction/status'),
+        ],
+    )
     roboclaw = Node(
         package='roboclaw_driver',
         executable='roboclaw_driver_node',
         name='roboclaw_driver',
         output='screen',
         parameters=[os.path.join(config, 'roboclaw.yaml')],
-        # /cmd_vel_out = FINAL twist_mux output (human teleop + collision-
-        # guarded autonomous + estop brake). Teleop bypasses the collision
-        # monitor; the CM guards only the autonomous branch (/cmd_vel_safe,
-        # the mux's `auto` input). Operator decision 2026-08-17.
-        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_out')],
+        # /cmd_vel_trac = /cmd_vel_out (FINAL twist_mux output: human teleop +
+        # collision-guarded autonomous + estop brake) after traction_monitor's
+        # per-side derate. Teleop bypasses the collision monitor; the CM
+        # guards only the autonomous branch (/cmd_vel_safe, the mux's `auto`
+        # input). Operator decision 2026-08-17.
+        remappings=[('/odom', '/wheel_odom'), ('/cmd_vel', '/cmd_vel_trac')],
     )
     gyro_calibrator = Node(
         package='scout',
@@ -189,7 +208,8 @@ def generate_launch_description():
         estop,
 
         # Bare node: roboclaw_driver.launch.py cannot remap, and /odom belongs to
-        # the EKF. Driven by the mux output, not raw /cmd_vel.
+        # the EKF. Driven by traction_monitor's output, not raw /cmd_vel.
+        traction_monitor,
         roboclaw,
 
         Node(
@@ -349,6 +369,8 @@ def generate_launch_description():
                    'twist_mux_auto exited — autonomous cmd_vel arbitration dead'),
         _fail_fast(twist_mux, 'twist_mux exited — cmd_vel arbitration dead'),
         _fail_fast(estop, 'estop exited — mux lock heartbeat dead'),
+        _fail_fast(traction_monitor,
+                   'traction_monitor exited — driver cmd_vel feed dead'),
         _fail_fast(roboclaw, 'roboclaw_driver exited — drivetrain dead'),
         _fail_fast(gyro_calibrator,
                    'gyro_calibrator exited — EKF yaw source dead'),
