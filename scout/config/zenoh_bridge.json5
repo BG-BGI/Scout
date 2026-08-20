@@ -1,0 +1,44 @@
+// Pi-side zenoh-bridge-ros2dds (ADR-0022). Joins the loopback DDS graph as a
+// plain participant and serves ONE TCP listener the companion dials —
+// cross-VLAN UDP is filtered on this network, DDS never touches the wire.
+//
+// The allowlist is the enforcement surface (ADR-0001 audit applies): only the
+// named mapping topics leave the Pi, and NOTHING is accepted inbound —
+// `subscribers` is empty, so no companion-side publisher can reach any Pi
+// topic, /cmd_vel_* included. Extend deliberately, never with a wildcard.
+{
+  plugins: {
+    ros2dds: {
+      domain: 17,
+      // ⚠ Verified v1.10.0: the ROS_LOCALHOST_ONLY env var OVERRIDES this key
+      // (absent env forces false even when this says true). The compose
+      // service sets the env var; this key is documentation + belt.
+      ros_localhost_only: true,
+      allow: {
+        // Local DDS publishers routed OUT to the companion.
+        publishers: [
+          "^/camera/camera/color/image_raw/compressed$",
+          "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$",
+          "^/camera/camera/color/camera_info$",
+          "^/odom$",
+          "^/scan$",
+          "^/tf$",
+          "^/tf_static$",
+        ],
+        // Nothing flows INTO the Pi from the companion.
+        subscribers: [],
+        service_servers: [],
+        service_clients: [],
+        action_servers: [],
+        action_clients: [],
+      },
+    },
+  },
+  mode: "peer",
+  listen: { endpoints: ["tcp/0.0.0.0:7447"] },
+  // No multicast scouting: the companion dials this listener explicitly, and
+  // this network filters multicast anyway.
+  scouting: {
+    multicast: { enabled: false },
+  },
+}

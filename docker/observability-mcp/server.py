@@ -30,14 +30,12 @@ COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT", "scout")
 MOTION_SERVICES = {"robot"}
 
 # Sourced before every `ros2` exec into `robot` -- must match &base's
-# environment in docker-compose.yaml (ROS_DISCOVERY_SERVER) plus the
-# super-client override (scout/config/super_client.xml) needed for a shell
-# to see the DDS graph at all -- see CLAUDE.md's Discovery Server section.
+# environment in docker-compose.yaml (simple discovery on loopback, ADR-0022;
+# the discovery-server/SUPER_CLIENT era is over).
 ROS_EXEC_PREFIX = (
     "source /opt/ros/humble/setup.bash && "
     "source /opt/overlay/install/setup.bash && "
-    "export ROS_DOMAIN_ID=17 ROS_DISCOVERY_SERVER=127.0.0.1:11811 "
-    "ROS_SUPER_CLIENT=1 FASTDDS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml && "
+    "export ROS_DOMAIN_ID=17 ROS_LOCALHOST_ONLY=1 && "
 )
 
 # Known msg types for topics this stack publishes, so callers usually don't
@@ -212,9 +210,9 @@ def ros2_topic_info(topic: str) -> str:
 @mcp.tool
 def ros2_node_list() -> list[str]:
     """`ros2 node list` exec'd inside the `robot` container -- every DDS
-    participant currently visible to a super-client (see
-    scout/config/super_client.xml). A node missing here that should be up is
-    a discovery problem, not necessarily a dead process."""
+    participant currently visible on the loopback graph. A node missing here
+    that should be up is a discovery problem, not necessarily a dead
+    process."""
     robot = _find_robot()
     rc, out = robot.exec_run(["bash", "-lc", ROS_EXEC_PREFIX + "ros2 node list"])
     text = (out or b"").decode(errors="replace")

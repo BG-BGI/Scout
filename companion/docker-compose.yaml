@@ -1,6 +1,7 @@
-# Companion stack (ADR-0020/0021). Runs on a native Linux host on the robot's
-# LAN (host-setup.md) — never under Docker Desktop on macOS (NAT breaks the
-# DDS data plane). host networking = the host's own LAN identity.
+# Companion stack (ADR-0022). Runs on a native Linux host — the Debian box.
+# It keeps its OWN loopback DDS graph; the only thing that crosses the network
+# is zenoh_bridge's single outbound TCP connection to the Pi (corp inter-VLAN
+# filtering drops UDP, so plain shared-domain DDS is out — measured 2026-08-20).
 #
 # .env: PI_IP=<the Pi's address>  (cp .env.example .env)
 
@@ -10,22 +11,39 @@ x-companion: &companion
   network_mode: host
   ipc: host
   environment:
-    # Must match the Pi's &base exactly (docs/platform.md): domain 17,
-    # discovery via the Pi's LAN-bound server. Data plane is peer-to-peer UDP.
+    # Local graph only — the bridge is the sole cross-machine path. Domain
+    # matches the Pi (cosmetic across the bridge, load-bearing locally).
     - ROS_DOMAIN_ID=17
-    - ROS_DISCOVERY_SERVER=${PI_IP}:11811
+    - ROS_LOCALHOST_ONLY=1
   restart: unless-stopped
 
 services:
 
-  # Live 3D capture, a standing capability from the moment this VM is up
-  # (spec §2.1). Consumes Pi topics over compressed transports — the JPEG /
-  # compressedDepth encoders on the Pi are per-subscriber lazy, so the Pi pays
-  # only while this is actually subscribed. Visual odometry OFF: the EKF's
-  # fused /odom (wheel speed + gyro yaw) is the pose input; rtabmap does
-  # appearance-based loop closure on top.
+  # The one network-crossing process: subscribes the allowlisted Pi topics
+  # over zenoh/TCP and republishes them into this box's loopback DDS graph.
+  # Allowlist: config/zenoh_bridge.json5 (must mirror the Pi side's).
+  zenoh_bridge:
+    image: eclipse/zenoh-bridge-ros2dds:1.10.0
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+    volumes:
+      - ./config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
+    command: -c /zenoh_bridge.json5 -e tcp/${PI_IP}:7447
+
+  # Live 3D capture (spec §2.1). Consumes the bridged topics from the local
+  # graph exactly as if the camera were local. The compressed encoders on the
+  # Pi are per-subscriber lazy — the Pi-side zenoh bridge is that subscriber,
+  # so the Pi pays the JPEG/PNG cost only while this stack is up. Visual
+  # odometry OFF: the EKF's fused /odom (wheel speed + gyro yaw) is the pose
+  # input; rtabmap does appearance-based loop closure on top.
   rtabmap:
     <<: *companion
+    depends_on:
+      - zenoh_bridge
     volumes:
       - rtabmap_db:/root/.ros
       - ./config:/companion/config:ro
@@ -47,8 +65,8 @@ services:
         rtabmap_viz:=false
         rviz:=false
 
-  # Second Foxglove bridge, VM-local (:8766), so viewing cloud_map never hauls
-  # the cloud back through the Pi's :8765.
+  # Local Foxglove bridge (:8766) — view /rtabmap/cloud_map from this box
+  # without hauling the cloud back through the Pi's :8765.
   foxglove_bridge:
     <<: *companion
     command: ros2 run foxglove_bridge foxglove_bridge --ros-args -p port:=8766

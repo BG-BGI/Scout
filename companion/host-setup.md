@@ -1,37 +1,40 @@
 # Companion host provisioning (one-time, operator)
 
-The companion is any **native Linux host on the robot's LAN** (ADR-0021).
-Primary: the Debian box. The stack is containerized (`ros:humble-ros-base`),
-so the host distro doesn't matter — Debian is fine even though ROS debs are
-Ubuntu-only. Any recent x86_64 or arm64 works; 4+ cores, 8 GB RAM, 40 GB free
-(rtabmap DBs grow to GBs at house scale).
+The companion is a **native Linux host** — the Debian box at 10.1.57.18
+(ADR-0021/0022). The stack is containerized (`ros:humble-ros-base`), so the
+host distro doesn't matter. 4+ cores, 8 GB RAM, 40 GB free (rtabmap DBs grow
+to GBs at house scale).
 
-**Never Docker Desktop on macOS** — its NAT breaks the DDS data plane
-(VM-internal locators, no multicast, host networking is a port proxy). If the
-Mac must be the companion, use a UTM Ubuntu VM with a **bridged** NIC so it
-owns a real LAN IP, then follow this doc inside the VM.
+Cross-VLAN placement is fine: the only network requirement is **outbound TCP
+to the Pi's `:7447`** (the zenoh bridge). UDP/DDS never crosses machines
+(corp inter-VLAN filtering drops it — measured 2026-08-20). If even that TCP
+port is filtered, reverse the bridge roles (this box listens, the Pi dials)
+or request the single port from IT.
+
+Docker Desktop on macOS remains unusable as a companion host for anything
+DDS-adjacent; with the zenoh bridge it would technically work (pure TCP), but
+the Debian box is the primary and a bridged UTM VM the fallback.
 
 ## Requirements
 
-1. **Same L2 subnet as the Pi** (data plane is peer-to-peer UDP; discovery
-   dials the Pi). Verify: `ip addr` shows an address in the Pi's subnet and
-   `ping <pi-ip>` works.
+1. `ping 10.1.80.31` works (routed is fine, same subnet not required).
 2. **Docker Engine + Compose v2** (engine, not Desktop):
    https://docs.docker.com/engine/install/debian/ — then
-   `sudo usermod -aG docker $USER` and re-login.
-3. **No firewall blocking UDP** from the Pi: DDS uses ephemeral UDP both ways.
-   Default Debian has no filter; if nftables/ufw is active, allow the Pi's IP.
-4. **NTP synced** (`timedatectl` → "System clock synchronized: yes") — TF and
-   message stamps cross machines now.
-5. Stable address: DHCP reservation for the box, note it as `COMPANION_HOST`
-   in the Pi's `.env` and use it for Foxglove bookmarks.
+   `sudo usermod -aG docker $USER`, re-login.
+3. NTP synced (`timedatectl` → "System clock synchronized: yes") — TF and
+   message stamps cross machines.
+4. Stable address (DHCP reservation); record it as `COMPANION_HOST` in the
+   Pi's `.env` and use it for the Foxglove bookmark (`ws://<box>:8766`).
+5. No-internet box: load the two images from USB instead of pulling —
+   `scout-companion-amd64.tar.gz` and `zenoh-bridge-ros2dds-amd64.tar.gz`
+   (`gunzip -c <file> | docker load`).
 
 ## Install
 
 ```bash
-git clone <repo-url> && cd Scout/companion   # or copy companion/ alone
-cp .env.example .env                          # set PI_IP=<pi address>
-docker compose build                          # plain apt image, a few minutes
+git clone <repo-url> && cd Scout/companion   # or copy companion/ from USB
+cp .env.example .env                          # PI_IP=10.1.80.31
+docker compose build                          # skip if image loaded from USB
 ```
 
 Bring-up/teardown, sanity checks, and the replay gate: `README.md`.

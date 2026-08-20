@@ -1,6 +1,10 @@
 # ADR-0021: No companion bridge — plain DDS; companion is a Linux host on the LAN
 
-Status: accepted · Date: 2026-08-19
+Status: accepted, transport section superseded — the "plain DDS data plane"
+half fell with ADR-0020 (inter-VLAN UDP filtered, measured 2026-08-20); the
+sanctioned fallback named below is now the implemented transport (ADR-0022).
+The companion topology, §0.7 independence contract, allowlist enforcement,
+and deferred §6 decisions all carry forward. · Date: 2026-08-19
 
 ## Context
 

@@ -27,4 +27,5 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0018](0018-nav-cancel-and-state.md) | Dispatcher-aware nav cancel + consolidated /nav_state |
 | [0019](0019-keepout-speed-zones.md) | Keepout/speed zones — JSON polygons as truth, masks as artifacts |
 | [0020](0020-shared-dds-domain.md) | Shared DDS domain across Pi and companion; discovery server LAN-bound |
-| [0021](0021-no-companion-bridge.md) | No companion bridge — plain DDS; companion is a Linux host on the LAN |
+| [0021](0021-no-companion-bridge.md) | No companion bridge — plain DDS; companion is a Linux host on the LAN (transport superseded by 0022) |
+| [0022](0022-zenoh-bridge-transport.md) | Pi↔companion transport is zenoh-bridge-ros2dds over one TCP port; DDS back to loopback |

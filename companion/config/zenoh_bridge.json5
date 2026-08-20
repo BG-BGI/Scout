@@ -1,0 +1,38 @@
+// Companion-side zenoh-bridge-ros2dds (ADR-0022). Joins the box's own local
+// DDS graph and dials the Pi's bridge over ONE outbound TCP connection.
+// The connect endpoint is NOT in this file — compose passes it on the CLI
+// (`-e tcp/${PI_IP}:7447`) so .env interpolation works; CLI args merge with
+// this config.
+{
+  plugins: {
+    ros2dds: {
+      domain: 17,
+      // ⚠ The ROS_LOCALHOST_ONLY env var OVERRIDES this key (verified
+      // v1.10.0) — compose sets it; this key is documentation + belt.
+      ros_localhost_only: true,
+      allow: {
+        // Nothing local is exported toward the Pi.
+        publishers: [],
+        // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
+        // the Pi bridge's `publishers` list exactly.
+        subscribers: [
+          "^/camera/camera/color/image_raw/compressed$",
+          "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$",
+          "^/camera/camera/color/camera_info$",
+          "^/odom$",
+          "^/scan$",
+          "^/tf$",
+          "^/tf_static$",
+        ],
+        service_servers: [],
+        service_clients: [],
+        action_servers: [],
+        action_clients: [],
+      },
+    },
+  },
+  mode: "peer",
+  scouting: {
+    multicast: { enabled: false },
+  },
+}

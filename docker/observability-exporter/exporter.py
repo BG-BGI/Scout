@@ -54,13 +54,12 @@ HZ_TOPICS = {
 DDS_TOPICS = sorted(set(HZ_TOPICS) | {"/map", "/goal_pose"})
 
 # Sourced inside the `robot` container before every `ros2` exec — matches the
-# &base environment in docker-compose.yaml so discovery-server introspection
-# actually sees the graph (see scout/config/super_client.xml).
+# &base environment in docker-compose.yaml (simple discovery on loopback,
+# ADR-0022; the discovery-server/SUPER_CLIENT era is over).
 ROS_EXEC_PREFIX = (
     "source /opt/ros/humble/setup.bash && "
     "source /opt/overlay/install/setup.bash && "
-    "export ROS_DOMAIN_ID=17 ROS_DISCOVERY_SERVER=127.0.0.1:11811 "
-    "ROS_SUPER_CLIENT=1 FASTDDS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml && "
+    "export ROS_DOMAIN_ID=17 ROS_LOCALHOST_ONLY=1 && "
 )
 
 docker_client = docker.from_env()

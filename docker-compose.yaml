@@ -2,20 +2,18 @@ x-service: &base
   image: scout:latest
   network_mode: host
   ipc: host
-  # Shared DDS domain with the companion (ADR-0020): ROS_LOCALHOST_ONLY=1 is
-  # gone — the old wlan0-blackhole blame on DDS was never confirmed and is
-  # re-tested per docs/platform.md before this merges. Domain 17 must match
-  # companion/docker-compose.yaml exactly.
+  # DDS stays on loopback (ADR-0022): the re-test showed corp inter-VLAN
+  # filtering drops Pi<->companion UDP, so cross-machine topics ride the
+  # zenoh_bridge service (one TCP port) instead of the DDS wire. Simple
+  # discovery on localhost, NOT the old discovery server — the zenoh bridge is
+  # CycloneDDS-based and cannot register with a Fast DDS discovery server, so
+  # the server (and super_client.xml) are retired with ADR-0022. Trade-off
+  # knowingly reaccepted: throwaway-container discovery false negatives are
+  # back (judge liveness from logs/data topics, re-check negatives after
+  # 10-20 s). Domain 17 must match companion/docker-compose.yaml exactly.
   environment:
     - ROS_DOMAIN_ID=17
-    # Discovery Server instead of multicast simple discovery (see `discovery`
-    # service). Fixes the documented throwaway-container discovery false
-    # negatives and cuts discovery traffic. Clients retry the server until it
-    # appears, so start order doesn't matter.
-    # ⚠ Introspection from a shell now needs the SUPER_CLIENT profile or
-    # `ros2 topic list` reads near-empty (v2 filters by topic) — see
-    # scout/config/super_client.xml for the two-line recipe.
-    - ROS_DISCOVERY_SERVER=127.0.0.1:11811
+    - ROS_LOCALHOST_ONLY=1
   entrypoint: /ros_entrypoint.sh
   volumes:
     - .:/ros_ws/src/
@@ -30,19 +28,27 @@ x-service: &base
 
 services:
 
-  # Fast DDS Discovery Server v2 (id 0, loopback:11811). Every &base service is
-  # a discovery CLIENT via ROS_DISCOVERY_SERVER above; ros_mcp/scout_skills are
-  # rosbridge-websocket-only and unaffected. Server-id 0 is encoded in
-  # scout/config/super_client.xml's RemoteServer prefix — change both together.
-  # If this restarts, clients re-ping and re-register on their own; already-
-  # matched endpoints keep talking (discovery only, no data plane).
-  discovery:
-    <<: *base
+  # Pi<->companion transport (ADR-0022): zenoh-bridge-ros2dds joins the local
+  # loopback DDS graph as an ordinary participant and serves ONE TCP listener
+  # (:7447) that the companion's bridge dials. Per-topic allowlist in
+  # scout/config/zenoh_bridge.json5 — nothing crosses that isn't named there,
+  # and nothing companion-side can reach a /cmd_vel_* topic (ADR-0001 audit).
+  # Absent/blocked companion costs the Pi nothing: the bridge idles.
+  zenoh_bridge:
+    image: eclipse/zenoh-bridge-ros2dds:1.10.0
+    network_mode: host
+    ipc: host
     restart: unless-stopped
-    # LAN-bound (ADR-0020) so the companion VM can register; Pi services keep
-    # dialing 127.0.0.1:11811 (loopback reaches a 0.0.0.0 bind), so the Pi
-    # standalone path is unchanged when no companion exists.
-    command: fastdds discovery -i 0 -l 0.0.0.0 -p 11811
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+    volumes:
+      - ./scout/config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+    command: -c /zenoh_bridge.json5
 
   # Installs scout (+ deps) into $OVERLAY. Symlink-install: edits under the bind
   # mount take effect after rebuild without a second copy.
@@ -86,7 +92,7 @@ services:
     # Gate: record `ros2 topic hz /scan` + depth cloud before/after enabling.
     environment:
       - ROS_DOMAIN_ID=17
-      - ROS_DISCOVERY_SERVER=127.0.0.1:11811
+      - ROS_LOCALHOST_ONLY=1
       - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/sensor_publish_profiles.xml
       - RMW_FASTRTPS_USE_QOS_FROM_XML=1
     deploy:
@@ -182,7 +188,7 @@ services:
     restart: unless-stopped
     environment:
       - ROS_DOMAIN_ID=17
-      - ROS_DISCOVERY_SERVER=127.0.0.1:11811
+      - ROS_LOCALHOST_ONLY=1
     entrypoint: /ros_entrypoint.sh
     deploy:
       resources:
@@ -197,19 +203,9 @@ services:
   rosbridge:
     <<: *base
     restart: unless-stopped
-    # ⚠ rosbridge_library's call_service does a get_service_names_and_types()
-    # pre-check before dispatching. Under Fast DDS Discovery Server v2 a plain
-    # client's graph view is topic-filtered to only the endpoints it holds
-    # (measured: 6 services), so EVERY web-UI service call (/patrol/*,
-    # /follow_me/*, trick play, estop) failed with "Service ... does not exist"
-    # while topic pub/sub (joystick, /goal_pose) kept working — topics skip the
-    # graph query. SUPER_CLIENT gives rosbridge the full graph from the server
-    # (measured: 283 services incl. /patrol/start). Adding `environment:` here
-    # overrides the &base merge, so all three vars are re-listed.
-    environment:
-      - ROS_DOMAIN_ID=17
-      - ROS_DISCOVERY_SERVER=127.0.0.1:11811
-      - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml
+    # Under simple discovery (ADR-0022) rosbridge sees the full graph natively;
+    # the old discovery-server SUPER_CLIENT workaround (service calls failing
+    # with "Service ... does not exist" while topics worked) no longer applies.
     deploy:
       resources:
         limits:

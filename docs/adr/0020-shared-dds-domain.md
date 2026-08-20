@@ -1,6 +1,9 @@
 # ADR-0020: Shared DDS domain across Pi and companion; discovery server LAN-bound
 
-Status: accepted (contingent on the wlan0 re-test in docs/platform.md) · Date: 2026-08-19
+Status: **SUPERSEDED by ADR-0022 (2026-08-20)** — the re-test found corp
+inter-VLAN filtering drops Pi↔companion UDP outright (zero packets arrived;
+the wlan0-lockup question was never reached). `ROS_DOMAIN_ID=17` survives;
+the LAN-bound discovery server and cross-machine DDS do not. · Date: 2026-08-19
 
 ## Context
 

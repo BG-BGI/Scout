@@ -28,14 +28,12 @@ QoS: without the overrides file a reliable-by-default recorder subscription
 receives NOTHING from best-effort publishers (/imu/data — the same silent
 trap as the EKF QoS note) — bag_qos_overrides.yaml rides every recording.
 
-⚠ The recorder subprocess is spawned as a Discovery Server SUPER CLIENT
-(FASTRTPS_DEFAULT_PROFILES_FILE=super_client.xml in its env), not this node's
-own profile. `ros2 bag record` resolves each topic's type via graph
-enumeration (it isn't given types on the CLI), and Discovery Server v2 blinds
-plain clients to exactly that — verified on first Pi bring-up: a plain-client
-record captured zero messages from an actively-publishing topic; the super-client
-version captured everything. Omitting this makes /record/start "succeed" and
-produce an empty, valid-looking bag with no error anywhere.
+Discovery history (ADR-0022): under the retired Discovery Server the record
+subprocess had to be spawned as a SUPER CLIENT or it captured zero messages
+into a valid-looking bag (Discovery Server v2 blinds plain clients to graph
+enumeration, which `ros2 bag record` needs for type resolution). Under simple
+discovery the child sees the full graph natively, so no profile injection —
+if a Discovery Server ever returns, that trap returns with it.
 """
 
 import os
@@ -101,19 +99,10 @@ class BagRecorder(Node):
             # Parent only — rosbag2 creates the leaf and errors if it exists.
             os.makedirs(self._root, exist_ok=True)
             argv = recording.record_argv(topics, out_dir, self._qos_overrides)
-            # ⚠ `ros2 bag record` is NOT given each topic's type on the
-            # command line, so it resolves types (and matches publishers) by
-            # enumerating the ROS graph — the exact operation Discovery
-            # Server v2 blinds for a plain client (same trap as `ros2 topic
-            # list` reading near-empty; scout/config/super_client.xml).
-            # Verified on first Pi bring-up: a plain-client record captured
-            # ZERO messages from a topic publishing the whole time; the identical
-            # command as a super client captured every message. So the CHILD
-            # needs the super-client profile, not just this node's own.
-            env = dict(os.environ)
-            env['FASTRTPS_DEFAULT_PROFILES_FILE'] = resolve_config(
-                'super_client.xml')
-            self._child = subprocess.Popen(argv, env=env)
+            # Simple discovery (ADR-0022): the child enumerates the graph
+            # natively — no SUPER_CLIENT profile injection (see module docstring
+            # for the Discovery Server-era trap this replaced).
+            self._child = subprocess.Popen(argv)
         except (ValueError, OSError) as exc:
             resp.success = False
             resp.message = 'record start failed: %s' % exc

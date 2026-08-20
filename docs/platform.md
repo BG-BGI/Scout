@@ -18,13 +18,23 @@ companion bridge). Companion stack: `companion/`.
 | Docker | Engine + Compose v2, `docker.service` enabled |
 | **Network** | **Corp WiFi (wlan0) is the PRIMARY link** — degradation is an expected operating condition, not an edge case. Size every staleness/timeout number against the measured dropout profile below |
 
-## DDS identity (ADR-0020)
+## DDS identity + transport (ADR-0022)
 
 | Item | Value |
 |---|---|
-| `ROS_DOMAIN_ID` | **17** — set explicitly on every Pi service and every companion service; a machine on another value silently sees nothing |
-| Discovery | Fast DDS Discovery Server v2, id 0, on the Pi at `:11811`, LAN-bound (`-l 0.0.0.0`). Pi services keep `ROS_DISCOVERY_SERVER=127.0.0.1:11811` (standalone path unchanged); companion sets `ROS_DISCOVERY_SERVER=<pi-ip>:11811` |
-| Introspection | Shells still need SUPER_CLIENT (`scout/config/super_client.xml` recipe) or `ros2 topic list` reads near-empty |
+| `ROS_DOMAIN_ID` | **17** on every service, both machines (load-bearing locally, cosmetic across the bridge) |
+| Discovery | **Simple discovery on loopback, `ROS_LOCALHOST_ONLY=1`, both machines.** The Fast DDS Discovery Server + `super_client.xml` are retired (ADR-0022: the zenoh bridge is CycloneDDS-based and can't join a server graph). Throwaway-container discovery false negatives are back — judge liveness from logs/data topics |
+| Cross-machine | `eclipse/zenoh-bridge-ros2dds:1.10.0`, one per machine: Pi listens `tcp/:7447`, companion (10.1.57.18) dials out. Allowlists in `scout/config/zenoh_bridge.json5` / `companion/config/zenoh_bridge.json5`, kept mirrored; Pi accepts nothing inbound |
+| ⚠ | The `ROS_LOCALHOST_ONLY` **env var overrides** the bridge's config key — compose sets it on both bridge services; don't trust the json5 alone |
+
+## Re-test outcome (2026-08-20)
+
+Plain cross-VLAN DDS is dead on this network: with the Pi's discovery server
+LAN-bound on `:11812` and the Debian box (10.1.57.18, different VLAN) dialing
+it, `tcpdump -ni wlan0 udp port 11812` on the Pi saw **zero packets** — corp
+inter-VLAN UDP filtering. The wlan0-lockup question was never reached and is
+moot while DDS stays on loopback. Step 1 below is retained as the recipe if
+same-subnet placement ever revives the plain-DDS option.
 
 ## Link baselines (fill in as measured)
 
