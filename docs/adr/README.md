@@ -20,3 +20,11 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0011](0011-waypoint-store.md) | One JSON waypoint/route store shared by patrol + skills |
 | [0012](0012-pure-core-testing.md) | Pure `scout.core` + bare-pytest testing |
 | [0013](0013-conventions-as-tests.md) | Conventions enforced by ruff + structural tests, gated by CI |
+| [0014](0014-unified-diagnostics.md) | Unified health on /diagnostics via one aggregator node |
+| [0015](0015-fail-fast-bringup.md) | Three-tier process-exit policy in robot.launch.py (fail-fast bring-up) |
+| [0016](0016-collision-monitor.md) | nav2_collision_monitor as the last-hop cmd_vel safety stage |
+| [0017](0017-record-on-demand.md) | rosbag record-on-demand via one subprocess-owning node |
+| [0018](0018-nav-cancel-and-state.md) | Dispatcher-aware nav cancel + consolidated /nav_state |
+| [0019](0019-keepout-speed-zones.md) | Keepout/speed zones — JSON polygons as truth, masks as artifacts |
+| [0020](0020-shared-dds-domain.md) | Shared DDS domain across Pi and companion; discovery server LAN-bound |
+| [0021](0021-no-companion-bridge.md) | No companion bridge — plain DDS; companion is a Linux host on the LAN |

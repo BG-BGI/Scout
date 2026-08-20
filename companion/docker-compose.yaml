@@ -1,0 +1,57 @@
+# Companion stack (ADR-0020/0021). Runs on a native Linux host on the robot's
+# LAN (host-setup.md) — never under Docker Desktop on macOS (NAT breaks the
+# DDS data plane). host networking = the host's own LAN identity.
+#
+# .env: PI_IP=<the Pi's address>  (cp .env.example .env)
+
+x-companion: &companion
+  build: .
+  image: scout-companion:latest
+  network_mode: host
+  ipc: host
+  environment:
+    # Must match the Pi's &base exactly (docs/platform.md): domain 17,
+    # discovery via the Pi's LAN-bound server. Data plane is peer-to-peer UDP.
+    - ROS_DOMAIN_ID=17
+    - ROS_DISCOVERY_SERVER=${PI_IP}:11811
+  restart: unless-stopped
+
+services:
+
+  # Live 3D capture, a standing capability from the moment this VM is up
+  # (spec §2.1). Consumes Pi topics over compressed transports — the JPEG /
+  # compressedDepth encoders on the Pi are per-subscriber lazy, so the Pi pays
+  # only while this is actually subscribed. Visual odometry OFF: the EKF's
+  # fused /odom (wheel speed + gyro yaw) is the pose input; rtabmap does
+  # appearance-based loop closure on top.
+  rtabmap:
+    <<: *companion
+    volumes:
+      - rtabmap_db:/root/.ros
+      - ./config:/companion/config:ro
+    command: >
+      ros2 launch rtabmap_launch rtabmap.launch.py
+        rtabmap_args:="--Rtabmap/DetectionRate 1"
+        rgb_topic:=/camera/camera/color/image_raw
+        depth_topic:=/camera/camera/aligned_depth_to_color/image_raw
+        camera_info_topic:=/camera/camera/color/camera_info
+        rgb_image_transport:=compressed
+        depth_image_transport:=compressedDepth
+        visual_odometry:=false
+        odom_topic:=/odom
+        frame_id:=base_link
+        subscribe_scan:=true
+        scan_topic:=/scan
+        approx_sync:=true
+        approx_sync_max_interval:=0.15
+        rtabmap_viz:=false
+        rviz:=false
+
+  # Second Foxglove bridge, VM-local (:8766), so viewing cloud_map never hauls
+  # the cloud back through the Pi's :8765.
+  foxglove_bridge:
+    <<: *companion
+    command: ros2 run foxglove_bridge foxglove_bridge --ros-args -p port:=8766
+
+volumes:
+  rtabmap_db:

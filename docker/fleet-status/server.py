@@ -33,6 +33,9 @@ import docker
 from docker.errors import NotFound
 
 WIFI_IFACE = os.environ.get('WIFI_IFACE', 'wlan0')
+# Companion machine to health-check (ADR-0021). Unset = feature hidden: the
+# Pi must work identically with no companion (spec §0.7).
+COMPANION_HOST = os.environ.get('COMPANION_HOST', '')
 
 PROJECT = os.environ.get('COMPOSE_PROJECT_NAME', 'scout')
 SELF_SERVICE = 'fleet_status'
@@ -209,6 +212,79 @@ def wifi_status():
     }
 
 
+# --- Companion health + WiFi quality history (ADR-0020/0021) ---------------
+# Background samplers, LAN-only observers: display/telemetry, never gating —
+# per-topic staleness gating is a Phase 3 concern and lives on the Pi's ROS
+# side, not here.
+
+_quality_lock = threading.Lock()
+# ring of (t_unix, signal_or_None); 360 samples at 10 s = 1 h of history
+_quality_ring = []
+_quality_dropouts = 0
+_companion = {'configured': bool(COMPANION_HOST), 'host': COMPANION_HOST or None,
+              'reachable': None, 'rtt_ms': None, 'last_seen': None}
+
+
+def _ping_once(host, timeout_s=1):
+    """(reachable, rtt_ms) via one system ping; no raw sockets needed."""
+    try:
+        r = subprocess.run(['ping', '-c', '1', '-W', str(timeout_s), host],
+                           capture_output=True, text=True, timeout=timeout_s + 2)
+        if r.returncode != 0:
+            return False, None
+        for tok in r.stdout.split():
+            if tok.startswith('time='):
+                return True, float(tok[5:])
+        return True, None
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        return False, None
+
+
+def _companion_sampler():
+    while True:
+        ok, rtt = _ping_once(COMPANION_HOST)
+        _companion['reachable'] = ok
+        _companion['rtt_ms'] = rtt
+        if ok:
+            _companion['last_seen'] = time.time()
+        time.sleep(5)
+
+
+def _wifi_quality_sampler():
+    global _quality_dropouts
+    was_connected = True
+    while True:
+        st = wifi_status()
+        connected = bool(st.get('connected'))
+        with _quality_lock:
+            _quality_ring.append((round(time.time(), 1), st.get('signal')))
+            del _quality_ring[:-360]
+            if was_connected and not connected:
+                _quality_dropouts += 1
+        was_connected = connected
+        time.sleep(10)
+
+
+def companion_health():
+    if not COMPANION_HOST:
+        return {'configured': False}
+    return dict(_companion)
+
+
+def wifi_quality():
+    with _quality_lock:
+        samples = list(_quality_ring)
+        dropouts = _quality_dropouts
+    signals = [s for _, s in samples if s is not None]
+    return {
+        'iface': WIFI_IFACE,
+        'samples': samples,
+        'signal_now': signals[-1] if signals else None,
+        'signal_min_1h': min(signals) if signals else None,
+        'dropouts_since_start': dropouts,
+    }
+
+
 def wifi_connections():
     """Known (saved) wifi profiles. nmcli's default output never includes PSKs."""
     ok, out = _nmcli('-t', '-f', 'NAME,TYPE,AUTOCONNECT,ACTIVE', 'connection', 'show')
@@ -305,6 +381,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, wifi_connections())
         elif self.path == '/api/wifi/scan':
             self._send_json(200, wifi_scan())
+        elif self.path == '/api/wifi/quality':
+            self._send_json(200, wifi_quality())
+        elif self.path == '/api/companion':
+            self._send_json(200, companion_health())
         else:
             self._send_json(404, {'error': 'not found'})
 
@@ -372,4 +452,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    threading.Thread(target=_wifi_quality_sampler, daemon=True).start()
+    if COMPANION_HOST:
+        threading.Thread(target=_companion_sampler, daemon=True).start()
     ThreadingHTTPServer(('0.0.0.0', 9003), Handler).serve_forever()

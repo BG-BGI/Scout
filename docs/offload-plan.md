@@ -8,7 +8,7 @@ The Pi 5 is genuinely saturated: `scout/config/slam.yaml` records load avg 18.9 
 
 Two hard constraints already in the repo decide the shape of any offload:
 
-1. **DDS must stay off the wire.** `ROS_LOCALHOST_ONLY=1` + the loopback discovery server exist because DDS multicast blackholed the Pi's corp-WiFi link for ~10 min (docker-compose.yaml:5–8). "Run a ROS node in the cloud" cannot mean extending the DDS graph over WAN.
+1. ~~**DDS must stay off the wire.**~~ **SUPERSEDED by ADR-0020 (2026-08-19):** the lockup was never confirmed to be DDS; the Pi and companion now share domain 17 over a LAN-bound discovery server, gated on the re-test in `docs/platform.md`. Still true for **WAN**: extending the DDS graph over the internet remains off the table — the zenoh section below is the WAN/fallback shape (and ADR-0021's sanctioned fallback if the re-test fails).
 2. **The link dies, and the robot must stay safe when it does.** `scout/scout/link_watchdog.py` (born of the 2026-08-14 WiFi dead-zone runaway) cancels nav goals after 5 s of link loss. Anything moved off-Pi must fail exactly this gracefully: degraded capability, never degraded safety.
 
 ## What can never leave the Pi

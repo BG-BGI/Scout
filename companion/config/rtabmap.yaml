@@ -1,0 +1,20 @@
+# RTAB-Map parameter overrides (reference — currently applied inline).
+#
+# rtabmap.launch.py takes RTAB-Map's OWN parameters through the
+# `rtabmap_args` launch argument as `--Group/Name value` pairs (see the
+# rtabmap service command in ../docker-compose.yaml), NOT through a ROS
+# params file — a --params-file here would set ROS node params, which is a
+# different namespace and silently does nothing for Rtabmap/* keys.
+#
+# Currently applied (docker-compose.yaml):
+#   --Rtabmap/DetectionRate 1       # 1 Hz map update; RGBD pairs arrive ~5 Hz
+#                                   # (color 15 Hz vs depth 5 Hz, approx_sync
+#                                   # max interval 0.15 s)
+#
+# Candidates when tuning starts (add to rtabmap_args):
+#   --Mem/IncrementalMemory true    # (default) multi-session mapping
+#   --Grid/RangeMax 5.0             # cap cloud raster range
+#   --RGBD/LinearUpdate 0.1         # keyframe gating by travel
+#   --Rtabmap/TimeThr 700           # bound per-update time at scale
+#
+# Fresh session: `docker compose down -v` (DB lives in the rtabmap_db volume).

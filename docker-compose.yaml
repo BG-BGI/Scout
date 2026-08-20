@@ -2,12 +2,12 @@ x-service: &base
   image: scout:latest
   network_mode: host
   ipc: host
-  # Keep DDS off wlan0: discovery/multicast on the corp WiFi blackholed the Pi's
-  # link for ~10 min after stack start (association held, no disconnect logged).
-  # All nodes run on the Pi; Foxglove/webui ride websockets, so nothing needs DDS
-  # off-host. Remove only if a ROS node must run on another machine.
+  # Shared DDS domain with the companion (ADR-0020): ROS_LOCALHOST_ONLY=1 is
+  # gone — the old wlan0-blackhole blame on DDS was never confirmed and is
+  # re-tested per docs/platform.md before this merges. Domain 17 must match
+  # companion/docker-compose.yaml exactly.
   environment:
-    - ROS_LOCALHOST_ONLY=1
+    - ROS_DOMAIN_ID=17
     # Discovery Server instead of multicast simple discovery (see `discovery`
     # service). Fixes the documented throwaway-container discovery false
     # negatives and cuts discovery traffic. Clients retry the server until it
@@ -39,7 +39,10 @@ services:
   discovery:
     <<: *base
     restart: unless-stopped
-    command: fastdds discovery -i 0 -l 127.0.0.1 -p 11811
+    # LAN-bound (ADR-0020) so the companion VM can register; Pi services keep
+    # dialing 127.0.0.1:11811 (loopback reaches a 0.0.0.0 bind), so the Pi
+    # standalone path is unchanged when no companion exists.
+    command: fastdds discovery -i 0 -l 0.0.0.0 -p 11811
 
   # Installs scout (+ deps) into $OVERLAY. Symlink-install: edits under the bind
   # mount take effect after rebuild without a second copy.
@@ -76,6 +79,16 @@ services:
     <<: *base
     restart: unless-stopped
     privileged: true   # sole device user: UART, USB lidar/camera, SPI strip
+    # `environment:` here overrides the &base merge, so the two shared vars are
+    # re-listed (same trap as rosbridge below). The XML enables ASYNCHRONOUS
+    # publish on the big sensor streams (§9.5a): with WiFi subscribers
+    # (ADR-0020) a blocked wlan0 write must not stall a sensor callback.
+    # Gate: record `ros2 topic hz /scan` + depth cloud before/after enabling.
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_DISCOVERY_SERVER=127.0.0.1:11811
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/sensor_publish_profiles.xml
+      - RMW_FASTRTPS_USE_QOS_FROM_XML=1
     deploy:
       resources:
         limits:
@@ -168,7 +181,7 @@ services:
     ipc: host
     restart: unless-stopped
     environment:
-      - ROS_LOCALHOST_ONLY=1
+      - ROS_DOMAIN_ID=17
       - ROS_DISCOVERY_SERVER=127.0.0.1:11811
     entrypoint: /ros_entrypoint.sh
     deploy:
@@ -194,7 +207,7 @@ services:
     # (measured: 283 services incl. /patrol/start). Adding `environment:` here
     # overrides the &base merge, so all three vars are re-listed.
     environment:
-      - ROS_LOCALHOST_ONLY=1
+      - ROS_DOMAIN_ID=17
       - ROS_DISCOVERY_SERVER=127.0.0.1:11811
       - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml
     deploy:
@@ -371,6 +384,9 @@ services:
     restart: unless-stopped
     environment:
       - COMPOSE_PROJECT_NAME=scout
+      # Companion VM health check (ADR-0021); unset = panel hidden, Pi
+      # standalone unaffected. Set in .env once the VM has a stable IP.
+      - COMPANION_HOST=${COMPANION_HOST:-}
     deploy:
       resources:
         limits:

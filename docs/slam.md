@@ -152,6 +152,11 @@ Ranked by expected value:
 **Verdict: keep slam_toolbox for live navigation; add RTAB-Map offboard if
 the mission needs 3D capture. Do not run RTAB-Map on the Pi.**
 
+> **⟲ The bag-record-then-Mac workflow below is SUPERSEDED (2026-08-19):**
+> RTAB-Map now runs live on the companion over shared DDS — see ADR-0020/0021
+> and `companion/`. The "not on the Pi" verdict stands (it was CPU, not
+> transport). The bag shape remains useful as the offline replay gate.
+
 - What it buys: RGB-D 3D maps (cloud/mesh — the BIM/as-built deliverable),
   appearance-based loop closure (works where 2D scan geometry is ambiguous —
   long uniform pipes), multi-session mapping.

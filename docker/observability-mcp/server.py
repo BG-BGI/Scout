@@ -36,7 +36,7 @@ MOTION_SERVICES = {"robot"}
 ROS_EXEC_PREFIX = (
     "source /opt/ros/humble/setup.bash && "
     "source /opt/overlay/install/setup.bash && "
-    "export ROS_LOCALHOST_ONLY=1 ROS_DISCOVERY_SERVER=127.0.0.1:11811 "
+    "export ROS_DOMAIN_ID=17 ROS_DISCOVERY_SERVER=127.0.0.1:11811 "
     "ROS_SUPER_CLIENT=1 FASTDDS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/super_client.xml && "
 )
 
