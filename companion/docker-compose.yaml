@@ -8,6 +8,10 @@
 # Images come from GHCR (built by .github/workflows/companion-images.yml on
 # push) — box updates via ./update.sh (git pull + compose pull). The build:
 # keys stay for local dev only.
+# Pin the project name so container labels are deterministic regardless of the
+# clone directory — fleet_status filters containers by this exact project.
+name: scout-companion
+
 x-companion: &companion
   build: .
   image: ghcr.io/bg-bgi/scout-companion:latest
@@ -118,6 +122,26 @@ services:
     environment:
       - ROS_DOMAIN_ID=17
       - ROS_LOCALHOST_ONLY=1
+
+  # Companion-side fleet_status (:9003) — same image/code as the Pi's, scoped
+  # to THIS box's compose project. Backs the webui System panel's "Companion"
+  # subsection: per-container stop/restart + restart-all + a host reboot.
+  # FLEET_ALLOW_HOST_REBOOT=1 enables /api/reboot-host HERE only (the Pi leaves
+  # it unset). privileged + the docker & dbus sockets: docker.sock for container
+  # control, the system bus for logind Reboot. /hostfs for disk vitals.
+  fleet_status:
+    image: ghcr.io/bg-bgi/scout-fleet-status:latest
+    network_mode: host
+    ipc: host
+    privileged: true
+    restart: unless-stopped
+    environment:
+      - COMPOSE_PROJECT_NAME=scout-companion
+      - FLEET_ALLOW_HOST_REBOOT=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/hostfs:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
 
   # Local Foxglove bridge (:8766) — view /rtabmap/cloud_map from this box
   # without hauling the cloud back through the Pi's :8765.

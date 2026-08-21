@@ -39,6 +39,12 @@ COMPANION_HOST = os.environ.get('COMPANION_HOST', '')
 
 PROJECT = os.environ.get('COMPOSE_PROJECT_NAME', 'scout')
 SELF_SERVICE = 'fleet_status'
+
+# Host reboot is OFF by default and enabled only where it's wanted — the
+# companion box sets FLEET_ALLOW_HOST_REBOOT=1 in its compose. The Pi's
+# fleet_status leaves it unset, so /api/reboot-host 403s there and the webui
+# hides the button: no accidental "reboot the robot's brain".
+ALLOW_HOST_REBOOT = os.environ.get('FLEET_ALLOW_HOST_REBOOT') == '1'
 RESTART_ALL_STAGGER_S = 2.0
 # /hostfs is the host's root, bind-mounted read-only (compose) so disk usage
 # reflects the Pi's real SD card, not this container's own overlay fs.
@@ -170,6 +176,22 @@ def restart_all_bg():
         except NotFound:
             pass
         time.sleep(RESTART_ALL_STAGGER_S)
+
+
+def reboot_host():
+    """Reboot the HOST via logind over the bind-mounted system D-Bus socket —
+    the same socket nmcli already uses. No host PID namespace needed (nsenter
+    would only see the container's PID 1). Companion-only (ALLOW_HOST_REBOOT)."""
+    try:
+        subprocess.run(
+            ['dbus-send', '--system', '--print-reply',
+             '--dest=org.freedesktop.login1', '/org/freedesktop/login1',
+             'org.freedesktop.login1.Manager.Reboot', 'boolean:true'],
+            check=True, capture_output=True, timeout=10,
+        )
+        return True, 'reboot requested'
+    except Exception as e:  # noqa: BLE001 — surface any failure to the caller
+        return False, str(e)
 
 
 def _nmcli(*args, timeout=15):
@@ -427,6 +449,15 @@ class Handler(BaseHTTPRequestHandler):
         if parts[:2] == ['api', 'restart-all']:
             threading.Thread(target=restart_all_bg, daemon=True).start()
             self._send_json(202, {'ok': True, 'note': 'restarting, staggered'})
+            return
+
+        if parts[:2] == ['api', 'reboot-host']:
+            if not ALLOW_HOST_REBOOT:
+                self._send_json(403, {'error': 'host reboot not enabled here '
+                                      '(FLEET_ALLOW_HOST_REBOOT unset)'})
+                return
+            ok, detail = reboot_host()
+            self._send_json(202 if ok else 500, {'ok': ok, 'detail': detail})
             return
 
         if len(parts) == 4 and parts[0] == 'api' and parts[1] == 'containers':

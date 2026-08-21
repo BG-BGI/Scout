@@ -1110,10 +1110,10 @@ function fmtUptime(s) {
   return h > 0 ? `${h}h${m}m` : `${m}m`;
 }
 
-function renderVitals(v) {
+function renderVitals(v, el = sysVitals) {
   const tempClass = v.temp_c == null ? '' : v.temp_c >= 80 ? 'bad' : v.temp_c >= 70 ? 'warn' : '';
   const cpuClass = v.cpu_percent >= 95 ? 'bad' : v.cpu_percent >= 85 ? 'warn' : '';
-  sysVitals.innerHTML = `
+  el.innerHTML = `
     <span class="${cpuClass}">CPU ${v.cpu_percent}%</span>
     <span>Load ${v.load_avg.map((n) => n.toFixed(1)).join('/')}</span>
     <span>Mem ${(v.mem_used_mb / 1024).toFixed(1)}/${(v.mem_total_mb / 1024).toFixed(1)} GB</span>
@@ -1183,6 +1183,102 @@ async function refreshSystem() {
 }
 refreshSystem();
 setInterval(refreshSystem, 30000);
+
+// --- companion panel: the box's OWN fleet_status (:9003) ---------------------------
+// Same backend/code as the Pi's, running on the companion and scoped to its own
+// compose project. We learn the box address from the Pi's /api/companion
+// (COMPANION_HOST); if it's unconfigured the panel hides itself (Pi-standalone,
+// spec §0.7). Browser->companion works directly (same as Foxglove :8766). Host
+// reboot is a companion-only endpoint (FLEET_ALLOW_HOST_REBOOT).
+const cmpState = document.getElementById('cmp-state');
+const cmpVitals = document.getElementById('cmp-vitals');
+const cmpContainers = document.getElementById('cmp-containers');
+const cmpRestartAll = document.getElementById('cmp-restart-all');
+const cmpRebootHost = document.getElementById('cmp-reboot-host');
+const cmpPanel = document.getElementById('cmp-panel');
+let CMP_API = null;
+
+function renderCmpContainers(list) {
+  cmpContainers.innerHTML = '';
+  for (const c of list) {
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    const running = c.status === 'running';
+    row.innerHTML = `
+      <span class="svc-dot ${c.status}"></span>
+      <span class="svc-name">${c.service}</span>
+      <span class="svc-stat">${running ? `${c.cpu_percent}% · ${c.mem_mb}MB` : c.status}</span>
+      <span class="svc-actions">
+        <button data-act="stop" ${!running || c.self ? 'disabled' : ''}>Stop</button>
+        <button data-act="restart" ${c.self ? 'disabled' : ''}>Restart</button>
+      </span>
+    `;
+    row.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => postCmpAction(c.service, btn.dataset.act));
+    });
+    cmpContainers.appendChild(row);
+  }
+}
+
+async function postCmpAction(service, action) {
+  if (!CMP_API) return;
+  if (!confirm(`${action} companion "${service}"? Perception/mapping on the box may drop until it relaunches (the Pi/robot is unaffected).`)) return;
+  try {
+    await fetch(`${CMP_API}/containers/${service}/${action}`, { method: 'POST' });
+  } catch (e) { /* companion offline; next poll will show it */ }
+  setTimeout(refreshCompanion, 1500);
+}
+
+cmpRestartAll.addEventListener('click', async () => {
+  if (!CMP_API) return;
+  if (!confirm('Restart ALL companion containers? Mapping/perception on the box drops until they relaunch (staggered). The Pi/robot is unaffected.')) return;
+  cmpRestartAll.disabled = true;
+  cmpRestartAll.textContent = 'Restarting…';
+  try { await fetch(`${CMP_API}/restart-all`, { method: 'POST' }); } catch (e) { /* ignore */ }
+  setTimeout(() => {
+    cmpRestartAll.disabled = false;
+    cmpRestartAll.textContent = 'Restart All';
+    refreshCompanion();
+  }, 10000);
+});
+
+cmpRebootHost.addEventListener('click', async () => {
+  if (!CMP_API) return;
+  if (!confirm('REBOOT the companion machine? The box goes down ~1–2 min; all companion containers restart on boot. The Pi/robot is unaffected.')) return;
+  cmpRebootHost.disabled = true;
+  cmpRebootHost.textContent = 'Rebooting…';
+  try { await fetch(`${CMP_API}/reboot-host`, { method: 'POST' }); } catch (e) { /* box going down */ }
+  setTimeout(() => {
+    cmpRebootHost.disabled = false;
+    cmpRebootHost.textContent = 'Reboot Host';
+    refreshCompanion();
+  }, 15000);
+});
+
+async function refreshCompanion() {
+  // Resolve the box address once, from the Pi's companion health.
+  if (!CMP_API) {
+    try {
+      const c = await fetch(FLEET_API + '/companion').then((r) => r.json());
+      if (!c || !c.configured || !c.host) { cmpPanel.style.display = 'none'; return; }
+      CMP_API = 'http://' + c.host + ':9003/api';
+    } catch (e) { cmpState.textContent = 'offline'; return; }
+  }
+  try {
+    const [stats, containers] = await Promise.all([
+      fetch(CMP_API + '/stats').then((r) => r.json()),
+      fetch(CMP_API + '/containers').then((r) => r.json()),
+    ]);
+    cmpState.textContent = `${containers.filter((c) => c.status === 'running').length}/${containers.length} up`;
+    renderVitals(stats, cmpVitals);
+    renderCmpContainers(containers);
+  } catch (e) {
+    cmpState.textContent = 'unreachable';
+    cmpVitals.textContent = 'companion fleet_status unreachable';
+  }
+}
+refreshCompanion();
+setInterval(refreshCompanion, 30000);
 
 // --- network panel: NM known networks + connect/forget ----------------------------
 // Same fleet_status backend, /api/wifi/*. Switching networks risks stranding this

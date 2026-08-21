@@ -13,6 +13,7 @@ on:
     paths:
       - "companion/Dockerfile"
       - "companion/detector/**"
+      - "docker/fleet-status/**"
       - ".github/workflows/companion-images.yml"
   workflow_dispatch:
 
@@ -30,6 +31,9 @@ jobs:
             context: companion
           - image: scout-companion-detector
             context: companion/detector
+          # Same source as the Pi's local build; GHCR copy is for the companion.
+          - image: scout-fleet-status
+            context: docker/fleet-status
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
