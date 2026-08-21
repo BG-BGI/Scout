@@ -24,6 +24,10 @@ from PIL import Image as PILImage
 
 import rclpy
 from rclpy.node import Node
+from rclpy.duration import Duration
+from rclpy.time import Time
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import (
     QoSProfile,
     QoSDurabilityPolicy,
@@ -117,14 +121,22 @@ class Detector(Node):
         self.color = None
         self.depth = None
         self.info = None
+        # Reentrant group + MultiThreadedExecutor (see main): the blocking YOLO
+        # in _tick must NOT starve the image/TF callbacks, or self.color goes
+        # stale and every cycle re-projects the same frame (identical scores,
+        # objects that rotate with the robot instead of holding still).
+        self.cbg = ReentrantCallbackGroup()
         self.create_subscription(CompressedImage, g("color_topic"),
-            self._on_color, sensor)
+            self._on_color, sensor, callback_group=self.cbg)
         self.create_subscription(CompressedImage, g("depth_topic"),
-            self._on_depth, sensor)
+            self._on_depth, sensor, callback_group=self.cbg)
         self.create_subscription(CameraInfo, g("info_topic"),
-            self._on_info, sensor)
+            self._on_info, sensor, callback_group=self.cbg)
 
-        self.tf_buf = tf2_ros.Buffer()
+        # 30 s cache so a lookup at the image stamp still finds map->odom even
+        # when slam future-dates it (~0.7 s ahead) and frames lag through the
+        # bridge.
+        self.tf_buf = tf2_ros.Buffer(cache_time=Duration(seconds=30.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buf, self)
 
         latched = QoSProfile(
@@ -137,7 +149,8 @@ class Detector(Node):
         self.tracks: dict[int, dict] = {}
         self._next_id = 1
         self._warned = set()
-        self.create_timer(1.0 / max(g("rate_hz"), 0.1), self._tick)
+        self.create_timer(1.0 / max(g("rate_hz"), 0.1), self._tick,
+            callback_group=self.cbg)
         self.get_logger().info("world_detector up (gate 1: /world/objects local)")
 
     def _on_color(self, msg): self.color = msg
@@ -149,11 +162,17 @@ class Detector(Node):
             self._warned.add(key)
             self.get_logger().warn(text)
 
-    def _cam_to_map(self, pt, cam_frame):
-        """Optical-frame point -> map (x,y,z), or None if TF incomplete."""
+    def _cam_to_map(self, pt, cam_frame, stamp):
+        """Optical-frame point -> map (x,y,z), or None if TF incomplete.
+
+        Look up at the IMAGE stamp, not latest: composing a future-dated
+        map->odom (slam post-dates it ~0.7 s) with the current odom->base_link
+        mixes two times and smears a world-fixed object into rotation during a
+        pivot. The image stamp is Pi-clock, matching every bridged transform."""
         try:
             t = self.tf_buf.lookup_transform(
-                self.map_frame, cam_frame, rclpy.time.Time())
+                self.map_frame, cam_frame, Time.from_msg(stamp),
+                timeout=Duration(seconds=0.2))
         except TransformException:
             return None
         q = (t.transform.rotation.x, t.transform.rotation.y,
@@ -168,9 +187,11 @@ class Detector(Node):
         self.tracks = {i: tk for i, tk in self.tracks.items()
                        if now - tk["last_seen"] <= self.ttl}
 
-        if self.color is None:
+        color_msg = self.color  # local ref: a callback may replace it mid-tick
+        if color_msg is None:
             return
-        rgb = _decode_color(self.color)
+        stamp = color_msg.header.stamp
+        rgb = _decode_color(color_msg)
         dets = detect(rgb, self.min_conf)
 
         depth = _decode_depth(self.depth) if self.depth is not None else None
@@ -189,7 +210,7 @@ class Detector(Node):
                 u = (d["box"][0] + d["box"][2]) / 2
                 v = (d["box"][1] + d["box"][3]) / 2
                 pt = ((u - cx) / fx * z, (v - cy) / fy * z, z)
-                w = self._cam_to_map(pt, cam_frame)
+                w = self._cam_to_map(pt, cam_frame, stamp)
                 if w is None:
                     self._warn_once("notf",
                         f"TF {cam_frame}->{self.map_frame} incomplete "
@@ -243,8 +264,13 @@ class Detector(Node):
 def main():
     rclpy.init()
     node = Detector()
+    # MultiThreaded so the blocking YOLO tick runs on one thread while image/TF
+    # callbacks keep updating on others (single-threaded starves them -> stale
+    # frame + stale TF).
+    ex = MultiThreadedExecutor()
+    ex.add_node(node)
     try:
-        rclpy.spin(node)
+        ex.spin()
     except KeyboardInterrupt:
         pass
     finally:
