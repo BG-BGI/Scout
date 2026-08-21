@@ -729,6 +729,52 @@ async def camera_snapshot() -> Image:
     return Image(data=png, format="png")
 
 
+# --- World model (companion perception) --------------------------------------
+#
+# The companion runs continuous YOLO on the bridged D455 stream and maintains a
+# map-frame object table (WORLDMODEL.md). It publishes /world/objects back over
+# the zenoh bridge (Pi allowlist `subscribers` — the only inbound topic). This
+# is the "no stop to look" path: query the live model instead of grabbing and
+# reasoning over one frame per turn. Silent topic => companion stack absent, and
+# the Pi runs fine without it (spec §0.7), so this degrades to an offline note
+# rather than erroring.
+
+WORLD_OBJECTS_TOPIC = "/world/objects"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def whats_around_me() -> dict:
+    """Objects Scout currently perceives around it, in the map frame — a live
+    world-model kept continuously on the companion, so it needs no camera stop
+    and no per-frame turn. Each object: class, map-frame xy (hand straight to
+    go_to), height z, detection score, and seconds since last seen. Also returns
+    the model's own timestamp. If the companion perception stack is down the
+    topic is silent and this reports offline (the Pi is unaffected)."""
+    async with RosBridge() as rb:
+        # Latched topic, but the detector republishes ~3 Hz, so a volatile
+        # rosbridge sub catches the next message well inside the timeout.
+        msg = await rb.subscribe_once(
+            WORLD_OBJECTS_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+    if msg is None:
+        return {
+            "status": "world-model offline (companion down or /world/objects "
+            "not bridged)",
+            "objects": [],
+        }
+    try:
+        payload = json.loads(msg["data"])
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"malformed /world/objects payload: {e}")
+    objs = payload.get("objects", [])
+    return {
+        "frame": payload.get("frame", "map"),
+        "stamp": payload.get("stamp"),
+        "count": len(objs),
+        "objects": objs,
+    }
+
+
 # --- AprilTags ---------------------------------------------------------------
 #
 # Registry (sqlite, /maps/tags.db) + standoff geometry live in tags.py;
