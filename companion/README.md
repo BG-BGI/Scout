@@ -6,9 +6,14 @@ cross-machine traffic is `zenoh_bridge`'s **single TCP connection** to the
 Pi's `:7447` (corp inter-VLAN filtering drops UDP, so shared-domain DDS is
 out — measured 2026-08-20, ADR-0022).
 
+The box holds the **full Scout repo**; the companion services run from its
+`companion/` subdir (`cd <repo>/companion`), which is where every command below
+and in `host-setup.md` is run.
+
 **Contract: the Pi must keep working with this stack absent** (spec §0.7).
-The Pi-side bridge accepts nothing inbound (`subscribers: []`), so nothing
-here can reach any Pi topic, `/cmd_vel_*` included. Extending what crosses =
+The Pi-side bridge accepts only read-only world-model telemetry inbound
+(`subscribers: ["^/world/objects$"]` — WORLDMODEL.md gate 2), so nothing here
+can reach a control topic, `/cmd_vel_*` included. Extending what crosses =
 editing BOTH allowlists (`config/zenoh_bridge.json5` here, mirrored in
 `scout/config/zenoh_bridge.json5`) — deliberate, never wildcarded.
 
