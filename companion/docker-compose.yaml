@@ -71,6 +71,32 @@ services:
         rtabmap_viz:=false
         rviz:=false
 
+  # Local robot_state_publisher (WORLDMODEL.md TF fix). The URDF static chain
+  # base_link->...->camera_link does NOT survive the zenoh bridge: /tf_static has
+  # two latched publishers on the Pi (rsp + realsense) and transient_local replay
+  # over the bridge keeps only the last-received, so only realsense's camera-
+  # internal frames reach this box (measured: `tf2_echo base_link camera_link` =
+  # two unconnected trees, while `tf2_echo odom base_link` resolves fine — dynamic
+  # /tf crosses, static does not). Publishing the URDF LOCALLY is the standard
+  # multi-machine pattern and removes all dependence on /tf_static crossing.
+  # robot_state_publisher ships in ros-base (this image), so no rebuild. Meshes
+  # are irrelevant — kdl_parser reads only links/joints for TF.
+  robot_state_publisher:
+    image: scout-companion:latest
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+    volumes:
+      - ./description/scout_description.urdf:/urdf/scout_description.urdf:ro
+    # Pass the URDF as a positional file path — `--ros-args -p
+    # robot_description:=<xml>` cannot parse multiline XML (rcl param-rule
+    # parser aborts on the first newline/quote). The positional form loads the
+    # file straight into robot_description (Humble-supported).
+    command: ros2 run robot_state_publisher robot_state_publisher /urdf/scout_description.urdf
+
   # World-model detector (WORLDMODEL.md, gate 1). Continuous YOLO11n on the
   # bridged D455 stream -> map-frame object table on /world/objects (latched
   # std_msgs/String JSON). CPU-only, onnxruntime, no torch. Consumes only
