@@ -25,8 +25,12 @@
           "^/tf$",
           "^/tf_static$",
         ],
-        // Nothing flows INTO the Pi from the companion.
-        subscribers: [],
+        // Read-only world-model telemetry INTO the Pi (WORLDMODEL.md gate 2).
+        // First-ever inbound. Anchored, telemetry only — NOT a control topic;
+        // /cmd_vel_* stays absent, so companion cannot command motion (ADR-0001).
+        subscribers: [
+          "^/world/objects$",
+        ],
         service_servers: [],
         service_clients: [],
         action_servers: [],

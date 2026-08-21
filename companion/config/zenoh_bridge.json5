@@ -11,8 +11,11 @@
       // v1.10.0) — compose sets it; this key is documentation + belt.
       ros_localhost_only: true,
       allow: {
-        // Nothing local is exported toward the Pi.
-        publishers: [],
+        // World-model telemetry exported toward the Pi (WORLDMODEL.md gate 2).
+        // Read-only; the Pi's subscribers list must mirror this exactly.
+        publishers: [
+          "^/world/objects$",
+        ],
         // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
         // the Pi bridge's `publishers` list exactly.
         subscribers: [

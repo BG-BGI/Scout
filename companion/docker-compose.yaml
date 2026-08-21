@@ -5,9 +5,12 @@
 #
 # .env: PI_IP=<the Pi's address>  (cp .env.example .env)
 
+# Images come from GHCR (built by .github/workflows/companion-images.yml on
+# push) — box updates via ./update.sh (git pull + compose pull). The build:
+# keys stay for local dev only.
 x-companion: &companion
   build: .
-  image: scout-companion:latest
+  image: ghcr.io/bg-bgi/scout-companion:latest
   network_mode: host
   ipc: host
   environment:
@@ -82,7 +85,7 @@ services:
   # robot_state_publisher ships in ros-base (this image), so no rebuild. Meshes
   # are irrelevant — kdl_parser reads only links/joints for TF.
   robot_state_publisher:
-    image: scout-companion:latest
+    image: ghcr.io/bg-bgi/scout-companion:latest
     network_mode: host
     ipc: host
     restart: unless-stopped
@@ -106,7 +109,7 @@ services:
   # local-graph env so it shares this box's DDS with rtabmap.
   detector:
     build: ./detector
-    image: scout-companion-detector:latest
+    image: ghcr.io/bg-bgi/scout-companion-detector:latest
     network_mode: host
     ipc: host
     restart: unless-stopped

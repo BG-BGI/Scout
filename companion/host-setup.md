@@ -5,15 +5,24 @@ The companion is a **native Linux host** — the Debian box at 10.1.57.18
 host distro doesn't matter. 4+ cores, 8 GB RAM, 40 GB free (rtabmap DBs grow
 to GBs at house scale).
 
-Cross-VLAN placement is fine: the only network requirement is **outbound TCP
-to the Pi's `:7447`** (the zenoh bridge). UDP/DDS never crosses machines
-(corp inter-VLAN filtering drops it — measured 2026-08-20). If even that TCP
-port is filtered, reverse the bridge roles (this box listens, the Pi dials)
-or request the single port from IT.
+Cross-VLAN placement is fine: the only Pi-facing network requirement is
+**outbound TCP to the Pi's `:7447`** (the zenoh bridge). UDP/DDS never crosses
+machines (corp inter-VLAN filtering drops it — measured 2026-08-20). If even
+that TCP port is filtered, reverse the bridge roles (this box listens, the Pi
+dials) or request the single port from IT.
 
-Docker Desktop on macOS remains unusable as a companion host for anything
-DDS-adjacent; with the zenoh bridge it would technically work (pure TCP), but
-the Debian box is the primary and a bridged UTM VM the fallback.
+The box HAS internet but **cannot do interactive GitHub SSO**, so the deploy
+path uses the two credential types that work without a browser login on the
+box:
+- **Read-only deploy key** on BG-BGI/Scout — deploy keys are repo-scoped and
+  exempt from SAML SSO enforcement, so `git pull` works directly.
+- **`read:packages` PAT for GHCR** — created and SSO-authorized from a browser
+  on the Mac ("Configure SSO → Authorize" on the token page), then pasted once
+  into `docker login ghcr.io` on the box.
+
+Images are built by CI (`.github/workflows/companion-images.yml`, native
+amd64) and pushed to `ghcr.io/bg-bgi/scout-companion{,-detector}` — the Mac
+never cross-builds and nothing travels by USB.
 
 ## Requirements
 
@@ -25,18 +34,46 @@ the Debian box is the primary and a bridged UTM VM the fallback.
    message stamps cross machines.
 4. Stable address (DHCP reservation); record it as `COMPANION_HOST` in the
    Pi's `.env` and use it for the Foxglove bookmark (`ws://<box>:8766`).
-5. No-internet box: load the two images from USB instead of pulling —
-   `scout-companion-amd64.tar.gz` and `zenoh-bridge-ros2dds-amd64.tar.gz`
-   (`gunzip -c <file> | docker load`). ⚠ The bridge tarball loads under its
-   save-time tag — retag or compose won't find it:
-   `docker tag zenoh-bridge-amd64:1.10.0 eclipse/zenoh-bridge-ros2dds:1.10.0`
 
 ## Install
 
+One-time credentials:
+
 ```bash
-git clone <repo-url> && cd Scout/companion   # or copy companion/ from USB
-cp .env.example .env                          # PI_IP=10.1.80.31
-docker compose build                          # skip if image loaded from USB
+# 1. Deploy key (on the box):
+ssh-keygen -t ed25519 -f ~/.ssh/scout_deploy -N "" -C companion-deploy
+cat ~/.ssh/scout_deploy.pub
+#    → paste into GitHub: BG-BGI/Scout → Settings → Deploy keys → Add
+#      (read-only). Then:
+cat >> ~/.ssh/config <<'EOF'
+Host github.com
+  IdentityFile ~/.ssh/scout_deploy
+  IdentitiesOnly yes
+EOF
+
+# 2. GHCR login (PAT made on the Mac: Settings → Developer settings → Tokens
+#    (classic) → read:packages → Configure SSO → Authorize BG-BGI):
+docker login ghcr.io -u <github-username>   # password = the PAT
 ```
+
+Then:
+
+```bash
+git clone git@github.com:BG-BGI/Scout.git && cd Scout/companion
+cp .env.example .env                          # PI_IP=10.1.80.31
+./update.sh                                   # git pull + compose pull + up -d
+```
+
+Every subsequent deploy: commit → push GitHub → CI builds → `./update.sh`
+on the box. Never hand-edit tracked files here (deploy-via-git-only, same
+rule as the Pi).
+
+## Fallback: USB sneakernet (no-network only)
+
+If GitHub or GHCR is unreachable: on the Mac,
+`docker buildx build --platform linux/amd64 --load`, `docker save | gzip`,
+carry `*.tar.gz` on the stick, `gunzip -c <file> | docker load` on the box.
+⚠ A tarball loads under its save-time tag — retag to what compose expects
+(`ghcr.io/bg-bgi/scout-companion:latest` etc.) or compose won't find it.
 
 Bring-up/teardown, sanity checks, and the replay gate: `README.md`.

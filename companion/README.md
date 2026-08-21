@@ -16,10 +16,14 @@ editing BOTH allowlists (`config/zenoh_bridge.json5` here, mirrored in
 
 ```bash
 cp .env.example .env        # set PI_IP (10.1.80.31)
-docker compose build        # once; plain apt image (or docker load from USB)
-docker compose up -d
+./update.sh                 # git pull + compose pull (GHCR) + up -d
 docker compose logs zenoh_bridge | tail
 ```
+
+Images come from `ghcr.io/bg-bgi/scout-companion{,-detector}` (CI-built on
+push, `.github/workflows/companion-images.yml`); one-time deploy-key +
+`docker login ghcr.io` setup in `host-setup.md`. `docker compose build` is
+for local dev only.
 
 Bridge health, in order (ADR-0022 bring-up findings):
 1. `New ROS 2 bridge detected: <zid>` — TCP session with the Pi is up.
