@@ -30,6 +30,7 @@
         // /cmd_vel_* stays absent, so companion cannot command motion (ADR-0001).
         subscribers: [
           "^/world/objects$",
+          "^/world/registry$",
         ],
         service_servers: [],
         service_clients: [],

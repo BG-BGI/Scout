@@ -1,22 +1,36 @@
 #!/usr/bin/env python3
-"""World-model object detector (companion, gate 1 of WORLDMODEL.md).
+"""World-model object detector (companion, gates 1-2 of WORLDMODEL.md).
 
-Continuous YOLO11n on the bridged D455 stream -> map-frame object table,
-published as /world/objects (std_msgs/String JSON, latched). CPU-only,
-onnxruntime — no torch (the .onnx is baked in a throwaway build stage, same as
-scout-skills).
+Continuous YOLO11n on the bridged D455 stream -> map-frame object table.
+CPU-only, onnxruntime — no torch (the .onnx is baked in a throwaway build
+stage, same as scout-skills).
+
+Two outputs (both latched std_msgs/String JSON, map frame):
+- /world/objects  — LIVE view: tracks seen within ttl_s. Same schema as ever;
+  ids are now registry ids, so they no longer churn when an object leaves FOV
+  and comes back.
+- /world/registry — PERSISTENT registry: every confirmed track since node
+  start, never aged out. Class is a cross-frame vote (a chair that YOLO calls
+  `skateboard` in three frames and `chair` in five stays a chair), position is
+  a median over recent sightings, `hits` counts sightings so consumers can
+  reject one-frame false positives. This is what "count the chairs" queries —
+  the LLM never reassembles counts from live frames.
 
 Runs on the companion's LOCAL DDS graph: color/depth/info/tf all arrive over
-the zenoh bridge (already in both allowlists). Getting /world/objects TO the Pi
-is gate 2 (a bridge allowlist edit); this node is gate-1 local only. The Pi is
-unaware of it and unaffected (Pi-standalone contract, spec §0.7).
+the zenoh bridge. /world/objects and /world/registry cross back to the Pi via
+the bridge allowlists (read-only telemetry; ADR-0001 control surface
+unchanged). The Pi runs fine without this node (Pi-standalone contract §0.7).
+
+Registry lifetime is the node's lifetime — restart the detector container to
+start a fresh count, or call the local /world/clear_registry Trigger service
+(local-graph only; not bridged).
 
 Reuses scout-skills' verified deprojection math: optical-frame ray through the
-box centre at median box depth, then TF cam->map. tf2 here (native ROS on the
-companion) replaces scout-skills' hand-rolled TfTree.
+box centre at median box depth, then TF cam->map at the IMAGE stamp.
 """
 import json
 import math
+from collections import deque
 from io import BytesIO
 
 import numpy as np
@@ -36,6 +50,7 @@ from rclpy.qos import (
 )
 from sensor_msgs.msg import CompressedImage, CameraInfo
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 import tf2_ros
 from tf2_ros import TransformException
 
@@ -106,16 +121,31 @@ class Detector(Node):
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("min_confidence", 0.35)
         self.declare_parameter("rate_hz", 3.0)
-        self.declare_parameter("match_gate_m", 0.5)  # track association radius
-        self.declare_parameter("ema_alpha", 0.4)     # position smoothing
-        self.declare_parameter("ttl_s", 5.0)         # drop tracks unseen this long
+        self.declare_parameter("match_gate_m", 0.5)  # same-class association
+        self.declare_parameter("cross_class_gate_m", 0.3)  # label-flip merge
+        self.declare_parameter("ema_alpha", 0.4)     # association-position smoothing
+        self.declare_parameter("ttl_s", 5.0)         # live-view visibility window
+        # Chair recall (session 2026-08-21): office chairs score 0.25-0.4 under
+        # desks. Detect at the lower band for these classes only.
+        self.declare_parameter("low_conf_classes", ["chair"])
+        self.declare_parameter("low_conf_threshold", 0.25)
+        # Registry hygiene: tracks with < min_hits_confirm sightings are
+        # unconfirmed (one-frame false positives); drop them after this long.
+        # Confirmed tracks are NEVER dropped.
+        self.declare_parameter("min_hits_confirm", 2)
+        self.declare_parameter("prune_unconfirmed_after_s", 120.0)
 
         g = lambda n: self.get_parameter(n).value
         self.map_frame = g("map_frame")
         self.min_conf = g("min_confidence")
         self.match_gate = g("match_gate_m")
+        self.cross_gate = g("cross_class_gate_m")
         self.alpha = g("ema_alpha")
         self.ttl = g("ttl_s")
+        self.low_classes = set(g("low_conf_classes") or [])
+        self.low_conf = g("low_conf_threshold")
+        self.min_hits = int(g("min_hits_confirm"))
+        self.prune_after = g("prune_unconfirmed_after_s")
 
         sensor = qos_profile_sensor_data  # best_effort; matches realsense/bridge
         self.color = None
@@ -145,17 +175,36 @@ class Detector(Node):
             durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
         )
         self.pub = self.create_publisher(String, "/world/objects", latched)
+        self.pub_reg = self.create_publisher(String, "/world/registry", latched)
+        self.create_service(Trigger, "/world/clear_registry", self._on_clear)
 
+        # tracks IS the persistent registry. A track:
+        #   cls_votes: {label: [hits, best_score]}  — cross-frame class vote
+        #   xyz: EMA position (association gate)
+        #   pos: deque of recent sightings (median -> published position)
+        #   first_seen / last_seen: node-clock seconds
+        #   hits: total sightings
         self.tracks: dict[int, dict] = {}
         self._next_id = 1
+        self._last_stamp = None  # latest processed image stamp (Pi clock, s)
         self._warned = set()
         self.create_timer(1.0 / max(g("rate_hz"), 0.1), self._tick,
             callback_group=self.cbg)
-        self.get_logger().info("world_detector up (gate 1: /world/objects local)")
+        self.get_logger().info(
+            "world_detector up (/world/objects live + /world/registry persistent)")
 
     def _on_color(self, msg): self.color = msg
     def _on_depth(self, msg): self.depth = msg
     def _on_info(self, msg): self.info = msg
+
+    def _on_clear(self, req, resp):
+        n = len(self.tracks)
+        self.tracks = {}
+        self._next_id = 1
+        resp.success = True
+        resp.message = f"registry cleared ({n} tracks dropped)"
+        self.get_logger().info(resp.message)
+        return resp
 
     def _warn_once(self, key, text):
         if key not in self._warned:
@@ -183,16 +232,25 @@ class Detector(Node):
 
     def _tick(self):
         now = self.get_clock().now().nanoseconds / 1e9
-        # Prune stale tracks first so a quiet scene still publishes shrinkage.
+        # Prune only UNCONFIRMED stale tracks — confirmed registry entries are
+        # permanent (D1: never age the registry out).
         self.tracks = {i: tk for i, tk in self.tracks.items()
-                       if now - tk["last_seen"] <= self.ttl}
+                       if tk["hits"] >= self.min_hits
+                       or now - tk["last_seen"] <= self.prune_after}
 
         color_msg = self.color  # local ref: a callback may replace it mid-tick
         if color_msg is None:
             return
         stamp = color_msg.header.stamp
+        self._last_stamp = stamp.sec + stamp.nanosec * 1e-9
         rgb = _decode_color(color_msg)
-        dets = detect(rgb, self.min_conf)
+        # Detect at the lower band, then filter: full threshold for everything,
+        # low band only for the recall-boosted classes (chairs).
+        floor = min(self.min_conf, self.low_conf) if self.low_classes \
+            else self.min_conf
+        dets = [d for d in detect(rgb, floor)
+                if d["confidence"] >= self.min_conf
+                or d["label"] in self.low_classes]
 
         depth = _decode_depth(self.depth) if self.depth is not None else None
         if depth is None:
@@ -225,40 +283,78 @@ class Detector(Node):
 
         self._publish(now)
 
+    @staticmethod
+    def _label(tk):
+        """Voted class: most hits wins, best_score breaks ties."""
+        return max(tk["cls_votes"].items(),
+                   key=lambda kv: (kv[1][0], kv[1][1]))[0]
+
     def _associate(self, cls, score, world, now):
-        gate2 = self.match_gate ** 2
-        best, bestd = None, gate2
+        """Nearest-track association. Same voted class within match_gate; a
+        DIFFERENT class within cross_class_gate also merges — that is the same
+        physical object mislabeled this frame (chair 5-star base -> skateboard),
+        and the class vote sorts it out across frames."""
+        best, bestd = None, self.match_gate ** 2
+        xgate2 = self.cross_gate ** 2
         for i, tk in self.tracks.items():
-            if tk["cls"] != cls:
-                continue
             dx = tk["xyz"][0] - world[0]
             dy = tk["xyz"][1] - world[1]
             d2 = dx * dx + dy * dy
-            if d2 < bestd:
+            same = self._label(tk) == cls
+            if d2 < bestd and (same or d2 < xgate2):
                 best, bestd = i, d2
         if best is None:
             i = self._next_id
             self._next_id += 1
-            self.tracks[i] = {"cls": cls, "score": score,
-                              "xyz": list(world), "last_seen": now}
+            self.tracks[i] = {
+                "cls_votes": {cls: [1, score]},
+                "xyz": list(world),
+                "pos": deque([tuple(world)], maxlen=15),
+                "first_seen": now, "last_seen": now, "hits": 1,
+            }
         else:
             tk = self.tracks[best]
             a = self.alpha
             tk["xyz"] = [tk["xyz"][j] * (1 - a) + world[j] * a for j in range(3)]
-            tk["score"] = max(tk["score"], score)
+            tk["pos"].append(tuple(world))
+            v = tk["cls_votes"].setdefault(cls, [0, 0.0])
+            v[0] += 1
+            v[1] = max(v[1], score)
+            tk["hits"] += 1
             tk["last_seen"] = now
 
-    def _publish(self, now):
-        objs = [{
+    def _entry(self, i, tk, now):
+        """One published object. Position = median of recent sightings (robust
+        vs the EMA used for gating); class/score = the cross-frame vote."""
+        cls = self._label(tk)
+        p = np.median(np.asarray(tk["pos"]), axis=0)
+        return {
             "id": i,
-            "cls": tk["cls"],
-            "score": round(tk["score"], 3),
-            "xy": [round(tk["xyz"][0], 2), round(tk["xyz"][1], 2)],
-            "z": round(tk["xyz"][2], 2),
+            "cls": cls,
+            "score": round(tk["cls_votes"][cls][1], 3),
+            "xy": [round(float(p[0]), 2), round(float(p[1]), 2)],
+            "z": round(float(p[2]), 2),
+            "hits": tk["hits"],
             "last_seen": round(now - tk["last_seen"], 1),  # seconds ago
-        } for i, tk in sorted(self.tracks.items())]
-        self.pub.publish(String(data=json.dumps({
-            "frame": self.map_frame, "stamp": round(now, 2), "objects": objs})))
+        }
+
+    def _publish(self, now):
+        # Top-level stamp = the processed image stamp (Pi clock, wall-time).
+        # get_clock().now() here jumped +2432 s over a real 5 s gap in the
+        # 2026-08-21 session (companion clock step); the image stamp is the
+        # timebase every bridged transform already uses.
+        stamp = round(self._last_stamp, 2) if self._last_stamp else None
+        live = [self._entry(i, tk, now) for i, tk in sorted(self.tracks.items())
+                if now - tk["last_seen"] <= self.ttl]
+        self.pub.publish(String(data=json.dumps(
+            {"frame": self.map_frame, "stamp": stamp, "objects": live})))
+        reg = [self._entry(i, tk, now) | {
+                   "first_seen": round(now - tk["first_seen"], 1)}
+               for i, tk in sorted(self.tracks.items())
+               if tk["hits"] >= self.min_hits]
+        self.pub_reg.publish(String(data=json.dumps(
+            {"frame": self.map_frame, "stamp": stamp,
+             "min_hits": self.min_hits, "objects": reg})))
 
 
 def main():

@@ -30,18 +30,28 @@ needs no extra package anywhere, and the consumer is an LLM eating JSON anyway.
 Both topics latched (transient_local, depth 1) so a late scout-skills subscriber
 gets the last value immediately.
 
-- `/world/objects` — `[{id, cls, score, xy:[x,y], z, last_seen}]`, map frame
+- `/world/objects` — LIVE view (ttl 5 s): `[{id, cls, score, xy:[x,y], z,
+  hits, last_seen}]`, map frame. Ids are registry ids — stable across
+  FOV exits/re-entries.
+- `/world/registry` — PERSISTENT registry: same fields + `first_seen`,
+  confirmed tracks only (`hits >= min_hits_confirm`), never aged out.
+  Class is a cross-frame vote (fixes chair→skateboard/keyboard mislabels),
+  position a median over recent sightings. Counting queries read THIS,
+  once, after a smooth coverage pass — the LLM stays out of the per-frame
+  loop. Top-level `stamp` = processed image stamp (Pi clock; companion
+  `now()` stepped +2432 s mid-session once). Reset = detector restart or
+  local-only `/world/clear_registry` Trigger.
 - `/world/scene` — `{stamp, caption, tags:[...]}`
 
 ## Allowlist diff — first-ever inbound to the Pi (read-only telemetry)
 
 Pi `scout/config/zenoh_bridge.json5`:
 ```
-subscribers: [ "^/world/objects$", "^/world/scene$" ],
+subscribers: [ "^/world/objects$", "^/world/registry$", "^/world/scene$" ],
 ```
 Companion `companion/config/zenoh_bridge.json5`:
 ```
-publishers: [ "^/world/objects$", "^/world/scene$" ],
+publishers: [ "^/world/objects$", "^/world/registry$", "^/world/scene$" ],
 ```
 Anchored regexes. `/cmd_vel_*` stays absent from the Pi `subscribers` list, so
 control authority is unchanged (ADR-0001). Never wildcard this.
@@ -63,6 +73,8 @@ prompt "describe the scene". Trigger on frame-change to save CPU; publish
 ## scout-skills exposure (Pi `server.py`) — Magnus stays on one connector
 
 - `whats_around_me()` -> subscribe_once `/world/objects` -> list + per-object age
+- `world_query(cls, min_score, min_hits)` -> subscribe_once `/world/registry`
+  -> deduped persistent set + count (the counting path)
 - `describe_scene()` -> subscribe_once `/world/scene` -> caption + "as of Ns ago"
 - `where_is(query)` -> filter objects by class
 - Silent topic -> `"world-model offline (companion down)"` (Pi-standalone

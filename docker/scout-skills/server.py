@@ -624,13 +624,17 @@ def _median_depth_m(depth: np.ndarray, box: list[float]) -> float | None:
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def detect_objects(min_confidence: float = 0.35) -> list:
-    """Detect objects in Scout's camera view (YOLO11n, 80 COCO classes) and
-    locate them in 3D: each detection gets a distance from the camera and,
-    when depth + TF cooperate, a map-frame position you can hand straight to
-    go_to. Returns detection JSON first, then the camera frame annotated with
-    labeled boxes. For objects outside the COCO label set, use the raw camera
-    view instead (ros-mcp subscribe_once + view_saved_image) and read the
-    frame visually."""
+    """ONE-SHOT visual inspection of the current camera frame (YOLO11n, 80
+    COCO classes) with an annotated image — use when you need to SEE the
+    scene or verify a single detection visually. NOT for counting, searching,
+    or surveying a space: never loop rotate/move + detect_objects — that
+    stop-and-shoot cadence is slow, ships a large image per call, and
+    double/under-counts across frames. To count or enumerate objects, drive
+    one smooth coverage pass (explore / patrol / go_through) and call
+    world_query once. Each detection here gets a camera distance and, when
+    depth + TF cooperate, a map-frame position usable with go_to. For objects
+    outside the COCO label set, use camera_snapshot and read the frame
+    visually."""
     async with RosBridge() as rb:
         color = await rb.subscribe_once(
             COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=5.0
@@ -746,10 +750,13 @@ WORLD_OBJECTS_TOPIC = "/world/objects"
 async def whats_around_me() -> dict:
     """Objects Scout currently perceives around it, in the map frame — a live
     world-model kept continuously on the companion, so it needs no camera stop
-    and no per-frame turn. Each object: class, map-frame xy (hand straight to
-    go_to), height z, detection score, and seconds since last seen. Also returns
-    the model's own timestamp. If the companion perception stack is down the
-    topic is silent and this reports offline (the Pi is unaffected)."""
+    and no per-frame turn. LIVE VIEW ONLY (objects seen in the last ~5 s):
+    good for "what's near me right now"; for counting or enumerating a space
+    use world_query (persistent registry) after a coverage pass instead of
+    polling this. Each object: class, map-frame xy (hand straight to go_to),
+    height z, detection score, hit count, and seconds since last seen. If the
+    companion perception stack is down the topic is silent and this reports
+    offline (the Pi is unaffected)."""
     async with RosBridge() as rb:
         # Latched topic, but the detector republishes ~3 Hz, so a volatile
         # rosbridge sub catches the next message well inside the timeout.
@@ -770,6 +777,55 @@ async def whats_around_me() -> dict:
     return {
         "frame": payload.get("frame", "map"),
         "stamp": payload.get("stamp"),
+        "count": len(objs),
+        "objects": objs,
+    }
+
+
+WORLD_REGISTRY_TOPIC = "/world/registry"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def world_query(
+    cls: str | None = None,
+    min_score: float = 0.0,
+    min_hits: int = 2,
+) -> dict:
+    """Query the PERSISTENT world-model registry — every object the companion
+    has confirmed since its detector started, deduplicated in the map frame
+    with stable ids, class votes across frames, and hit counts. THIS is how to
+    count or enumerate objects: drive one smooth coverage pass (explore /
+    patrol / go_through — no stops for pictures), then call this once with a
+    class filter. Do NOT reassemble counts from detect_objects frames or
+    whats_around_me polls. Filters: cls (e.g. "chair"), min_score, min_hits
+    (raise to reject flaky tracks). Registry resets when the companion detector
+    restarts."""
+    async with RosBridge() as rb:
+        msg = await rb.subscribe_once(
+            WORLD_REGISTRY_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+    if msg is None:
+        return {
+            "status": "world-model offline (companion down or /world/registry "
+            "not bridged)",
+            "count": 0,
+            "objects": [],
+        }
+    try:
+        payload = json.loads(msg["data"])
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"malformed /world/registry payload: {e}")
+    objs = [
+        o
+        for o in payload.get("objects", [])
+        if (cls is None or o.get("cls") == cls)
+        and o.get("score", 0) >= min_score
+        and o.get("hits", 0) >= min_hits
+    ]
+    return {
+        "frame": payload.get("frame", "map"),
+        "stamp": payload.get("stamp"),
+        "filter": {"cls": cls, "min_score": min_score, "min_hits": min_hits},
         "count": len(objs),
         "objects": objs,
     }

@@ -15,6 +15,7 @@
         // Read-only; the Pi's subscribers list must mirror this exactly.
         publishers: [
           "^/world/objects$",
+          "^/world/registry$",
         ],
         // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
         // the Pi bridge's `publishers` list exactly.
