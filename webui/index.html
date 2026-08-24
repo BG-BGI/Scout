@@ -75,16 +75,6 @@
         and photographs each stop.</div>
     </section>
 
-    <section class="panel">
-      <h2>Follow Me <span id="follow-state" class="dim">idle</span></h2>
-      <div class="grid">
-        <button id="follow-start" class="primary">Follow</button>
-        <button id="follow-stop">Stop Following</button>
-      </div>
-      <div class="dim">Chases the nearest object in front (0.7 m standoff).
-        Stand ~1–2 m ahead, then press Follow.</div>
-    </section>
-
     <details class="panel">
       <summary><h2>Explore <span id="explore-state" class="dim">—</span></h2></summary>
       <div class="grid">
@@ -109,44 +99,8 @@
     </section>
 
     <details class="panel">
-      <summary><h2>Tricks <span id="trick-state" class="dim">idle</span></h2></summary>
-      <div id="tricks" class="grid tight">
-        <button data-trick="spin">Spin</button>
-        <button data-trick="wiggle">Wiggle</button>
-        <button data-trick="figure8">Figure-8</button>
-        <button data-trick="wheelie">Wheelie</button>
-        <button data-trick="fakeout">Fake-out</button>
-        <button data-trick="shiver">Shiver</button>
-        <button data-trick="whiplash">Whiplash</button>
-        <button data-trick="orbit">Orbit</button>
-        <button data-trick="slalom">Slalom</button>
-        <button data-trick="moonwalk">Moonwalk</button>
-        <button data-trick="wag">Wag</button>
-        <button data-trick="countdown">Countdown</button>
-        <button data-trick="disco">Disco</button>
-        <button data-trick="burnout">Burnout</button>
-      </div>
-    </details>
-
-    <details class="panel">
       <summary><h2>Health <span id="health-worst" class="dim">—</span></h2></summary>
       <ul id="health-list" class="dim"></ul>
-    </details>
-
-    <details class="panel">
-      <summary><h2>Zones <span id="zone-state" class="dim">—</span></h2></summary>
-      <div class="grid">
-        <button id="zone-keepout">Draw keepout</button>
-        <button id="zone-speed">Draw speed zone</button>
-      </div>
-      <label>Zone speed <output id="zone-speed-out">40</output>%
-        <input type="range" id="zone-speed-pct" min="10" max="90" step="10" value="40">
-      </label>
-      <ul id="zone-list" class="dim"></ul>
-      <div id="zone-result" class="dim">Draw like a patrol area: tap 3+ points
-        on the map, press the same button to finish. Keepout = no-go; speed =
-        % of normal speed inside. The FIRST zone needs a nav2 restart; later
-        edits apply live. Zones need the site to have a saved map.</div>
     </details>
 
     <details class="panel">
@@ -173,7 +127,7 @@
                pattern="[a-z0-9][a-z0-9_-]{0,31}" autocomplete="off">
         <button id="site-save-map">Save map</button>
       </div>
-      <div id="site-result" class="dim">Each site bundles its own maps, zones,
+      <div id="site-result" class="dim">Each site bundles its own maps,
         waypoints, tags and captures. Switching restarts slam/nav2/behaviors
         (~20 s) — driving and camera stay up, but the map and waypoints change
         to that site's.</div>

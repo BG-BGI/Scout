@@ -493,9 +493,9 @@ def update_active_site(patch):
 
 
 def _site_restarts_bg():
-    """Restart the launch-bound services in order (slam before nav2 so nav2's
-    mask probe sees the new site's map frame; behaviors last so zone_manager's
-    hot-reload targets the new nav2's mask servers). The symlink is already
+    """Restart the launch-bound services in order (slam before nav2 so nav2
+    sees the new site's map frame; behaviors last so clutter_mapper loads the
+    new site's clutter file). The symlink is already
     committed — a failed restart converges next time that container starts,
     and the per-service result is surfaced via GET /api/sites."""
     for svc in SITE_RESTART_SERVICES:

@@ -52,15 +52,6 @@ let cmdVel = new ROSLIB.Topic({
 const batteryTopic = new ROSLIB.Topic({
   ros, name: '/battery', messageType: 'sensor_msgs/msg/BatteryState',
 });
-const trickStatusTopic = new ROSLIB.Topic({
-  ros, name: '/trick_status', messageType: 'std_msgs/msg/String',
-});
-const playTrickSrv = new ROSLIB.Service({
-  ros, name: '/play_trick', serviceType: 'scout_interfaces/srv/PlayTrick',
-});
-const stopTrickSrv = new ROSLIB.Service({
-  ros, name: '/stop_trick', serviceType: 'std_srvs/srv/Trigger',
-});
 const setUserLedSrv = new ROSLIB.Service({
   ros, name: '/set_user_led', serviceType: 'scout_interfaces/srv/SetLedMode',
 });
@@ -309,53 +300,7 @@ setInterval(() => {
   }
 }, 1000);
 
-// --- tricks -------------------------------------------------------------------------
-const trickState = document.getElementById('trick-state');
-const trickButtons = document.querySelectorAll('#tricks button');
-trickStatusTopic.subscribe((msg) => {
-  // 'idle' or 'name|#RRGGBB|mode' (LED cue riding along for led_status).
-  trickState.textContent = msg.data.split('|')[0];
-  const busy = msg.data !== 'idle';
-  trickButtons.forEach((b) => { b.disabled = busy; });
-});
-trickButtons.forEach((btn) => {
-  btn.addEventListener('click', () => {
-    playTrickSrv.callService(
-      new ROSLIB.ServiceRequest({ name: btn.dataset.trick }),
-      (res) => { trickState.textContent = res.success ? btn.dataset.trick : res.message; },
-      (err) => { trickState.textContent = 'error: ' + err; });
-  });
-});
-
-// --- follow me ------------------------------------------------------------------------
-const followState = document.getElementById('follow-state');
-const followStartSrv = new ROSLIB.Service({
-  ros, name: '/follow_me/start', serviceType: 'std_srvs/srv/Trigger',
-});
-const followStopSrv = new ROSLIB.Service({
-  ros, name: '/follow_me/stop', serviceType: 'std_srvs/srv/Trigger',
-});
-new ROSLIB.Topic({
-  ros, name: '/follow_status', messageType: 'std_msgs/msg/String',
-}).subscribe((msg) => {
-  // 'idle' | 'searching' | 'locked|<dist m>|<bearing deg>'
-  const parts = msg.data.split('|');
-  followState.textContent = parts[0] === 'locked'
-    ? 'locked ' + parts[1] + ' m @ ' + parts[2] + '°' : parts[0];
-});
-document.getElementById('follow-start').addEventListener('click', () => {
-  followStartSrv.callService(new ROSLIB.ServiceRequest({}),
-    (res) => { followState.textContent = res.success ? 'searching' : res.message; },
-    (err) => { followState.textContent = 'error: ' + err; });
-});
-function stopFollow() {
-  followStopSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
-}
-document.getElementById('follow-stop').addEventListener('click', stopFollow);
-
 document.getElementById('stop').addEventListener('click', () => {
-  stopTrickSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
-  stopFollow();  // follow_me would keep chasing through the zero burst
   cancelNav();   // a live nav goal would keep driving through the zero burst
   patrolStop();  // a patrol would send the NEXT waypoint after the cancel
   // explore would dispatch the NEXT frontier goal after the cancel; a pause
@@ -633,46 +578,6 @@ function drawMap() {
     mapCtx.restore();
   }
 
-  // Saved zones (latched /zones, ADR-0019): keepout red, speed amber.
-  Object.entries(zoneList).forEach(([name, zn]) => {
-    const col = zn.type === 'keepout' ? '255,64,64' : '255,180,40';
-    mapCtx.fillStyle = 'rgba(' + col + ',0.22)';
-    mapCtx.strokeStyle = 'rgba(' + col + ',0.8)';
-    mapCtx.lineWidth = 1.5;
-    mapCtx.beginPath();
-    zn.polygon.forEach(([x, y], i) => {
-      const c = worldToCanvas(x, y);
-      i ? mapCtx.lineTo(c.x, c.y) : mapCtx.moveTo(c.x, c.y);
-    });
-    mapCtx.closePath();
-    mapCtx.fill();
-    mapCtx.stroke();
-    const c0 = worldToCanvas(zn.polygon[0][0], zn.polygon[0][1]);
-    mapCtx.fillStyle = 'rgba(' + col + ',0.9)';
-    mapCtx.font = '11px sans-serif';
-    mapCtx.fillText(zn.type === 'speed' ? name + ' ' + zn.speed_pct + '%' : name,
-      c0.x + 4, c0.y - 4);
-  });
-
-  // Zone being drawn right now.
-  if (zonePts.length) {
-    const col = zoneMode === 'keepout' ? '#ff4040' : '#ffb428';
-    mapCtx.strokeStyle = col;
-    mapCtx.fillStyle = col;
-    mapCtx.lineWidth = 2;
-    mapCtx.beginPath();
-    zonePts.forEach((p, i) => {
-      const c = worldToCanvas(p.x, p.y);
-      i ? mapCtx.lineTo(c.x, c.y) : mapCtx.moveTo(c.x, c.y);
-    });
-    mapCtx.stroke();
-    zonePts.forEach((p) => {
-      const c = worldToCanvas(p.x, p.y);
-      mapCtx.beginPath();
-      mapCtx.arc(c.x, c.y, 4, 0, 2 * Math.PI);
-      mapCtx.fill();
-    });
-  }
 
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
@@ -712,12 +617,6 @@ mapCanvas.addEventListener('click', (ev) => {
   if (areaMode) {
     areaPts.push(canvasToWorld(ev));
     areaBtn.textContent = 'Finish (' + areaPts.length + ')';
-    drawMap();
-    return;
-  }
-  if (zoneMode) {
-    zonePts.push(canvasToWorld(ev));
-    zoneBtn(zoneMode).textContent = 'Finish (' + zonePts.length + ')';
     drawMap();
     return;
   }
@@ -883,85 +782,6 @@ areaBtn.addEventListener('click', () => {
     polygon: { points: areaPts.map((p) => ({ x: p.x, y: p.y, z: 0 })) },
   }));
   areaReset('Planning coverage…');
-});
-
-// --- keepout/speed zones (zone_manager, ADR-0019) ---------------------------------------
-// Same draw interaction as the coverage area; the polygon travels as a
-// |-grammar /zone_cmd string (frozen in scout.core.zones + test_zones.py):
-//   add|<type>|<speed_pct or empty>|x,y;x,y;...  |  delete|<name>  |  clear|
-// Saved zones come back on the latched /zones as JSON (the store schema).
-const zoneCmdPub = new ROSLIB.Topic({
-  ros, name: '/zone_cmd', messageType: 'std_msgs/msg/String',
-});
-ros.on('connection', () => zoneCmdPub.advertise());
-const zoneStateEl = document.getElementById('zone-state');
-const zoneResult = document.getElementById('zone-result');
-const zoneListEl = document.getElementById('zone-list');
-const zoneSpeedPct = document.getElementById('zone-speed-pct');
-zoneSpeedPct.addEventListener('input', () => {
-  document.getElementById('zone-speed-out').textContent = zoneSpeedPct.value;
-});
-let zoneMode = null;   // 'keepout' | 'speed' | null
-let zonePts = [];
-let zoneList = {};     // {name: {type, polygon, speed_pct?}} from /zones
-
-function zoneBtn(mode) {
-  return document.getElementById(mode === 'keepout' ? 'zone-keepout' : 'zone-speed');
-}
-function zoneReset(msg) {
-  if (zoneMode) zoneBtn(zoneMode).classList.remove('selected');
-  document.getElementById('zone-keepout').textContent = 'Draw keepout';
-  document.getElementById('zone-speed').textContent = 'Draw speed zone';
-  zoneMode = null;
-  zonePts = [];
-  if (msg) zoneResult.textContent = msg;
-  drawMap();
-}
-function zoneDraw(mode) {
-  if (zoneMode === mode) {   // Finish pressed
-    if (zonePts.length < 3) {
-      zoneReset('Zone cancelled (needs 3+ points).');
-      return;
-    }
-    const pts = zonePts.map((p) => p.x.toFixed(3) + ',' + p.y.toFixed(3)).join(';');
-    const spd = mode === 'speed' ? zoneSpeedPct.value : '';
-    zoneCmdPub.publish(new ROSLIB.Message({
-      data: 'add|' + mode + '|' + spd + '|' + pts,
-    }));
-    zoneReset('Zone sent. First-ever zone needs a nav2 restart; edits after that apply live.');
-    return;
-  }
-  zoneReset();
-  zoneMode = mode;
-  zoneBtn(mode).textContent = 'Finish (0)';
-  zoneBtn(mode).classList.add('selected');
-  zoneResult.textContent = 'Tap the map to outline the '
-    + (mode === 'speed' ? zoneSpeedPct.value + '% speed' : 'keepout')
-    + ' zone (3+ points), then press Finish.';
-}
-document.getElementById('zone-keepout').addEventListener('click', () => zoneDraw('keepout'));
-document.getElementById('zone-speed').addEventListener('click', () => zoneDraw('speed'));
-
-new ROSLIB.Topic({
-  ros, name: '/zones', messageType: 'std_msgs/msg/String',
-}).subscribe((msg) => {
-  try { zoneList = JSON.parse(msg.data) || {}; } catch (e) { zoneList = {}; }
-  const names = Object.keys(zoneList).sort();
-  zoneStateEl.textContent = names.length ? names.length + ' zone(s)' : 'none';
-  zoneListEl.innerHTML = '';
-  names.forEach((name) => {
-    const zn = zoneList[name];
-    const li = document.createElement('li');
-    li.textContent = name + (zn.type === 'speed' ? ' (' + zn.speed_pct + '%) ' : ' ');
-    const del = document.createElement('button');
-    del.textContent = '✕';
-    del.addEventListener('click', () => {
-      zoneCmdPub.publish(new ROSLIB.Message({ data: 'delete|' + name }));
-    });
-    li.appendChild(del);
-    zoneListEl.appendChild(li);
-  });
-  drawMap();
 });
 
 // --- explore (explore_lite, compose profile `explore`) ---------------------------------
@@ -1404,9 +1224,9 @@ document.getElementById('site-save-map').addEventListener('click', () => {
         });
       } catch (e) { /* metadata update is best-effort; the files are saved */ }
       siteResult.textContent = `map "${name}" saved.`;
-      // behaviors too: zone_manager keys zones by map_name = the site's
+      // behaviors too: clutter_mapper keys its file on the site's
       // default_map, which just changed — it re-reads site.json at launch.
-      if (confirm('Map saved. Restart slam + behaviors now to continue on it (makes zones/clutter durable)?')) {
+      if (confirm('Map saved. Restart slam + behaviors now to continue on it (makes clutter durable)?')) {
         try {
           await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
           await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });

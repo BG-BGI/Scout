@@ -501,7 +501,7 @@ async def go_to_waypoint(name: str) -> dict:
 async def _require_motion_idle():
     """Refuse to stream cmd_vel on top of another commander. The status topics
     only re-publish on transitions, so also sniff the mux output /cmd_vel_out —
-    a live drive (Nav2, teleop, trick, follow) means steady non-zero output."""
+    a live drive (Nav2, teleop, patrol) means steady non-zero output."""
     async with RosBridge() as rb:
         for action in NAV_ACTIONS:
             status = await _nav_status(rb, timeout=1.0, action=action)
@@ -1064,8 +1064,8 @@ async def _cancel_all_nav(rb: RosBridge) -> tuple[dict, int]:
 @mcp.tool
 async def nav_cancel() -> dict:
     """Cancel every active Nav2 goal (zeroed CancelGoal = cancel-all). ⚠ This
-    is NOT the full e-stop — it stops only Nav2, leaving a running patrol,
-    follow_me, or trick driving. Use `stop_all` to halt everything. A goal
+    is NOT the full e-stop — it stops only Nav2, leaving a running patrol
+    driving. Use `stop_all` to halt everything. A goal
     survives its client dying, so this is the only way to clear a stray Nav2
     goal short of restarting nav2. Deceleration is a coast, not a brake
     (200 ms deadman, free-wheeling idle)."""
@@ -1085,17 +1085,14 @@ async def nav_cancel() -> dict:
 async def stop_all() -> dict:
     """THE software e-stop: halt every motion source at once — the same thing
     the web UI STOP button does. Cancels Nav2 goals AND stops any running
-    patrol, follow_me, and trick (each of which keeps driving through a bare
-    nav_cancel), then streams zero Twists so nothing stays latched past the
-    200 ms deadman. Safe to call even when idle; missing services are reported,
-    not fatal."""
+    patrol (which keeps driving through a bare nav_cancel), then streams zero
+    Twists so nothing stays latched past the 200 ms deadman. Safe to call even
+    when idle; missing services are reported, not fatal."""
     stopped: dict = {}
     async with RosBridge() as rb:
-        # Stop the higher-level drivers first: a live patrol/follow would
-        # re-issue motion right through a nav cancel + zero burst.
+        # Stop the higher-level driver first: a live patrol would re-issue
+        # motion right through a nav cancel + zero burst.
         for name, svc in (
-            ("trick", "/stop_trick"),
-            ("follow", "/follow_me/stop"),
             ("patrol", "/patrol/stop"),
         ):
             try:

@@ -3,7 +3,6 @@ import struct
 import threading
 
 from rclpy.node import Node
-from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from scout.cmd_vel_source import CmdVelSource
@@ -62,14 +61,6 @@ class JoystickTeleopNode(Node):
         self._dpad_y = 0
         self._max_linear = LINEAR_DEFAULT
         self._max_angular = ANGULAR_DEFAULT
-
-        # Follow-me toggle (D-pad up). Actual state tracked from /follow_status
-        # so the toggle stays truthful if the mode was started/stopped elsewhere
-        # (web UI, service call).
-        self._follow_active = False
-        self._follow_start = self.create_client(Trigger, 'follow_me/start')
-        self._follow_stop = self.create_client(Trigger, 'follow_me/stop')
-        self.create_subscription(String, 'follow_status', self._on_follow_status, 10)
 
         # A button marks a patrol waypoint. The reader thread only sets a
         # flag; the publish timer (executor thread) makes the service call.
@@ -148,18 +139,16 @@ class JoystickTeleopNode(Node):
         # full-deflection endpoint (+/-1), so top turn rate is unchanged.
         return (1.0 - TURN_EXPO) * frac + TURN_EXPO * frac ** 3
 
-    # One button owns speed now that D-pad up is the follow toggle: each press
-    # steps UP through clear presets and wraps back to the slowest.
+    # D-pad down cycles the speed presets: each press steps UP through clear
+    # presets and wraps back to the slowest. (D-pad up was the follow-me
+    # toggle until 2026-08-24; unbound since the feature was removed.)
     SPEED_PRESETS = (0.35, 0.6, 1.0)
 
     def _on_dpad_y(self, value):
-        # Up toggles follow-me. Down cycles the speed presets upward.
         # Act once per press.
         state = -1 if value < -16000 else (1 if value > 16000 else 0)
         if state and state != self._dpad_y:
-            if state < 0:
-                self._toggle_follow()
-            else:
+            if state > 0:
                 higher = [s for s in self.SPEED_PRESETS if s > self._max_linear + 1e-9]
                 self._max_linear = higher[0] if higher else self.SPEED_PRESETS[0]
                 self.get_logger().info('Max linear speed: %.2f m/s' % self._max_linear)
@@ -175,23 +164,6 @@ class JoystickTeleopNode(Node):
     def _adjust_linear(self, delta):
         self._max_linear = max(LINEAR_MIN, min(LINEAR_MAX, self._max_linear + delta))
         self.get_logger().info('Max linear speed: %.2f m/s' % self._max_linear)
-
-    # --- follow-me toggle ------------------------------------------------------
-    def _on_follow_status(self, msg: String):
-        self._follow_active = msg.data.split('|')[0] in (
-            'searching', 'locked', 'blocked')
-
-    def _toggle_follow(self):
-        client = self._follow_stop if self._follow_active else self._follow_start
-        verb = 'stop' if self._follow_active else 'start'
-        if not client.service_is_ready():
-            self.get_logger().warn('follow_me/%s service not available' % verb)
-            return
-        client.call_async(Trigger.Request())
-        # Optimistic flip so a double-press acts sanely before /follow_status
-        # confirms; the subscription overwrites with the truth.
-        self._follow_active = not self._follow_active
-        self.get_logger().info('Follow-me %s requested (D-pad up)' % verb)
 
     def _adjust_angular(self, delta):
         self._max_angular = max(ANGULAR_MIN, min(ANGULAR_MAX, self._max_angular + delta))

@@ -1,13 +1,14 @@
 """App-behavior nodes, split out of robot.launch.py for fault isolation.
 
-Trick macros, follow-me, clutter mapping, patrol capture, zone manager: all
-inert until triggered by a service/topic call, none touch the drivetrain or
-sensor stack directly. Crashing or restarting this container does not disturb
-roboclaw_driver, the camera, lidar, EKF, or tilt_monitor in `robot`.
+Clutter mapping and patrol capture: inert until triggered, neither touches the
+drivetrain or sensor stack directly. Crashing or restarting this container
+does not disturb roboclaw_driver, the camera, lidar, EKF, or tilt_monitor in
+`robot`. (trick_player, follow_me and zone_manager lived here until 2026-08-24,
+removed as unused features.)
 
 This container is also in the site switch's restart set (ADR-0023): all its
-site-scoped state (zones map_name, clutter file, patrol waypoints) is re-read
-here at launch, which fleet_status triggers after repointing sites/active.
+site-scoped state (clutter file, patrol waypoints) is re-read here at launch,
+which fleet_status triggers after repointing sites/active.
 
     ros2 launch scout behaviors.launch.py
 """
@@ -59,40 +60,11 @@ def _launch_setup(context, *args, **kwargs):
             # node's main CPU cost.
             parameters=[{'file': clutter_file, 'process_period': 1.0}],
         ),
-
-        # Keepout/speed zones: /zone_cmd (webui polygons) -> the site's
-        # zones.json -> derived filter masks + hot-reload of nav2's mask
-        # servers (ADR-0019). map_name derives from site.json, which kills the
-        # old "keep map_name in step with slam's map:=" manual coupling.
-        Node(
-            package='scout',
-            executable='zone_manager',
-            output='screen',
-            parameters=[{
-                'zones_file': os.path.join(SITE_MAPS, 'zones.json'),
-                'masks_dir': SITE_MAPS,
-                'map_name': default_map or 'default',
-            }],
-        ),
     ]
 
 
 def generate_launch_description():
     return LaunchDescription([
-        # Trick macros (web UI). Inert until /play_trick is called.
-        Node(
-            package='scout',
-            executable='trick_player',
-            output='screen',
-        ),
-
-        # Lidar follow-me. Inert until /follow_me/start is called.
-        Node(
-            package='scout',
-            executable='follow_me',
-            output='screen',
-        ),
-
         # Waypoint patrol + pose-stamped photo capture (progress docs).
         # Inert until /patrol/start; needs slam + nav2 for motion. Site paths
         # come from its node defaults (re-resolved per patrol/run).
