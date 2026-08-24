@@ -627,12 +627,12 @@ global_costmap:
         # disagree about how expensive it is to hug a wall. Same reasoning as there.
         inflation_radius: 0.25
         cost_scaling_factor: 10.0
-        # Propagate inflation from lethal cells INTO adjacent unknown cells. Without
-        # this, a 1-2 cell unknown hole in a mapped wall carries zero inflation, so
-        # NavFn (allow_unknown) threads a gap the footprint cannot fit and the plan
-        # reads as "through the wall". With it, any gap narrower than 2x the inscribed
-        # radius (0.334 m) closes. Genuinely open doorways/unmapped space stay passable.
-        inflate_around_unknown: true
+        # ⚠ inflate_around_unknown was tried here (2026-08-24) and REVERTED: it does not
+        # inflate lethal cells into adjacent unknown — it treats EVERY unknown cell as an
+        # inflation SOURCE, so the entire unexplored map turned lethal (measured: 273k
+        # unknown cells -> cost 100) and allow_unknown planning died. Unknown cells within
+        # the inscribed radius of a lethal cell already receive INSCRIBED cost by default,
+        # so sub-footprint wall gaps are already closed without it.
 
 # ------------------------------------------------------------------------------------
 # planner_server — global path from the current pose to the goal
