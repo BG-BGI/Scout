@@ -352,6 +352,20 @@ def generate_launch_description():
                        '/apriltag_color_throttled/image_raw'],
         ),
 
+        # ⚠ image_transport's CameraSubscriber derives the camera_info topic
+        # from the image topic's namespace and IGNORES a camera_info remap —
+        # so the info stream must exist INSIDE the throttled namespace. Full
+        # rate relay (info messages are tiny): every 2 Hz image then finds an
+        # exactly-stamped partner.
+        Node(
+            package='topic_tools',
+            executable='relay',
+            name='apriltag_info_relay',
+            output='screen',
+            arguments=['/camera/camera/color/camera_info',
+                       '/apriltag_color_throttled/camera_info'],
+        ),
+
         # Official AprilTag detector (apriltag_ros), single family — see
         # apriltag.yaml for why the all-families fan-out was reverted.
         # /detections + a TF frame per tag off the D455 color stream (2 Hz
