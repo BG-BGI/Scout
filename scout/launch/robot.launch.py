@@ -337,10 +337,26 @@ def generate_launch_description():
             output='screen',
         ),
 
+        # 2 Hz color feed for apriltag (2026-08-24): the detector was running
+        # on every 15 fps frame at ~16% of a core, and tag refresh (passive
+        # tag_watch, register_tag) needs nothing faster than ~2 Hz. C++
+        # throttle, so the 15 Hz subscription costs ~nothing. camera_info is
+        # NOT throttled — apriltag's exact-time sync matches the 2 Hz images
+        # against the full-rate info stream by identical RealSense stamps.
+        Node(
+            package='topic_tools',
+            executable='throttle',
+            name='apriltag_color_throttle',
+            output='screen',
+            arguments=['messages', '/camera/camera/color/image_raw', '2.0',
+                       '/apriltag_color_throttled/image_raw'],
+        ),
+
         # Official AprilTag detector (apriltag_ros), single family — see
         # apriltag.yaml for why the all-families fan-out was reverted.
-        # /detections + a TF frame per tag off the D455 color stream. Tag
-        # MEANING (names/roles/home) lives in scout-skills' registry.
+        # /detections + a TF frame per tag off the D455 color stream (2 Hz
+        # throttled — see above). Tag MEANING (names/roles/home) lives in
+        # scout-skills' registry.
         # respawn: vision-only feature; a crash loses tag refresh, not motion
         # (ADR-0015 tier 2).
         Node(
@@ -350,7 +366,7 @@ def generate_launch_description():
             output='screen',
             parameters=[os.path.join(config, 'apriltag.yaml')],
             remappings=[
-                ('image_rect', '/camera/camera/color/image_raw'),
+                ('image_rect', '/apriltag_color_throttled/image_raw'),
                 ('camera_info', '/camera/camera/color/camera_info'),
                 ('detections', '/detections'),
             ],
