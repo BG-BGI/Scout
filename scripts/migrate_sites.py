@@ -46,8 +46,17 @@ def main(argv):
         for name in sorted(os.listdir(src_dir)):
             if name == '.gitkeep':
                 continue
-            os.replace(os.path.join(src_dir, name),
-                       os.path.join(dst_dir, name))
+            try:
+                os.replace(os.path.join(src_dir, name),
+                           os.path.join(dst_dir, name))
+            except PermissionError:
+                # Container-created dirs (captures/*) are root-owned; rename
+                # needs write on the source parent. Safe to rerun — already-
+                # moved entries are skipped by the loop.
+                print(f'permission denied moving {src_dir}/{name} — '
+                      'rerun as: sudo python3 scripts/migrate_sites.py',
+                      file=sys.stderr)
+                return 1
             moved += 1
             print(f'moved {src_dir}/{name} -> {dst_dir}/')
 
