@@ -30,3 +30,5 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0021](0021-no-companion-bridge.md) | No companion bridge — plain DDS; companion is a Linux host on the LAN (transport superseded by 0022) |
 | [0022](0022-zenoh-bridge-transport.md) | Pi↔companion transport is zenoh-bridge-ros2dds over one TCP port; DDS back to loopback |
 | [0023](0023-location-sites.md) | Location sites — per-location data bundles behind one symlink |
+| [0024](0024-negative-obstacle-detection.md) | Negative obstacles — cliff_detector odom latch, marking-only STVL source, CM hard stop |
+| [0025](0025-flipper-rfid-companion-store.md) | Flipper Zero RFID — webui-gated scan loop, reads over zenoh, companion sqlite DB |

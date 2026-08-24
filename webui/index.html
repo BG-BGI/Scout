@@ -162,6 +162,18 @@
     </details>
 
     <details class="panel">
+      <summary><h2>RFID <span id="rfid-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="rfid-enable" class="primary">Enable scanning</button>
+        <button id="rfid-disable">Disable</button>
+      </div>
+      <ul id="rfid-list" class="dim"></ul>
+      <div id="rfid-result" class="dim">Flipper Zero 125 kHz reader. Scanning
+        stays OFF until enabled here; while on, every card read is stamped
+        with the robot's map pose and stored in the companion DB.</div>
+    </details>
+
+    <details class="panel">
       <summary><h2>Lights</h2></summary>
       <div class="grid tight" id="led-modes">
         <button data-mode="off">Off</button>

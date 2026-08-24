@@ -831,6 +831,101 @@ async def world_query(
     }
 
 
+# --- RFID (Flipper Zero, ADR-0025) --------------------------------------------
+#
+# flipper_node (robot service) owns the Flipper's USB CLI and loops
+# `rfid read` ONLY while a human has enabled scanning in the webui RFID panel
+# (/flipper/rfid_enable). Reads land pose-stamped on /rfid/reads; the
+# companion's rfid_recorder is the primary DB and republishes the deduped
+# /rfid/registry back across the zenoh bridge.
+
+RFID_STATUS_TOPIC = "/flipper/status"
+RFID_READS_TOPIC = "/rfid/reads"
+RFID_REGISTRY_TOPIC = "/rfid/registry"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def wait_rfid_read(timeout_s: float = 30.0) -> dict:
+    """Wait for the NEXT RFID card read from the Flipper Zero and return it
+    (protocol, data_hex, map pose, stamp). Does NOT start scanning — the
+    scan loop is enabled by a human in the webui RFID panel, never by tools;
+    if scanning is disabled this fails immediately with instructions instead
+    of waiting. Compose with go_to: drive to the spot, then call this and
+    present the card/tag to the Flipper's back. Returns within timeout_s or
+    reports that nothing was read."""
+    timeout_s = max(1.0, min(timeout_s, 120.0))
+    async with RosBridge() as rb:
+        status_msg = await rb.subscribe_once(
+            RFID_STATUS_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+        if status_msg is None:
+            raise ToolError(
+                "flipper_node silent (/flipper/status) — robot service down "
+                "or node not launched"
+            )
+        status = json.loads(status_msg["data"])
+        if not status.get("connected"):
+            raise ToolError("Flipper Zero not connected (USB)")
+        if not status.get("rfid_enabled"):
+            raise ToolError(
+                "RFID scanning is disabled — enable it in the webui RFID "
+                "panel first (manual gate, ADR-0025)"
+            )
+        # The latched depth-50 window replays PAST reads on subscribe; swallow
+        # that backlog first, then wait for a read_id we have not seen.
+        await rb.subscribe(RFID_READS_TOPIC, "std_msgs/msg/String")
+        seen: set = set()
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        settling = True
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return {
+                    "status": "no card read within %.0f s (scanning stays "
+                    "enabled)" % timeout_s,
+                    "read": None,
+                }
+            msg = await rb.recv_msg(
+                RFID_READS_TOPIC, timeout=0.5 if settling else remaining
+            )
+            if msg is None:
+                settling = False  # replay backlog drained; now block for new
+                continue
+            read = json.loads(msg["data"])
+            if settling:
+                seen.add(read.get("read_id"))
+                continue
+            if read.get("read_id") not in seen:
+                return {"status": "read", "read": read}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_rfid_tags() -> dict:
+    """Every RFID tag Scout has ever read at this site, deduplicated by tag
+    data with hit counts, last-seen time, and the map pose of the most recent
+    localized read (hand pose straight to go_to to return to a tag). Served
+    from the companion's persistent per-site DB via the latched
+    /rfid/registry; empty with a note when the companion is offline or no
+    reads exist yet."""
+    async with RosBridge() as rb:
+        msg = await rb.subscribe_once(
+            RFID_REGISTRY_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+    if msg is None:
+        return {
+            "status": "rfid registry offline (companion down, /rfid/registry "
+            "not bridged, or no reads recorded yet)",
+            "count": 0,
+            "tags": [],
+        }
+    try:
+        payload = json.loads(msg["data"])
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"malformed /rfid/registry payload: {e}")
+    tags = payload.get("tags", [])
+    return {"count": len(tags), "tags": tags}
+
+
 # --- AprilTags ---------------------------------------------------------------
 #
 # Registry (sqlite, /maps/tags.db) + standoff geometry live in tags.py;

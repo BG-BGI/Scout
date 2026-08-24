@@ -878,6 +878,52 @@ function sendLed() {
   (err) => { ledResult.textContent = 'error: ' + err; });
 }
 
+// --- RFID (Flipper Zero) -----------------------------------------------------------
+// The manual gate (ADR-0025): flipper_node never scans until a human enables
+// it here (/flipper/rfid_enable, SetBool). The badge renders from the node's
+// latched /flipper/status — never from this page's own assumption — and the
+// read list replays from /rfid/reads' latched depth-50 window on page load.
+const rfidState = document.getElementById('rfid-state');
+const rfidList = document.getElementById('rfid-list');
+const rfidResult = document.getElementById('rfid-result');
+const rfidEnableSrv = new ROSLIB.Service({
+  ros, name: '/flipper/rfid_enable', serviceType: 'std_srvs/srv/SetBool',
+});
+
+function rfidSetEnabled(on) {
+  rfidEnableSrv.callService(new ROSLIB.ServiceRequest({ data: on }),
+    (res) => { rfidResult.textContent = res.message; },
+    (err) => { rfidResult.textContent = 'error: ' + err; });
+}
+document.getElementById('rfid-enable').addEventListener('click', () => rfidSetEnabled(true));
+document.getElementById('rfid-disable').addEventListener('click', () => rfidSetEnabled(false));
+
+new ROSLIB.Topic({
+  ros, name: '/flipper/status', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let s;
+  try { s = JSON.parse(msg.data); } catch (e) { return; }
+  rfidState.textContent = !s.connected ? 'no flipper'
+    : s.rfid_enabled ? 'scanning' : 'disabled';
+  rfidState.classList.toggle('bad', !s.connected);
+});
+
+const rfidSeen = new Set();   // read_ids already rendered (latch replays)
+new ROSLIB.Topic({
+  ros, name: '/rfid/reads', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let r;
+  try { r = JSON.parse(msg.data); } catch (e) { return; }
+  if (rfidSeen.has(r.read_id)) return;
+  rfidSeen.add(r.read_id);
+  const li = document.createElement('li');
+  const where = r.pose ? `(${r.pose.x.toFixed(2)}, ${r.pose.y.toFixed(2)})` : 'no map pose';
+  const when = (r.stamp_utc || '').replace(/^.*T/, '').replace(/\..*$/, '');
+  li.textContent = `${r.protocol} ${r.data_hex} · ${where} · ${when}`;
+  rfidList.prepend(li);
+  while (rfidList.children.length > 20) rfidList.removeChild(rfidList.lastChild);
+});
+
 // --- system panel: host vitals + per-container controls ---------------------------
 // fleet_status (docker/fleet-status) is a standalone REST backend, not a ROS node —
 // it holds the Docker socket, so it runs outside rosbridge entirely. Polls every 30s;

@@ -111,7 +111,21 @@ collision_monitor:
       slowdown_ratio: 0.4
       visualize: true
       polygon_pub_topic: "polygon_slowdown"
-    observation_sources: ["scan"]
+    observation_sources: ["scan", "cliff"]
     scan:
       type: "scan"
       topic: "/scan"
+    # Negative-obstacle hard stop (ADR-0024): cliff_detector publishes a fixed
+    # 5-point cluster at x 0.10–0.20 m (inside PolygonStopFront/Turn, OUTSIDE
+    # PolygonStopRear so BackUp recovery still escapes a front ledge) whenever
+    # a remembered ledge sits in its forward stop corridor, and an EMPTY cloud
+    # otherwise. The node deliberately goes SILENT on camera/TF loss, so
+    # source_timeout (2.0 above) turns "blind" into "stopped" — the same
+    # fail-safe direction as the lidar-gap note above. tight_tunnel (depth
+    # off) strips this source in its overlay; robot.launch.py fail-louds if
+    # that coupling is ever broken.
+    cliff:
+      type: "pointcloud"
+      topic: "/cliff/stop_points"
+      min_height: 0.05
+      max_height: 0.30

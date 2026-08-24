@@ -16,6 +16,9 @@
         publishers: [
           "^/world/objects$",
           "^/world/registry$",
+          // Deduped RFID tag registry from rfid_recorder (ADR-0025) — same
+          // read-only telemetry class as /world/registry.
+          "^/rfid/registry$",
         ],
         // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
         // the Pi bridge's `publishers` list exactly.
@@ -30,6 +33,8 @@
           // Run-boundary state for the inspection recorder.
           "^/patrol_status$",
           "^/explore/resume$",
+          // Pose-stamped RFID reads for rfid_recorder (ADR-0025).
+          "^/rfid/reads$",
         ],
         service_servers: [],
         service_clients: [],

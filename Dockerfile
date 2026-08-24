@@ -175,6 +175,13 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# pyserial for flipper_node (ADR-0025) — the Flipper Zero CLI over USB
+# CDC-ACM. Late layer on purpose (ADR-0005): never invalidates librealsense.
+RUN apt-get update && apt-get install -y \
+    python3-serial \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 # Version stamp for the ros_overlay_install volume (ADR-0005). MUST stay the last
 # layer that writes $OVERLAY/install: the entrypoint compares the image's stamp
 # against the volume's copy and refuses to start on a mismatch, turning the

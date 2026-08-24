@@ -1,0 +1,23 @@
+# flipper_node — Flipper Zero over USB CDC-ACM (ADR-0025).
+#
+# ⚠ Raw ttyACM path on purpose: /dev/serial/by-id/ does not exist inside the
+# container (no udev — same trap documented in rplidar.yaml). Today this is
+# unambiguous: the Flipper is the only CDC-ACM device (lidar is ttyUSB0 via
+# CP2102, roboclaw is the GPIO UART). If a second ACM device is ever added,
+# identify from the HOST with `ls -l /dev/serial/by-id/` and pin by probe
+# order or a udev rule on the host.
+flipper_node:
+  ros__parameters:
+    port: "/dev/ttyACM0"
+    # CDC ignores the baud; 230400 is the documented CLI convention.
+    baud: 230400
+    # Poll timer rate — the sole serial reader/writer (led_node pattern).
+    poll_hz: 10.0
+    # Reopen attempt cadence while the Flipper is absent/unplugged.
+    reconnect_period_s: 5.0
+    # Bound for inline /flipper/cli commands and for draining back to the
+    # prompt after a Ctrl+C. Long-running commands don't belong in /flipper/cli.
+    cli_timeout_s: 2.0
+    # A card left sitting on the reader re-reads every loop iteration; drop
+    # repeats of the same data_hex inside this window.
+    duplicate_suppress_s: 10.0

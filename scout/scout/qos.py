@@ -26,3 +26,15 @@ LATCHED_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=1,
 )
+
+# Latched with a replay WINDOW instead of last-1: an event log a late joiner
+# (companion rfid_recorder after an outage, a reloaded webui panel) can catch
+# up from. Subscribers must match transient_local to receive the history;
+# events carry their own ids so replay is idempotent. Do not widen LATCHED_QOS
+# instead — its consumers want exactly the latest state, not a backlog.
+LATCHED_HISTORY_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    history=HistoryPolicy.KEEP_LAST,
+    depth=50,
+)

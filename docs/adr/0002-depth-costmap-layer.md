@@ -1,6 +1,11 @@
 # ADR-0002: Under-lidar depth is its own costmap layer, never shared with lidar clearing
 
-Status: accepted · Date: 2026-08-03
+Status: superseded by ADR-0024 · Date: 2026-08-03
+
+> 2026-08-24: the `depth_mark`/`depth_clear` ObstacleLayer pair described here
+> was replaced by an STVL layer (see ADR-0024, which records that migration
+> and adds negative-obstacle detection). The never-share-with-lidar-clearing
+> rationale below still stands.
 
 ## Context
 

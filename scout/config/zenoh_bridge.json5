@@ -28,6 +28,10 @@
           // read-only status, not control.
           "^/patrol_status$",
           "^/explore/resume$",
+          // Pose-stamped RFID reads for the companion rfid_recorder (the
+          // primary DB — ADR-0025). Latched depth-50 on the Pi side so a
+          // recorder outage can replay recent reads.
+          "^/rfid/reads$",
         ],
         // Read-only world-model telemetry INTO the Pi (WORLDMODEL.md gate 2).
         // First-ever inbound. Anchored, telemetry only — NOT a control topic;
@@ -35,6 +39,9 @@
         subscribers: [
           "^/world/objects$",
           "^/world/registry$",
+          // Deduped RFID tag registry back from the companion recorder —
+          // same read-only telemetry class as /world/registry (ADR-0025).
+          "^/rfid/registry$",
         ],
         service_servers: [],
         service_clients: [],

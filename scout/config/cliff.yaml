@@ -1,0 +1,50 @@
+# cliff_detector — negative-obstacle (down-stair) detection off the D455 depth
+# cloud (ADR-0024). The camera is LEVEL at ~0.205 m, so base_link z=0 is the
+# floor plane and the lowest ray meets it only ~0.51 m ahead — detections are
+# latched on an odom grid precisely because the ledge leaves the FOV during
+# the final approach.
+#
+# Coupled configs — change together:
+#   * nav2.yaml: both stvl_layers carry a marking-only `cliff` source on
+#     /cliff/points; mark_z below must stay inside their 0.05-0.22 band.
+#   * collision_monitor.yaml: the `cliff` pointcloud source watches
+#     /cliff/stop_points; its min/max_height band must contain the node's
+#     0.10 m stop-cluster height, and the cluster geometry in
+#     cliff_detector.py is sized against the CM polygons.
+#   * tight_tunnel overlay disables depth -> robot.launch.py skips this node
+#     and the overlay strips the CM `cliff` source (fail-loud guard in
+#     robot.launch.py mirrors nav2.launch.py's ADR-0002 guard).
+cliff_detector:
+  ros__parameters:
+    # Trust band for below-floor returns: closer than 0.4 m the D455 MinZ and
+    # the chassis itself pollute; past 2.0 m depth noise (~2%) rivals the
+    # drop threshold.
+    min_range: 0.4
+    max_range: 2.0
+    # A point is "below floor" when z < -(drop_base + drop_slope * range):
+    # 7 cm at 1 m, 9 cm at 2 m — absorbs depth noise and small chassis pitch
+    # while staying well under a 15+ cm stair riser.
+    drop_base: 0.05
+    drop_slope: 0.02
+    # Returns deeper than this are reflections/glass artifacts, not stairs.
+    max_drop: 1.5
+    # Lip-projection grid: cell size matches the local costmap resolution;
+    # >= min_points_per_cell below-floor rays must agree before a cell marks
+    # (speckle rejection — the spatial filter leaves single-ray outliers).
+    cell_size: 0.05
+    min_points_per_cell: 3
+    # Odom-grid latch: how long an unseen cell survives, and the store cap
+    # (oldest dropped). 300 s covers a room traverse; odom drift under a mark
+    # stays cm-scale on this robot.
+    memory_s: 300.0
+    max_cells: 4000
+    # Forward corridor that arms the CM stop cluster. 0.6 m leaves braking
+    # room from the 0.35 m/s nav cap; half-width covers the 0.334 m chassis
+    # plus margin.
+    stop_distance: 0.6
+    stop_half_width: 0.25
+    # Height the odom marks are published at — must sit inside the stvl cliff
+    # source's min/max_obstacle_height band (nav2.yaml).
+    mark_z: 0.12
+    # CPU escape hatch: process every Nth cloud (depth is already only 5 Hz).
+    process_every_n: 1

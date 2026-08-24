@@ -148,6 +148,21 @@ services:
       - ./data/sites:/sites:ro
     command: python3 /inspection/recorder.py
 
+  # RFID read recorder (ADR-0025) — the PRIMARY tag DB. Subscribes the bridged
+  # /rfid/reads (pose-stamped JSON, latched depth-50 for outage replay) into
+  # /sites/active/rfid.db (per-site: a pose only means anything on its map)
+  # and republishes the deduped /rfid/registry back across the bridge for the
+  # webui/MCP. Base companion image + bind-mounted script — no new image.
+  rfid_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./rfid:/rfid:ro
+      # Writable — this service owns rfid.db (rtabmap owns rtabmap.db).
+      - ./data/sites:/sites
+    command: python3 /rfid/recorder.py
+
   # Batch anomaly captioner (inspection F2) — run-on-demand, NOT a daemon:
   #   docker compose run --rm captioner /captures/inspection/<UTC>
   # Florence-2-base on CPU over the run's .mcap; writes anomalies.json beside
@@ -179,7 +194,7 @@ services:
       # switch; 'plain' scaffold = bare per-site dirs (just rtabmap.db).
       - SITES_DIR=/sites
       - SITE_SCAFFOLD=plain
-      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder
+      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro

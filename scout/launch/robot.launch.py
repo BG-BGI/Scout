@@ -12,6 +12,7 @@ or restart there doesn't touch the drivetrain/sensor stack here.
 
 import os
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch.actions import (
     DeclareLaunchArgument,
@@ -88,6 +89,51 @@ def _safety_setup(context, *args, **kwargs):
         _fail_fast(lifecycle_manager,
                    'lifecycle_manager_safety exited — CM unmanaged'),
     ]
+
+
+def _cliff_setup(context, *args, **kwargs):
+    # Negative-obstacle detector (ADR-0024). Profile-coupled three ways:
+    # the node needs the realsense pointcloud, and the collision monitor's
+    # `cliff` source needs the node (its silence reads as a fault and stops
+    # autonomy via source_timeout — that is the fail-safe, but only when
+    # deliberate). So: pointcloud off -> skip the node AND require the
+    # profile's collision_monitor overlay to have stripped the source.
+    # Mirror of nav2.launch.py's ADR-0002 stvl<->pointcloud guard.
+    profile = LaunchConfiguration('profile').perform(context)
+    with open(merged_params('realsense.yaml', profile)) as f:
+        cam = yaml.safe_load(f) or {}
+    pointcloud_off = cam.get('pointcloud.enable') is False
+    with open(merged_params('collision_monitor.yaml', profile)) as f:
+        cm = yaml.safe_load(f) or {}
+    cm_sources = (cm.get('collision_monitor', {})
+                    .get('ros__parameters', {})
+                    .get('observation_sources') or [])
+    if pointcloud_off:
+        if 'cliff' in cm_sources:
+            raise RuntimeError(
+                'profile %r disables the realsense pointcloud but its '
+                'collision_monitor still lists the `cliff` source — with '
+                'cliff_detector unlaunched that source starves and '
+                'source_timeout freezes autonomy permanently (ADR-0024)'
+                % profile)
+        return []
+    cliff = Node(
+        package='scout',
+        executable='cliff_detector',
+        output='screen',
+        parameters=[os.path.join(resolve_config_dir(), 'cliff.yaml')],
+        remappings=[
+            ('points_in', '/camera/camera/depth/color/points'),
+            ('cliff_points', '/cliff/points'),
+            ('cliff_stop_points', '/cliff/stop_points'),
+        ],
+        # Tier 2 (ADR-0015): a crash loses ledge protection, not motion —
+        # and while it is down the CM cliff source times out and stops
+        # autonomy anyway, so the 2 s respawn gap fails safe.
+        respawn=True,
+        respawn_delay=2.0,
+    )
+    return [cliff]
 
 
 def generate_launch_description():
@@ -254,6 +300,8 @@ def generate_launch_description():
 
         OpaqueFunction(function=_safety_setup),
 
+        OpaqueFunction(function=_cliff_setup),
+
         # Direction-aware stop zone (narrow sides while driving straight,
         # wide while turning — a plain `polygon` STOP shape is direction-
         # blind by nav2 design, found on hardware passing between two
@@ -383,6 +431,26 @@ def generate_launch_description():
                 ('image_rect', '/apriltag_color_throttled/image_raw'),
                 ('camera_info', '/camera/camera/color/camera_info'),
                 ('detections', '/detections'),
+            ],
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+
+        # Flipper Zero bridge (ADR-0025): enable-gated RFID scan loop
+        # (/flipper/rfid_enable from the webui RFID panel) + /flipper/cli
+        # passthrough. Flipper absent is normal — the node idles and retries.
+        # respawn: USB unplug/replug is recoverable; loss degrades RFID only,
+        # the robot stays drivable (ADR-0015 tier 2).
+        Node(
+            package='scout',
+            executable='flipper_node',
+            output='screen',
+            parameters=[os.path.join(config, 'flipper.yaml')],
+            remappings=[
+                ('flipper/status', '/flipper/status'),
+                ('flipper/rfid_enable', '/flipper/rfid_enable'),
+                ('flipper/cli', '/flipper/cli'),
+                ('rfid/reads', '/rfid/reads'),
             ],
             respawn=True,
             respawn_delay=2.0,
