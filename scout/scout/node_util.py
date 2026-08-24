@@ -5,7 +5,7 @@ lives here, not in scout.core).
   slightly-different copies (one of which, link_watchdog, forgot to call
   rclpy.shutdown() at all).
 - lookup_pose2 / lookup_matrix: the TF-exception-wrapped lookups that were
-  duplicated across follow_me, clutter_mapper and patrol_capture.
+  duplicated across the depth-consumer nodes (now just patrol_capture).
 - cancel_nav_goals: the zeroed-uuid cancel-all on the bt_navigator actions,
   shared by link_watchdog and nav_manager (ADR-0018) so a third copy of the
   CancelGoal plumbing never appears.

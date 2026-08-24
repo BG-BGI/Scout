@@ -1,66 +1,22 @@
 """App-behavior nodes, split out of robot.launch.py for fault isolation.
 
-Clutter mapping and patrol capture: inert until triggered, neither touches the
-drivetrain or sensor stack directly. Crashing or restarting this container
-does not disturb roboclaw_driver, the camera, lidar, EKF, or tilt_monitor in
-`robot`. (trick_player, follow_me and zone_manager lived here until 2026-08-24,
-removed as unused features.)
+Patrol capture: inert until triggered, touches no drivetrain or sensor stack
+directly. Crashing or restarting this container does not disturb
+roboclaw_driver, the camera, lidar, EKF, or tilt_monitor in `robot`.
+(trick_player, follow_me, zone_manager and clutter_mapper lived here until
+2026-08-24 — the first three removed as unused features, clutter_mapper
+replaced by nav2's spatio_temporal_voxel_layer stvl_layer.)
 
-This container is also in the site switch's restart set (ADR-0023): all its
-site-scoped state (clutter file, patrol waypoints) is re-read here at launch,
-which fleet_status triggers after repointing sites/active.
+This container is also in the site switch's restart set (ADR-0023): patrol's
+site-scoped paths are re-resolved per patrol run, so the restart just clears
+in-flight state.
 
     ros2 launch scout behaviors.launch.py
 """
 
-import os
-
-from launch.actions import OpaqueFunction
 from launch_ros.actions import Node
 
 from launch import LaunchDescription
-from scout.core import sites
-
-SITES_ROOT = os.environ.get('SCOUT_SITES_ROOT', '/ros_ws/src/sites')
-SITE_MAPS = os.path.join(SITES_ROOT, 'active', 'maps')
-
-
-def _site():
-    """Active site.json, or None. Behaviors is ADR-0015 tier 2 — a missing or
-    broken site degrades to safe defaults instead of crash-looping."""
-    active = sites.active_site_name(SITES_ROOT)
-    if active is None:
-        return None
-    try:
-        return sites.load_site(os.path.join(SITES_ROOT, active))
-    except (OSError, ValueError):
-        return None
-
-
-def _launch_setup(context, *args, **kwargs):
-    site = _site()
-    default_map = (site or {}).get('default_map')
-
-    # Clutter persistence is only meaningful when slam runs on a saved map
-    # (localization/continue): under mode:=new the map frame resets every boot
-    # and a loaded clutter file paints phantom obstacles at wrong coordinates
-    # (poisons nav2 planning). With sites this follows the same signal slam's
-    # auto mode uses — a default_map means a persistent frame exists.
-    clutter_file = os.path.join(SITE_MAPS, 'clutter.npz') if default_map else ''
-
-    return [
-        # Persistent under-lidar clutter layer (chair bases, shoes). Idles
-        # until slam provides map->base_link.
-        Node(
-            package='scout',
-            executable='clutter_mapper',
-            output='screen',
-            # process_period 1.0 (up from the 0.3 default): furniture dwells,
-            # so 1 Hz marking loses nothing and the numpy/cell work is the
-            # node's main CPU cost.
-            parameters=[{'file': clutter_file, 'process_period': 1.0}],
-        ),
-    ]
 
 
 def generate_launch_description():
@@ -73,8 +29,4 @@ def generate_launch_description():
             executable='patrol_capture',
             output='screen',
         ),
-
-        # Site-dependent nodes (clutter_mapper, zone_manager) — parameters are
-        # computed from sites/active/site.json at launch time.
-        OpaqueFunction(function=_launch_setup),
     ])

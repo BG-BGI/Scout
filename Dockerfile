@@ -124,6 +124,7 @@ RUN apt-get update && apt-get install -y \
     ros-humble-slam-toolbox \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
+    ros-humble-spatio-temporal-voxel-layer \
     ros-humble-map-msgs \
     ros-humble-compressed-image-transport \
     ros-humble-compressed-depth-image-transport \

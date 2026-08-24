@@ -17,7 +17,7 @@ depth_module.depth_profile: '848x480x5'
 
 # Advanced-mode preset: DefaultPreset_D455 base with the High Accuracy overlay
 # (raised param-secondpeakdelta 325->647 etc. — higher stereo confidence, fewer
-# false depth points feeding the costmaps/follow/clutter) plus Scout deltas:
+# false depth points feeding the costmaps) plus Scout deltas:
 # controls-laserpower 240 (matches depth_module.laser_power below) and
 # param-disparityshift (0 here; raised to shrink MinZ — see the JSON).
 # Bind-mount path, same resolution trick as robot.launch.py's config_file.
@@ -26,7 +26,7 @@ json_file_path: /ros_ws/src/scout/config/d455_scout_preset.json
 # Laser power is NOT settable here — rs_launch.py's config parser rejects the
 # key ("Parameter ... not supported"). It is set by the preset JSON instead
 # (controls-laserpower: 240 — default 150, max 360; denser low-texture floor
-# returns for the depth_mark/clutter band).
+# returns for the stvl_layer mark band).
 depth_module.enable_auto_exposure: true
 
 # Untextured XYZ from depth for Nav2 local costmap (under-lidar band). stream_filter 1
@@ -74,7 +74,7 @@ colorizer.enable: false
 spatial_filter.enable: true
 # Temporal stays OFF, deliberately: at 5 FPS on a moving robot, temporal
 # averaging/persistence smears moving objects into ghost points — the exact
-# failure mode the mover dwell-gating in follow_me/clutter_mapper rejects.
+# failure mode STVL frustum decay tolerates.
 # Do not enable without a persistency_index=0 bench test.
 temporal_filter.enable: false
 # Hole-filling fabricates depth; fabricated points become fabricated costmap

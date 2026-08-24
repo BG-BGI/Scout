@@ -1,7 +1,7 @@
 """Shared QoS profiles (ADR-0013).
 
 Two bespoke latched profiles had already been hand-built (link_watchdog's
-action-status subscription, clutter_mapper's map publisher) — identical
+action-status subscription) — identical
 settings, different shapes. The next latched topic imports from here instead
 of rolling a third.
 
@@ -19,7 +19,7 @@ from rclpy.qos import (
 )
 
 # Reliable + transient_local + last-1: a late subscriber still sees the most
-# recent message (action status after a restart, the current clutter map).
+# recent message (action status after a restart).
 LATCHED_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,

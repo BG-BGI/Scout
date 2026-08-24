@@ -1,7 +1,7 @@
 """Core robot stack: drivetrain, sensors, odom fusion, LED, tilt monitor.
 
 slam / nav2 / foxglove_bridge stay as separate compose services. App-behavior
-nodes (trick_player, follow_me, clutter_mapper, patrol_capture) live in
+nodes (patrol_capture) live in
 behaviors.launch.py / the `behaviors` compose service, split out so a crash
 or restart there doesn't touch the drivetrain/sensor stack here.
 

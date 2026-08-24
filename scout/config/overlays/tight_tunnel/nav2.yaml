@@ -5,8 +5,8 @@
 #
 # Only the differences live here; the base rationale stays in nav2.yaml. Merged
 # by robot_profile.merged_params: a dict recurses, a LIST or scalar REPLACES (so
-# the shorter `plugins` lists are how depth_layer is dropped), and the inherited
-# depth_layer.* subtree is left inert (Costmap2DROS only builds layers named in
+# the shorter `plugins` lists are how stvl_layer is dropped), and the inherited
+# stvl_layer.* subtree is left inert (Costmap2DROS only builds layers named in
 # `plugins`). observation_persistence is deliberately NOT overridden — the tight
 # profile inherits the base's chair-leg flicker damping (ADR-0010 decision).
 bt_navigator:
@@ -34,7 +34,7 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      plugins: ["obstacle_layer", "inflation_layer"]   # drops depth_layer
+      plugins: ["obstacle_layer", "inflation_layer"]   # drops stvl_layer
       inflation_layer:
         inflation_radius: 0.17
         cost_scaling_factor: 15.0

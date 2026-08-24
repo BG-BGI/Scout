@@ -1,7 +1,7 @@
 """Location site store (ADR-0023). Pure: stdlib only.
 
 A *site* is one physical location's full state bundle under `sites/<name>/`:
-maps (posegraph, zones, waypoints, tags, clutter, masks) and captures. The
+maps (posegraph, waypoints, tags) and captures. The
 relative symlink `sites/active -> <name>` is the single switch point — it
 resolves identically through every bind mount of the parent dir, and nodes
 that open files per operation pick up a switch with no restart at all.

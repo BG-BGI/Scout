@@ -110,8 +110,8 @@ services:
     # in .env (see .env.example) or pass profile:= on the command line (ADR-0010).
 
   # App-behavior nodes split out of `robot` for fault isolation (2026-08-18):
-  # clutter_mapper/patrol_capture are inert until triggered and neither
-  # touches the drivetrain/sensor stack, so a crash or restart here no longer
+  # patrol_capture is inert until triggered and
+  # touches no drivetrain/sensor stack, so a crash or restart here no longer
   # takes camera/lidar/driver/EKF down with it.
   behaviors:
     <<: *base

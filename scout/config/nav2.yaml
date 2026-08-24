@@ -399,7 +399,7 @@ local_costmap:
       # Same layer: lidar beams that pass *over* a low obstacle (shoe in a doorway) to a
       # wall behind raytrace those cells free and wipe the depth marks — robot then
       # plans/drives through. Depth stays local-only for CPU.
-      plugins: ["obstacle_layer", "depth_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "stvl_layer", "inflation_layer"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -442,43 +442,47 @@ local_costmap:
           # something is seen behind it; set true if stale obstacles become the problem.
           inf_is_valid: false
 
-      # Under-lidar band. Own layer so lidar raytrace cannot wipe low marks.
-      # Two sources on the same cloud: mark only the 0.05–0.22 m band; clear along
-      # full-height depth rays (incl. floor hits) so removing a shoe frees those cells.
-      # Lidar still must not clear this layer — that was the doorway drive-over bug.
-      depth_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+      # Under-lidar band via STVL (2026-08-24, replaced the ObstacleLayer
+      # depth_mark/depth_clear pair AND the Python clutter_mapper node — C++,
+      # in-process, so the per-cloud Python deserialization cost is gone).
+      # Own layer so lidar raytrace cannot wipe low marks (the doorway
+      # drive-over bug). Marks only the 0.05–0.22 m band; clearing is
+      # frustum-based (decay_acceleration) instead of raytrace — space the
+      # camera can currently see decays fast, so removing a shoe frees cells
+      # as soon as the camera looks at where it was.
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
         enabled: True
-        observation_sources: depth_mark depth_clear
-        footprint_clearing_enabled: True
+        voxel_decay: 15.0        # live local view: marks last 15 s unseen
+        decay_model: 0           # linear
+        voxel_size: 0.025        # match this costmap's resolution
+        track_unknown_space: false
+        mark_threshold: 0
+        update_footprint_enabled: True
         combination_method: 1
-        depth_mark:
+        obstacle_range: 1.2
+        origin_z: 0.0
+        publish_voxel_map: false
+        transform_tolerance: 0.3
+        mapping_mode: false
+        observation_sources: depth
+        depth:
+          data_type: PointCloud2
           topic: /camera/camera/depth/color/points
-          data_type: "PointCloud2"
-          marking: True
-          clearing: False
-          obstacle_max_range: 1.2
-          obstacle_min_range: 0.15
-          raytrace_max_range: 1.2
-          raytrace_min_range: 0.15
+          marking: true
+          clearing: true
           min_obstacle_height: 0.05
           max_obstacle_height: 0.22
+          expected_update_rate: 0.0
           observation_persistence: 0.0
-          inf_is_valid: false
-        depth_clear:
-          topic: /camera/camera/depth/color/points
-          data_type: "PointCloud2"
-          marking: False
-          clearing: True
-          obstacle_max_range: 1.2
-          obstacle_min_range: 0.15
-          raytrace_max_range: 1.2
-          raytrace_min_range: 0.15
-          # Include floor returns so rays clear through where a removed shoe was.
-          min_obstacle_height: 0.0
-          max_obstacle_height: 2.0
-          observation_persistence: 0.0
-          inf_is_valid: false
+          filter: "voxel"
+          voxel_min_points: 2
+          clear_after_reading: true
+          # D455 depth FOV 87°x58° -> radians; frustum clearing needs these.
+          vertical_fov_angle: 1.012
+          horizontal_fov_angle: 1.518
+          decay_acceleration: 5.0
+          model_type: 0
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -528,7 +532,7 @@ global_costmap:
       # makes the planner's allow_unknown a deliberate choice instead of an accident.
       track_unknown_space: true
 
-      plugins: ["static_layer", "obstacle_layer", "depth_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "stvl_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -562,64 +566,49 @@ global_costmap:
           max_obstacle_height: 2.0
           inf_is_valid: false
 
-      # Under-lidar band, same dual-source pattern as the local costmap (see the long
-      # note there): mark only the 0.05–0.22 m band, clear along full-height depth rays,
-      # own layer so lidar raytrace cannot wipe low marks (the doorway drive-over bug).
-      # Global planning now knows about shoes/toys/thresholds seen anywhere the camera
-      # has looked, not just inside the local window — a plan routes around known floor
-      # clutter instead of discovering it at the last metre. Marks persist until a depth
-      # ray clears them, which is the same lingering-obstacle trade the lidar layer makes.
-      depth_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+      # Under-lidar band + clutter memory via STVL (2026-08-24, replaced the
+      # depth_mark/depth_clear pair AND the /clutter_points source from the
+      # retired Python clutter_mapper node). One persistent-while-running voxel
+      # grid: marks in the 0.05–0.22 m band survive 4 h unseen (voxel_decay),
+      # so global planning routes around shoes/toys/thresholds seen anywhere
+      # the camera has looked — but inside the camera's live frustum decay is
+      # sharply accelerated, so re-observing where a shoe was frees the cells
+      # in ~a second (the old depth_clear semantics). Memory dies with the
+      # nav2 process; that is the accepted trade vs the old clutter.npz.
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
         enabled: True
-        observation_sources: depth_mark depth_clear clutter
-        footprint_clearing_enabled: True
+        voxel_decay: 14400.0     # 4 h: clutter memory while the stack runs
+        decay_model: 0           # linear (NOT -1: frustum clearing must win)
+        voxel_size: 0.05         # match this costmap's resolution
+        track_unknown_space: false
+        mark_threshold: 0
+        update_footprint_enabled: True
         combination_method: 1
-        depth_mark:
+        obstacle_range: 1.2
+        origin_z: 0.0
+        publish_voxel_map: false
+        transform_tolerance: 0.5
+        mapping_mode: false
+        observation_sources: depth
+        depth:
+          data_type: PointCloud2
           topic: /camera/camera/depth/color/points
-          data_type: "PointCloud2"
-          marking: True
-          clearing: False
-          obstacle_max_range: 1.2
-          obstacle_min_range: 0.15
-          raytrace_max_range: 1.2
-          raytrace_min_range: 0.15
+          marking: true
+          clearing: true
           min_obstacle_height: 0.05
           max_obstacle_height: 0.22
+          expected_update_rate: 0.0
           observation_persistence: 0.0
-          inf_is_valid: false
-        depth_clear:
-          topic: /camera/camera/depth/color/points
-          data_type: "PointCloud2"
-          marking: False
-          clearing: True
-          obstacle_max_range: 1.2
-          obstacle_min_range: 0.15
-          raytrace_max_range: 1.2
-          raytrace_min_range: 0.15
-          # Include floor returns so rays clear through where a removed shoe was.
-          min_obstacle_height: 0.0
-          max_obstacle_height: 2.0
-          observation_persistence: 0.0
-          inf_is_valid: false
-        # clutter_mapper's persistent low-obstacle points (map frame, z=0.1,
-        # republished at 1 Hz). Mark-only: the mapper does its own ray-clearing,
-        # and depth_clear must not wipe marks the camera can no longer see.
-        # 25 m ranges: these are map-wide points, not a live sensor window.
-        clutter:
-          topic: /clutter_points
-          data_type: "PointCloud2"
-          marking: True
-          clearing: False
-          obstacle_max_range: 25.0
-          obstacle_min_range: 0.0
-          raytrace_max_range: 25.0
-          raytrace_min_range: 0.0
-          min_obstacle_height: 0.0
-          max_obstacle_height: 0.3
-          # Slightly over the 1 Hz republish so marks never age out between clouds.
-          observation_persistence: 1.5
-          inf_is_valid: false
+          filter: "voxel"
+          voxel_min_points: 2
+          clear_after_reading: true
+          vertical_fov_angle: 1.012
+          horizontal_fov_angle: 1.518
+          # High acceleration: inside the live frustum the 4 h decay collapses
+          # to ~a second, so seen-empty space clears immediately.
+          decay_acceleration: 10.0
+          model_type: 0
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"

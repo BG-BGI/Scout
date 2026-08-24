@@ -25,7 +25,7 @@ setup(
     maintainer='cdrew',
     maintainer_email='cdrew@brasfieldgorrie.com',
     description='Skid-steer robot nodes: teleop, e-stop, LED, battery, '
-                'patrol, clutter.',
+                'patrol.',
     license='MIT',
     extras_require={
         'test': [
@@ -44,7 +44,6 @@ setup(
             'tilt_monitor = scout.tilt_monitor:main',
             'traction_monitor = scout.traction_monitor:main',
             'led_status = scout.led_status:main',
-            'clutter_mapper = scout.clutter_mapper:main',
             'patrol_capture = scout.patrol_capture:main',
             'link_watchdog = scout.link_watchdog:main',
             'estop = scout.estop:main',

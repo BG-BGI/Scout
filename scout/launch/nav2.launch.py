@@ -1,7 +1,7 @@
 """Nav2 bringup with the scout profile overlay + a depth/pointcloud guard.
 
 Wraps upstream nav2_bringup/navigation_launch.py so the selected profile's
-nav2.yaml overlay is merged in (ADR-0010), and so the depth_layer<->pointcloud
+nav2.yaml overlay is merged in (ADR-0010), and so the stvl_layer<->pointcloud
 coupling (ADR-0002) fails loudly at launch instead of silently starving the
 costmap. Gives nav2 a scout launch file (the others already had one).
 
@@ -32,7 +32,7 @@ from scout.robot_profile import merged_params
 def _plugins_have_depth(params):
     for cm in ('local_costmap', 'global_costmap'):
         node = params.get(cm, {}).get(cm, {}).get('ros__parameters', {})
-        if 'depth_layer' in (node.get('plugins') or []):
+        if 'stvl_layer' in (node.get('plugins') or []):
             return True
     return False
 
@@ -41,7 +41,7 @@ def _launch_setup(context, *args, **kwargs):
     profile = LaunchConfiguration('profile').perform(context)
     params_file = merged_params('nav2.yaml', profile)
 
-    # Coupling guard (ADR-0002): if a costmap still marks via depth_layer, this
+    # Coupling guard (ADR-0002): if a costmap still marks via stvl_layer, this
     # profile's camera MUST publish a pointcloud, or the layer starves silently.
     with open(params_file) as f:
         nav2 = yaml.safe_load(f) or {}
@@ -50,7 +50,7 @@ def _launch_setup(context, *args, **kwargs):
             cam = yaml.safe_load(f) or {}
         if cam.get('pointcloud.enable') is False:
             raise RuntimeError(
-                'profile %r keeps nav2 depth_layer but disables the realsense '
+                'profile %r keeps nav2 stvl_layer but disables the realsense '
                 'pointcloud — the depth costmap layer would starve (ADR-0002)'
                 % profile)
 
