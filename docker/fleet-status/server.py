@@ -24,6 +24,7 @@ transit this API even though it has no auth of its own.
 
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -46,6 +47,26 @@ SELF_SERVICE = 'fleet_status'
 # hides the button: no accidental "reboot the robot's brain".
 ALLOW_HOST_REBOOT = os.environ.get('FLEET_ALLOW_HOST_REBOOT') == '1'
 RESTART_ALL_STAGGER_S = 2.0
+
+# --- Location sites (ADR-0023) ----------------------------------------------
+# Unset SITES_DIR = feature hidden (endpoints 404, webui hides the panel),
+# same pattern as COMPANION_HOST. The Pi mounts ./sites rw here and scaffolds
+# full bundles (maps/ + captures/ + site.json); the companion mounts
+# ./data/sites and scaffolds bare per-site dirs for rtabmap.db. The relative
+# `active` symlink is the single switch point — repointed atomically here,
+# resolved by every consumer through its own bind mount of the parent dir.
+SITES_DIR = os.environ.get('SITES_DIR', '')
+# 'pi' = maps/ + captures/ + site.json on create; anything else = bare dir.
+SITE_SCAFFOLD = os.environ.get('SITE_SCAFFOLD', 'plain')
+# Services whose site state is bound at launch (everything else re-resolves
+# the symlink per operation and needs nothing). Pi: slam,nav2,behaviors.
+# Companion: rtabmap (database_path at node startup) + inspection_recorder
+# (cuts an in-flight recording at the site boundary).
+SITE_RESTART_SERVICES = [s for s in os.environ.get(
+    'SITE_RESTART_SERVICES', '').split(',') if s]
+# Shared contract with scout.core.sites.SITE_NAME_RE (schema, not code —
+# ADR-0011 precedent). 'active' is the symlink, never a site name.
+SITE_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
 # /hostfs is the host's root, bind-mounted read-only (compose) so disk usage
 # reflects the Pi's real SD card, not this container's own overlay fs.
 HOST_ROOT = '/hostfs' if os.path.isdir('/hostfs') else '/'
@@ -372,6 +393,154 @@ def wifi_forget(name):
     return ok, out
 
 
+# --- Location sites (ADR-0023) ----------------------------------------------
+
+_last_switch = {'to': None, 'at': None, 'restarts': []}
+
+
+def _valid_site_name(name):
+    return bool(SITE_NAME_RE.match(name or '')) and name != 'active'
+
+
+def _active_site():
+    try:
+        return os.path.basename(os.readlink(os.path.join(SITES_DIR, 'active')))
+    except OSError:
+        return None
+
+
+def _site_meta(name):
+    """site.json contents (Pi scaffold) merged with what's on disk."""
+    site_dir = os.path.join(SITES_DIR, name)
+    meta = {'name': name}
+    try:
+        with open(os.path.join(site_dir, 'site.json')) as f:
+            data = json.load(f)
+        for key in ('display_name', 'default_map', 'slam_mode',
+                    'map_start_pose', 'created'):
+            if key in data:
+                meta[key] = data[key]
+    except (OSError, json.JSONDecodeError):
+        pass
+    maps_dir = os.path.join(site_dir, 'maps')
+    if os.path.isdir(maps_dir):
+        meta['maps'] = sorted(f[:-len('.posegraph')]
+                              for f in os.listdir(maps_dir)
+                              if f.endswith('.posegraph'))
+    return meta
+
+
+def list_sites():
+    names = sorted(d for d in os.listdir(SITES_DIR)
+                   if _valid_site_name(d)
+                   and os.path.isdir(os.path.join(SITES_DIR, d)))
+    return {
+        'active': _active_site(),
+        'sites': [_site_meta(n) for n in names],
+        'last_switch': dict(_last_switch),
+    }
+
+
+def create_site(name, display_name=''):
+    if not _valid_site_name(name):
+        return 400, {'error': 'invalid site name (a-z0-9_-, max 32, '
+                              "not 'active')"}
+    site_dir = os.path.join(SITES_DIR, name)
+    if os.path.exists(site_dir):
+        return 409, {'error': f"site '{name}' already exists"}
+    if SITE_SCAFFOLD == 'pi':
+        os.makedirs(os.path.join(site_dir, 'maps'))
+        os.makedirs(os.path.join(site_dir, 'captures', 'bags'))
+        _write_site_json(site_dir, {
+            'version': 1,
+            'display_name': display_name or name,
+            'default_map': None,
+            'slam_mode': 'auto',
+            'map_start_pose': [0.0, 0.0, 0.0],
+            'created': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+        })
+    else:
+        os.makedirs(site_dir)
+    return 200, {'ok': True, 'site': _site_meta(name)}
+
+
+def _write_site_json(site_dir, data):
+    tmp = os.path.join(site_dir, '.site.json.tmp')
+    with open(tmp, 'w') as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, os.path.join(site_dir, 'site.json'))
+
+
+def update_active_site(patch):
+    if SITE_SCAFFOLD != 'pi':
+        return 404, {'error': 'site metadata not managed on this box'}
+    active = _active_site()
+    if active is None:
+        return 409, {'error': 'no active site'}
+    site_dir = os.path.join(SITES_DIR, active)
+    try:
+        with open(os.path.join(site_dir, 'site.json')) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {'version': 1}
+    allowed = ('display_name', 'default_map', 'slam_mode', 'map_start_pose')
+    changed = {k: patch[k] for k in allowed if k in patch}
+    if not changed:
+        return 400, {'error': f'nothing to update (allowed: {", ".join(allowed)})'}
+    data.update(changed)
+    _write_site_json(site_dir, data)
+    return 200, {'ok': True, 'site': _site_meta(active)}
+
+
+def _site_restarts_bg():
+    """Restart the launch-bound services in order (slam before nav2 so nav2's
+    mask probe sees the new site's map frame; behaviors last so zone_manager's
+    hot-reload targets the new nav2's mask servers). The symlink is already
+    committed — a failed restart converges next time that container starts,
+    and the per-service result is surfaced via GET /api/sites."""
+    for svc in SITE_RESTART_SERVICES:
+        entry = {'service': svc, 'ok': False, 'error': None}
+        c = _find(svc)
+        if c is None:
+            entry['error'] = 'no such container'
+        else:
+            try:
+                c.restart(timeout=10)
+                entry['ok'] = True
+            except Exception as e:  # noqa: BLE001 — record, don't die
+                entry['error'] = str(e)
+        _last_switch['restarts'].append(entry)
+        time.sleep(RESTART_ALL_STAGGER_S)
+
+
+def activate_site(name, create=False):
+    if not _valid_site_name(name):
+        return 400, {'error': 'invalid site name'}
+    site_dir = os.path.join(SITES_DIR, name)
+    if not os.path.isdir(site_dir):
+        if not create:
+            return 404, {'error': f"no such site '{name}'"}
+        code, payload = create_site(name)
+        if code != 200:
+            return code, payload
+    if _active_site() == name:
+        return 200, {'ok': True, 'active': name, 'already_active': True}
+    # Atomic repoint: symlink to a tmp name, rename over `active`. Rename is
+    # atomic on the same filesystem, so every reader sees old or new, never a
+    # missing link. Relative target — resolves through any mount of SITES_DIR.
+    tmp = os.path.join(SITES_DIR, '.active.tmp')
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    os.symlink(name, tmp)
+    os.replace(tmp, os.path.join(SITES_DIR, 'active'))
+    _last_switch.update({'to': name, 'at': time.time(), 'restarts': []})
+    threading.Thread(target=_site_restarts_bg, daemon=True).start()
+    return 202, {'ok': True, 'active': name,
+                 'restarting': SITE_RESTART_SERVICES}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # docker stats polling every 30s isn't worth the access log
@@ -407,6 +576,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, wifi_quality())
         elif self.path == '/api/companion':
             self._send_json(200, companion_health())
+        elif self.path == '/api/sites':
+            if not SITES_DIR:
+                self._send_json(404, {'error': 'sites not configured here'})
+            else:
+                self._send_json(200, list_sites())
         else:
             self._send_json(404, {'error': 'not found'})
 
@@ -444,6 +618,24 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 ok, out = wifi_forget(name)
             self._send_json(200 if ok else 400, {'ok': ok, 'detail': out})
+            return
+
+        if parts[:2] == ['api', 'sites']:
+            if not SITES_DIR:
+                self._send_json(404, {'error': 'sites not configured here'})
+                return
+            body = self._read_json_body()
+            if len(parts) == 2:                      # POST /api/sites {name}
+                code, payload = create_site(
+                    body.get('name', ''), body.get('display_name', ''))
+            elif len(parts) == 3 and parts[2] == 'active':
+                code, payload = update_active_site(body)  # merge site.json
+            elif len(parts) == 4 and parts[3] == 'activate':
+                code, payload = activate_site(
+                    parts[2], create=bool(body.get('create')))
+            else:
+                code, payload = 404, {'error': 'not found'}
+            self._send_json(code, payload)
             return
 
         if parts[:2] == ['api', 'restart-all']:

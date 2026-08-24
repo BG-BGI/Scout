@@ -39,6 +39,13 @@ WANT="robot behaviors rosbridge webui foxglove_bridge fleet_status slam nav2 ros
 HAVE=$(docker compose config --services)
 UP=""
 for s in $WANT; do echo "$HAVE" | grep -qx "$s" && UP="$UP $s"; done
+# Location sites (ADR-0023): slam runs mode:=site and refuses to start
+# without sites/active. One-time on a pre-sites data layout; idempotent.
+if [ ! -e sites/active ] && [ -f scripts/migrate_sites.py ]; then
+  echo "migrating maps/ + captures/ into sites/default (ADR-0023)..."
+  python3 scripts/migrate_sites.py
+fi
+
 # Pi 5 has no RTC: on a cold boot the clock starts wrong and NTP corrects it
 # with a step, not a slew. If slam/nav2 are already running when that step
 # lands, every TF-timestamped topic (laser, camera_depth_optical_frame) looks

@@ -55,8 +55,9 @@ docker compose exec rtabmap bash -lc \
 
 `docker compose down` (or the box going away entirely) must cost the robot
 nothing: the Pi-side bridge idles and rtabmap resumes when the TCP session
-re-establishes. Map DB persists in the `rtabmap_db` volume; fresh session =
-`docker compose down -v`.
+re-establishes. Map DBs persist per location site in
+`data/sites/<site>/rtabmap.db` (ADR-0023); fresh session for the active site =
+stop rtabmap, delete that file, start rtabmap.
 
 ## Replay gate (offline, no network dependency)
 

@@ -22,6 +22,18 @@ maps/tags.db
 maps/zones.json
 captures/*
 !captures/.gitkeep
+# Companion inspection recordings (.mcap runs + cloud.ply + anomalies.json)
+companion/captures/*
+!companion/captures/.gitkeep
+
+# Location sites (ADR-0023): per-location data bundles (maps, zones,
+# waypoints, tags, clutter, captures) + the active symlink. The sites/ dir is
+# tracked (sites/.gitkeep) so the fleet_status bind mount exists on a fresh
+# clone; the legacy maps/*+captures/* rules above stay for stragglers on
+# pre-sites branches. Companion side: per-site rtabmap.db under data/.
+sites/*
+!sites/.gitkeep
+companion/data/
 
 # uv/pytest local artifacts
 .venv/

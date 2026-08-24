@@ -124,7 +124,10 @@ services:
           cpus: "0.5"
     command: sh -c "sleep 3 && ros2 launch scout behaviors.launch.py"
 
-  # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
+  # Occupancy grid from /scan. Needs `robot` up first. mode:=site resolves the
+  # map + mode from sites/active/site.json (ADR-0023) — switch sites from the
+  # webui Site panel, not by editing this line. Hand-run other modes with
+  # `ros2 launch scout slam.launch.py mode:=continue map:=x` for debugging.
   slam:
     <<: *base
     restart: unless-stopped
@@ -135,9 +138,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-    command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=new profile:=${SCOUT_PROFILE:-default}"
-    # command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=localization map:=house profile:=${SCOUT_PROFILE:-default}"
-    # command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=continue map:=office profile:=${SCOUT_PROFILE:-default}"
+    command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=site profile:=${SCOUT_PROFILE:-default}"
 
   # Path planning and following. Needs `slam` up first for /map and map->odom.
   # Reuses upstream's navigation_launch.py because it owns the cmd_vel plumbing: it
@@ -283,14 +284,15 @@ services:
   # drives with no stop at intermediate points), nav_status (both actions +
   # live feedback distance/poses remaining), nav_cancel (zeroed CancelGoal on
   # both actions = the webui cancel button), named waypoints
-  # (save/list/delete/go_to_waypoint — JSON in ./maps, per-map validity),
+  # (save/list/delete/go_to_waypoint — JSON in the active site's maps/,
+  # per-map validity),
   # move/rotate (closed-loop relative motion on /odom, streams /cmd_vel
   # directly — BYPASSES Nav2 costmaps, blocks for the drive, refuses while a
   # nav goal is active), explore_for (time-budgeted frontier exploration,
   # auto-pause timer lives in this server), AprilTags (detect_tags/
   # register_tag/list_tags/delete_tag/tag_watch — DETECTION runs in the
   # apriltag_ros node in the robot service (/detections + TF per tag); this
-  # server owns MEANING: sqlite registry in ./maps/tags.db, passive 2 s
+  # server owns MEANING: sqlite registry in the site's tags.db, passive 2 s
   # watcher, sightings refresh a standoff waypoint named after the tag;
   # "doghouse" role=home is the dock),
   # camera_snapshot (raw D455 color frame), detect_objects
@@ -311,8 +313,15 @@ services:
       resources:
         limits:
           cpus: "1.0"
+    environment:
+      # Site-bundle paths (ADR-0023). Both files are opened per call, so a
+      # site switch applies live with no restart of this container.
+      - WAYPOINTS_PATH=/sites/active/maps/waypoints.json
+      - TAGS_DB=/sites/active/maps/tags.db
     volumes:
-      - ./maps:/maps
+      # Parent dir, NEVER ./sites/active/... — mounting through the symlink
+      # would freeze its target at container create (ADR-0023).
+      - ./sites:/sites
       # Cross-surface SSOT (velocity caps, status names, thresholds, cmd_vel
       # topics). Read-only; robot_profile.py falls back to baked defaults if
       # this mount is ever missing.
@@ -391,6 +400,11 @@ services:
       # Companion VM health check (ADR-0021); unset = panel hidden, Pi
       # standalone unaffected. Set in .env once the VM has a stable IP.
       - COMPANION_HOST=${COMPANION_HOST:-}
+      # Location sites (ADR-0023): owns the sites/active symlink switch +
+      # restarts the launch-bound services after a switch.
+      - SITES_DIR=/sites
+      - SITE_SCAFFOLD=pi
+      - SITE_RESTART_SERVICES=slam,nav2,behaviors
     deploy:
       resources:
         limits:
@@ -399,6 +413,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      # Site bundles (rw: creates dirs, repoints the active symlink). Parent
+      # dir, never ./sites/active — see the scout_skills mount comment.
+      - ./sites:/sites
 
 volumes:
   ros_ws_build:

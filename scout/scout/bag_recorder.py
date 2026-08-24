@@ -64,7 +64,7 @@ class BagRecorder(Node):
         # Same repo-root bind convention as patrol_capture's capture_dir;
         # bags get their own subtree so captures/<runstamp>/ stays the
         # patrol-photo namespace (CONTEXT.md).
-        self._root = str(p('capture_dir', '/ros_ws/src/captures/bags').value)
+        self._root = str(p('capture_dir', '/ros_ws/src/sites/active/captures/bags').value)
         self._topics_param = p('topics', list(prof['record_topics']))
         self._qos_overrides = resolve_config('bag_qos_overrides.yaml')
 

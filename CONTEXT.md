@@ -87,14 +87,22 @@ Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
 
 ## Files on the Pi (bind-mounted `./` into the container)
 
-- `maps/waypoints.json` — named waypoints + routes (ADR-0011); gitignored.
-- `maps/tags.db` — AprilTag registry (sqlite); gitignored.
-- `maps/*.posegraph`,`*.data` — slam_toolbox serialized maps; gitignored.
-- `maps/clutter.npz` — persistent clutter grid (only under slam localization).
-- `maps/zones.json` — keepout/speed zone polygons (ADR-0019); gitignored. The
-  `maps/zone_{keepout,speed}.pgm/.yaml` next to it are derived filter masks.
-- `captures/<runstamp>/` — patrol photos + manifest.
-- `captures/bags/<UTC>/` — rosbags from bag_recorder (ADR-0017).
+All per-location state lives in `sites/<name>/` behind the `sites/active`
+symlink (ADR-0023); switch sites from the webui Site panel. Per site:
+
+- `sites/<name>/site.json` — display name, default_map, slam_mode policy.
+- `sites/<name>/maps/waypoints.json` — named waypoints + routes (ADR-0011).
+- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite).
+- `sites/<name>/maps/*.posegraph`,`*.data` — slam_toolbox serialized maps.
+- `sites/<name>/maps/clutter.npz` — persistent clutter grid (only when the
+  site has a default_map).
+- `sites/<name>/maps/zones.json` — keepout/speed zone polygons (ADR-0019).
+  The `zone_{keepout,speed}.pgm/.yaml` next to it are derived filter masks.
+- `sites/<name>/captures/<runstamp>/` — patrol photos + manifest.
+- `sites/<name>/captures/bags/<UTC>/` — rosbags from bag_recorder (ADR-0017).
+
+All gitignored; migrate a pre-sites checkout once with
+`python3 scripts/migrate_sites.py`.
 
 ## Status wire formats (std_msgs/String, split on `|`)
 

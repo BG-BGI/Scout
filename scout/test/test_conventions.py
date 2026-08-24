@@ -98,7 +98,10 @@ def test_sc5_no_hand_rolled_quaternions():
 
 def test_sc7_core_modules_adopted_and_tested():
     core_modules = [p.stem for p in _py_files(CORE, exclude=('__init__.py',))]
-    node_sources = [p.read_text() for p in _py_files(PKG)]
+    # Launch files count as adopters: core.sites is consumed at launch time
+    # (slam/behaviors resolve the active site before any node exists).
+    node_sources = [p.read_text() for p in
+                    _py_files(PKG) + _py_files(REPO / 'scout' / 'launch')]
     unadopted = [m for m in core_modules
                  if not any('scout.core.%s' % m in src
                             or 'scout.core import' in src and (' %s' % m) in src
@@ -282,6 +285,21 @@ def test_sc11_no_sync_service_or_action_calls():
         'callback on the single-threaded executor (Humble Sync-Vs-Async '
         'how-to). Use the async form + done-callback (see link_watchdog), '
         'ADR-0013 SC11:\n' + '\n'.join(offenders))
+
+
+def test_sc11_site_paths_not_flat_pools():
+    """Per-location state lives under sites/active (ADR-0023). A node default
+    pointing at the retired flat maps/ or captures/ pools silently splits the
+    stores across layouts — the exact corruption sites exist to prevent."""
+    offenders = []
+    launch_dir = REPO / 'scout' / 'launch'
+    for path in _py_files(PKG) + _py_files(launch_dir) + _py_files(SKILLS):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if '/ros_ws/src/maps' in line or '/ros_ws/src/captures' in line:
+                offenders.append('%s:%d' % (_rel(path), lineno))
+    assert not offenders, (
+        'Flat maps//captures/ pool path — use /ros_ws/src/sites/active/... '
+        '(ADR-0023):\n' + '\n'.join(offenders))
 
 
 def test_sc6_bind_path_only_in_robot_profile():

@@ -1,0 +1,66 @@
+{
+  "configById": {
+    "3D!inspect": {
+      "cameraState": {
+        "perspective": true,
+        "distance": 8,
+        "phi": 60,
+        "thetaOffset": 45,
+        "targetOffset": [0, 0, 0]
+      },
+      "followMode": "follow-pose",
+      "followTf": "base_link",
+      "scene": {},
+      "topics": {
+        "/scan": {"visible": true, "colorField": "intensity", "pointSize": 3},
+        "/rtabmap/cloud_map": {"visible": true, "pointSize": 2},
+        "/world/registry": {"visible": false}
+      },
+      "transforms": {},
+      "publish": {"type": "point"}
+    },
+    "Image!color": {
+      "cameraState": {},
+      "imageMode": {"imageTopic": "/camera/camera/color/image_raw/compressed"}
+    },
+    "Image!depth": {
+      "cameraState": {},
+      "imageMode": {
+        "imageTopic": "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth"
+      }
+    },
+    "RawMessages!registry": {
+      "topicPath": "/world/registry"
+    },
+    "Plot!odom": {
+      "paths": [
+        {"value": "/odom.twist.twist.linear.x", "enabled": true},
+        {"value": "/odom.twist.twist.angular.z", "enabled": true}
+      ]
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {"speed": 1},
+  "layout": {
+    "direction": "row",
+    "first": "3D!inspect",
+    "second": {
+      "direction": "column",
+      "first": {
+        "direction": "row",
+        "first": "Image!color",
+        "second": "Image!depth",
+        "splitPercentage": 50
+      },
+      "second": {
+        "direction": "row",
+        "first": "RawMessages!registry",
+        "second": "Plot!odom",
+        "splitPercentage": 50
+      },
+      "splitPercentage": 60
+    },
+    "splitPercentage": 55
+  }
+}

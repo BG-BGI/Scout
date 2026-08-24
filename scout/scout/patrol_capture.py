@@ -18,9 +18,9 @@ RESOLVES the route names to poses — so a waypoint the scout-skills tag watcher
 refreshes is driven at its fresh pose automatically.
 
 Files (bind-mounted, gitignored like maps/):
-  /ros_ws/src/maps/waypoints.json               waypoint + route store (ADR-0011)
-  /ros_ws/src/captures/<runstamp>/wpNN.jpg      photos
-  /ros_ws/src/captures/<runstamp>/manifest.yaml waypoint, pose, time, result
+  /ros_ws/src/sites/active/maps/waypoints.json  waypoint + route store (ADR-0011)
+  /ros_ws/src/sites/active/captures/<runstamp>/wpNN.jpg      photos
+  /ros_ws/src/sites/active/captures/<runstamp>/manifest.yaml waypoint, pose, time, result
 
 Safety: /patrol/stop cancels the active nav goal and ends the run (web UI
 STOP calls it too). A battery reading under `abort_voltage` aborts the run
@@ -62,9 +62,9 @@ class PatrolCapture(Node):
 
         p = self.declare_parameter
         self._waypoints_file = str(p('waypoints_file',
-                                     '/ros_ws/src/maps/waypoints.json').value)
+                                     '/ros_ws/src/sites/active/maps/waypoints.json').value)
         self._route_name = str(p('route_name', 'patrol').value)
-        self._capture_dir = str(p('capture_dir', '/ros_ws/src/captures').value)
+        self._capture_dir = str(p('capture_dir', '/ros_ws/src/sites/active/captures').value)
         self._settle = float(p('settle_seconds', 1.5).value)
         self._frame_max_age = float(p('frame_max_age', 2.0).value)
         self._abort_voltage = float(

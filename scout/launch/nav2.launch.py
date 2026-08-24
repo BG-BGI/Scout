@@ -33,8 +33,10 @@ from launch import LaunchDescription
 from scout.robot_profile import deep_merge, merged_params
 
 # zone_manager's mask output dir (same repo-root bind convention as its
-# masks_dir parameter default — keep the two in step).
-_MASKS_DIR = '/ros_ws/src/maps'
+# masks_dir parameter default — keep the two in step). Lives in the active
+# site's bundle; `sites/active` is repointed by fleet_status on a site switch
+# and this probe re-runs because nav2 is in the switch's restart set (ADR-0023).
+_MASKS_DIR = '/ros_ws/src/sites/active/maps'
 
 # Costmap filter entries injected only when the masks exist. `filters` is
 # Costmap2DROS's separate filter-plugin list (kept apart from `plugins` so

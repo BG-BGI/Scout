@@ -26,7 +26,7 @@ docker compose down -v
 then `docker compose build` and `build_package` so the new `ros_overlay_install` volume seeds from the image and Scout lands in `$OVERLAY`.
 
 ```bash
-docker compose exec slam /ros_entrypoint.sh ros2 service call   /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph   "{filename: /ros_ws/src/maps/office}"
+docker compose exec slam /ros_entrypoint.sh ros2 service call   /slam_toolbox/serialize_map slam_toolbox/srv/SerializePoseGraph   "{filename: /ros_ws/src/sites/active/maps/office}"
 ```
 
 ## Web UI (http://scout.local)

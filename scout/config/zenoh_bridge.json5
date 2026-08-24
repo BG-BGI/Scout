@@ -24,6 +24,10 @@
           "^/scan$",
           "^/tf$",
           "^/tf_static$",
+          // Run-boundary state for the companion inspection recorder —
+          // read-only status, not control.
+          "^/patrol_status$",
+          "^/explore/resume$",
         ],
         // Read-only world-model telemetry INTO the Pi (WORLDMODEL.md gate 2).
         // First-ever inbound. Anchored, telemetry only — NOT a control topic;

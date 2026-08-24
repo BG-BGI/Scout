@@ -46,8 +46,8 @@ class ZoneManager(Node):
         super().__init__('zone_manager')
         p = self.declare_parameter
         # Same repo-root bind convention as patrol_capture / clutter_mapper.
-        self._file = str(p('zones_file', '/ros_ws/src/maps/zones.json').value)
-        self._masks_dir = str(p('masks_dir', '/ros_ws/src/maps').value)
+        self._file = str(p('zones_file', '/ros_ws/src/sites/active/maps/zones.json').value)
+        self._masks_dir = str(p('masks_dir', '/ros_ws/src/sites/active/maps').value)
         # Which map's zones are ACTIVE (rendered to the masks). Keep in step
         # with slam's map:= when running localization/continue.
         self._map = str(p('map_name', 'default').value)

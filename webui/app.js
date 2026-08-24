@@ -1280,6 +1280,155 @@ async function refreshCompanion() {
 refreshCompanion();
 setInterval(refreshCompanion, 30000);
 
+// --- site panel: location bundles (ADR-0023) ---------------------------------------
+// Each site = maps + zones + waypoints + tags + captures for one location.
+// fleet_status owns the sites/active symlink and restarts slam/nav2/behaviors
+// on a switch; this panel is just the picker. Endpoints 404 (panel hides)
+// until the Pi is migrated (scripts/migrate_sites.py). The companion mirrors
+// the switch best-effort over its own fleet_status — offline never blocks.
+const sitePanel = document.getElementById('site-panel');
+const siteState = document.getElementById('site-state');
+const siteList = document.getElementById('site-list');
+const siteResult = document.getElementById('site-result');
+const siteMapName = document.getElementById('site-map-name');
+
+// Guards the switch: /nav_state 'active' = driving, rec-live = bag writing.
+let siteNavBusy = false;
+new ROSLIB.Topic({
+  ros, name: '/nav_state', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => { siteNavBusy = msg.data.split('|')[0] === 'active'; });
+
+let activeSiteMeta = null;
+
+function renderSites(data) {
+  siteState.textContent = data.active || 'none';
+  activeSiteMeta = (data.sites || []).find((s) => s.name === data.active) || null;
+  siteList.innerHTML = '';
+  for (const s of data.sites || []) {
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    const isActive = s.name === data.active;
+    const mapLabel = s.default_map || 'no map yet';
+    row.innerHTML = `
+      <span class="svc-dot ${isActive ? 'running' : 'exited'}"></span>
+      <span class="svc-name">${s.display_name || s.name}</span>
+      <span class="svc-stat">${mapLabel}</span>
+      <span class="svc-actions">
+        <button data-site="${s.name}" ${isActive ? 'disabled' : ''}>Switch</button>
+      </span>
+    `;
+    const btn = row.querySelector('button');
+    if (btn) btn.addEventListener('click', () => switchSite(s.name));
+    siteList.appendChild(row);
+  }
+  const last = data.last_switch;
+  if (last && last.restarts && last.restarts.some((r) => !r.ok)) {
+    const failed = last.restarts.filter((r) => !r.ok).map((r) => r.service);
+    siteResult.textContent = `last switch: ${failed.join(', ')} failed to restart — retry from the System panel.`;
+  }
+}
+
+async function switchSite(name) {
+  if (siteNavBusy) { alert('Navigation goal active — cancel it before switching sites.'); return; }
+  if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before switching sites.'); return; }
+  if (!confirm(`Switch to site "${name}"? slam/nav2/behaviors restart (~20 s); the map, zones and waypoints change to that site's. Driving and camera stay up.`)) return;
+  siteResult.textContent = 'switching…';
+  try {
+    const res = await fetch(`${FLEET_API}/sites/${name}/activate`, { method: 'POST' });
+    const body = await res.json();
+    if (!res.ok) { siteResult.textContent = 'switch failed: ' + (body.error || res.status); return; }
+    siteResult.textContent = `now on "${name}" — restarting ${(body.restarting || []).join(', ')}…`;
+  } catch (e) {
+    siteResult.textContent = 'fleet_status unreachable';
+    return;
+  }
+  // Companion mirror (per-site rtabmap.db + inspection captures). Best-effort:
+  // create the site there if it's new; an offline companion never blocks.
+  if (CMP_API) {
+    try {
+      await fetch(`${CMP_API}/sites/${name}/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ create: true }),
+      });
+    } catch (e) { /* companion offline; next switch re-syncs */ }
+  }
+  setTimeout(refreshSites, 5000);
+  setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
+}
+
+document.getElementById('site-add-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const input = document.getElementById('site-add-name');
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    const res = await fetch(`${FLEET_API}/sites`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const body = await res.json();
+    siteResult.textContent = res.ok ? `created "${name}" — press Switch to start mapping there.`
+      : 'create failed: ' + (body.error || res.status);
+    if (res.ok) input.value = '';
+  } catch (e) { siteResult.textContent = 'fleet_status unreachable'; }
+  refreshSites();
+});
+
+// Save the live slam graph into the active site + make it the site's default
+// map. serialize_map appends .posegraph/.data itself. ⚠ In localization mode
+// slam_toolbox silently no-ops AND reports success (CLAUDE.md trap) — mode:=site
+// auto policy never runs localization, so this only guards a hand-set mode.
+const serializeSrv = new ROSLIB.Service({
+  ros, name: '/slam_toolbox/serialize_map',
+  serviceType: 'slam_toolbox/srv/SerializePoseGraph',
+});
+document.getElementById('site-save-map').addEventListener('click', () => {
+  if (activeSiteMeta && activeSiteMeta.slam_mode === 'localization') {
+    alert('This site is pinned to localization mode: serialize_map silently saves NOTHING there. Set slam_mode to auto/continue first.');
+    return;
+  }
+  const name = siteMapName.value.trim()
+    || (activeSiteMeta && (activeSiteMeta.default_map || activeSiteMeta.name)) || 'map';
+  if (!confirm(`Save the current map as "${name}" in the active site?`)) return;
+  siteResult.textContent = 'serializing map…';
+  serializeSrv.callService(
+    new ROSLIB.ServiceRequest({ filename: '/ros_ws/src/sites/active/maps/' + name }),
+    async () => {
+      try {
+        await fetch(`${FLEET_API}/sites/active`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ default_map: name }),
+        });
+      } catch (e) { /* metadata update is best-effort; the files are saved */ }
+      siteResult.textContent = `map "${name}" saved.`;
+      // behaviors too: zone_manager keys zones by map_name = the site's
+      // default_map, which just changed — it re-reads site.json at launch.
+      if (confirm('Map saved. Restart slam + behaviors now to continue on it (makes zones/clutter durable)?')) {
+        try {
+          await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+          await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+        } catch (e) { /* ignore */ }
+      }
+      refreshSites();
+    },
+    (err) => { siteResult.textContent = 'serialize failed: ' + err; },
+  );
+});
+
+async function refreshSites() {
+  try {
+    const res = await fetch(FLEET_API + '/sites');
+    if (res.status === 404) { sitePanel.style.display = 'none'; return; }
+    sitePanel.style.display = '';
+    renderSites(await res.json());
+  } catch (e) { siteState.textContent = 'offline'; }
+}
+refreshSites();
+setInterval(refreshSites, 30000);
+
 // --- network panel: NM known networks + connect/forget ----------------------------
 // Same fleet_status backend, /api/wifi/*. Switching networks risks stranding this
 // very page (served over wlan0), so every mutating action gets an explicit warning

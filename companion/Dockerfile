@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rtabmap-ros \
         ros-humble-image-transport-plugins \
         ros-humble-foxglove-bridge \
+        # MCAP storage for the inspection recorder — Foxglove reads MCAP
+        # directly, so the Humble split-playback ban does not apply here.
+        ros-humble-rosbag2-storage-mcap \
     && rm -rf /var/lib/apt/lists/*
 
 # Base image's /ros_entrypoint.sh (sources /opt/ros/humble) is all we need.

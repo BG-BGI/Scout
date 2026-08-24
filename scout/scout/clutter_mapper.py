@@ -22,7 +22,7 @@ Outputs:
                    (StaticLayer is not used: two static layers fight over the
                    master grid size)
 
-Persistence: numpy .npz at `file` (default /ros_ws/src/maps/clutter.npz),
+Persistence: numpy .npz at `file` (default /ros_ws/src/sites/active/maps/clutter.npz),
 loaded at startup, autosaved every `autosave_period` while dirty.
 
 Needs map->base_link TF (slam running). Without it the node idles and says
@@ -69,7 +69,7 @@ class ClutterMapper(Node):
         self._max_range = float(p('max_range', 2.0).value)
         self._half_fov = math.radians(float(p('half_fov_deg', 40.0).value))
         self._period = float(p('process_period', 0.3).value)
-        self._file = str(p('file', '/ros_ws/src/maps/clutter.npz').value)
+        self._file = str(p('file', '/ros_ws/src/sites/active/maps/clutter.npz').value)
         self._autosave = float(p('autosave_period', 30.0).value)
         # Mover rejection: sightings must span this long before a cell reports
         # (a walker crosses a cell in well under a second; furniture dwells),

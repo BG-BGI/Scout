@@ -324,15 +324,9 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # Keepout/speed zones: /zone_cmd (webui polygons) -> maps/zones.json
-        # -> derived filter masks + hot-reload of nav2's mask servers
-        # (ADR-0019). Like clutter persistence, only meaningful under slam
-        # localization/continue — keep map_name in step with slam's map:=.
-        Node(
-            package='scout',
-            executable='zone_manager',
-            output='screen',
-        ),
+        # zone_manager moved to behaviors.launch.py (ADR-0023): it touches no
+        # device, and living there means a site switch restarts it (fresh
+        # map_name + masks) without ever restarting the drivetrain.
 
         # Link-loss watchdog: 5 s without gateway reachability cancels+stashes
         # nav goals, link recovery within 2 min re-dispatches them, longer

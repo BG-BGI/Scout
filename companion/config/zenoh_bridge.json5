@@ -27,6 +27,9 @@
           "^/scan$",
           "^/tf$",
           "^/tf_static$",
+          // Run-boundary state for the inspection recorder.
+          "^/patrol_status$",
+          "^/explore/resume$",
         ],
         service_servers: [],
         service_clients: [],
