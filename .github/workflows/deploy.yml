@@ -152,6 +152,17 @@ jobs:
         env:
           BRANCH: ${{ needs.resolve.outputs.companion_branch }}
           SHA: ${{ needs.resolve.outputs.companion_sha }}
+        # Same as the Pi job: git-update BEFORE exec so the NEW revision's
+        # update.sh runs (first CI deploy onto a stale checkout otherwise
+        # executes the old script, which ignores the branch/sha args).
         run: |
-          cd "${SCOUT_REPO:-$HOME/Scout}/companion"
-          exec ./update.sh "$BRANCH" "$SHA"
+          cd "${SCOUT_REPO:-$HOME/Scout}"
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "::error::working tree has local changes (deploy-via-git-only)"
+            git status --short
+            exit 1
+          fi
+          git fetch origin "$BRANCH"
+          git checkout -q "$BRANCH"
+          git merge --ff-only "origin/$BRANCH"
+          exec ./companion/update.sh "$BRANCH" "$SHA"
