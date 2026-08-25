@@ -1,0 +1,79 @@
+# Companion image publishing (ADR-0022 stack). Builds the companion images
+# natively on amd64 runners and pushes to GHCR, so the Debian box updates with
+# `docker compose pull` instead of USB tarballs.
+#
+# The box authenticates with a read:packages PAT (SSO-authorized once from a
+# browser); the repo itself reaches the box via a read-only deploy key —
+# deploy keys are exempt from SAML SSO enforcement.
+#
+# fleet-status moved to fleet-status-image.yml (the Pi pulls it too, so it
+# must be multi-arch, built in exactly one workflow).
+name: companion-images
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "companion/Dockerfile"
+      - "companion/detector/**"
+      - "companion/captioner/**"
+      - ".github/workflows/companion-images.yml"
+  workflow_dispatch:
+  # deploy.yml calls this at the exact commit it is about to deploy, so a
+  # deployable :<sha> image always exists even when the push path filters
+  # above skipped the build.
+  workflow_call:
+    inputs:
+      ref:
+        description: commit SHA to build
+        type: string
+        required: true
+      branch:
+        description: branch name for the mutable tag
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - image: scout-companion
+            context: companion
+          - image: scout-companion-detector
+            context: companion/detector
+          - image: scout-companion-captioner
+            context: companion/captioner
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Compute tags
+        id: tags
+        env:
+          SHA: ${{ inputs.ref || github.sha }}
+          BRANCH: ${{ inputs.branch || github.ref_name }}
+        run: |
+          repo=ghcr.io/bg-bgi/${{ matrix.image }}
+          tags="$repo:$SHA,$repo:${BRANCH//\//-}"
+          [ "$BRANCH" = "main" ] && tags="$tags,$repo:latest"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache,mode=max

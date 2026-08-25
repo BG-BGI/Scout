@@ -1,0 +1,157 @@
+# Deploy to the Pi and/or companion — dispatch-only, always a human decision:
+# a Pi deploy restarts the drivetrain driver, and only the operator knows the
+# robot is stationary (hence the required confirmation checkbox).
+#
+# Branch pins live in repo Actions variables PI_BRANCH / COMPANION_BRANCH
+# (change with `gh variable set PI_BRANCH -b <branch>` or repo Settings ->
+# Variables); the `branch` input overrides both for one run. Each deploy
+# first ensures :<sha> images exist by calling the build workflows at the
+# exact commit being deployed — path-filtered push builds may have skipped it.
+#
+# The deploy jobs run on the devices' own self-hosted runners (labels `pi` /
+# `companion`) and operate on the device's existing clone ($SCOUT_REPO in the
+# runner's .env), never a runner-workdir checkout — deploy-via-git-only.
+# Public-repo runner safety: self-hosted labels appear ONLY in
+# workflow_dispatch workflows (dispatch requires write access); see
+# docs/deploy.md for the required repo Actions settings.
+name: deploy
+run-name: "deploy ${{ inputs.target }} @ ${{ inputs.branch || 'pinned branches' }}"
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: which device(s) to deploy
+        type: choice
+        options: [both, pi, companion]
+        default: both
+      branch:
+        description: "branch override; blank = PI_BRANCH / COMPANION_BRANCH repo variables"
+        type: string
+        required: false
+      robot_stationary:
+        description: "I confirm the robot is stationary, no nav goal is active, and it is safe to restart the drivetrain (required for pi/both)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_pi: ${{ steps.plan.outputs.deploy_pi }}
+      deploy_companion: ${{ steps.plan.outputs.deploy_companion }}
+      pi_branch: ${{ steps.plan.outputs.pi_branch }}
+      pi_sha: ${{ steps.plan.outputs.pi_sha }}
+      companion_branch: ${{ steps.plan.outputs.companion_branch }}
+      companion_sha: ${{ steps.plan.outputs.companion_sha }}
+    steps:
+      - name: Refuse unconfirmed Pi deploy
+        if: ${{ inputs.target != 'companion' && !inputs.robot_stationary }}
+        run: |
+          echo "::error::A Pi deploy restarts the drivetrain driver. Re-dispatch with the robot-stationary confirmation checked."
+          exit 1
+      - name: Resolve branches and commits
+        id: plan
+        env:
+          TARGET: ${{ inputs.target }}
+          OVERRIDE: ${{ inputs.branch }}
+          PI_BRANCH: ${{ vars.PI_BRANCH }}
+          COMPANION_BRANCH: ${{ vars.COMPANION_BRANCH }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          resolve() { git ls-remote "$REPO_URL" "refs/heads/$1" | cut -f1; }
+          plan_target() { # $1=name $2=pinned-branch
+            b="${OVERRIDE:-$2}"
+            if [ -z "$b" ]; then
+              echo "::error::no branch for $1 — set the ${1^^}_BRANCH repo variable or pass the branch input"
+              exit 1
+            fi
+            sha=$(resolve "$b")
+            if [ -z "$sha" ]; then
+              echo "::error::branch '$b' not found on ${REPO_URL}"
+              exit 1
+            fi
+            echo "deploy_$1=true"    >> "$GITHUB_OUTPUT"
+            echo "${1}_branch=$b"    >> "$GITHUB_OUTPUT"
+            echo "${1}_sha=$sha"     >> "$GITHUB_OUTPUT"
+            echo "== $1: $b @ $sha"
+          }
+          [ "$TARGET" != companion ] && plan_target pi "$PI_BRANCH" || echo "deploy_pi=false" >> "$GITHUB_OUTPUT"
+          [ "$TARGET" != pi ] && plan_target companion "$COMPANION_BRANCH" || echo "deploy_companion=false" >> "$GITHUB_OUTPUT"
+
+  # Ensure :<sha> images exist for exactly the commits being deployed.
+  pi-images:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.deploy_pi == 'true' }}
+    uses: ./.github/workflows/pi-images.yml
+    with:
+      ref: ${{ needs.resolve.outputs.pi_sha }}
+      branch: ${{ needs.resolve.outputs.pi_branch }}
+  fleet-status-pi:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.deploy_pi == 'true' }}
+    uses: ./.github/workflows/fleet-status-image.yml
+    with:
+      ref: ${{ needs.resolve.outputs.pi_sha }}
+      branch: ${{ needs.resolve.outputs.pi_branch }}
+  companion-images:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.deploy_companion == 'true' }}
+    uses: ./.github/workflows/companion-images.yml
+    with:
+      ref: ${{ needs.resolve.outputs.companion_sha }}
+      branch: ${{ needs.resolve.outputs.companion_branch }}
+  fleet-status-companion:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.deploy_companion == 'true' }}
+    uses: ./.github/workflows/fleet-status-image.yml
+    with:
+      ref: ${{ needs.resolve.outputs.companion_sha }}
+      branch: ${{ needs.resolve.outputs.companion_branch }}
+
+  deploy-pi:
+    needs: [resolve, pi-images, fleet-status-pi]
+    runs-on: [self-hosted, pi]
+    timeout-minutes: 60
+    steps:
+      - name: Deploy
+        env:
+          BRANCH: ${{ needs.resolve.outputs.pi_branch }}
+          SHA: ${{ needs.resolve.outputs.pi_sha }}
+        # The git update happens HERE, before the script runs, so the deploy
+        # always executes the NEW revision's deploy-pi.sh (a script that
+        # updates its own file mid-run is a bash re-read hazard).
+        # SCOUT_PREV_BRANCH carries the pre-checkout branch into the script's
+        # stale-build-cache detection.
+        run: |
+          cd "${SCOUT_REPO:-$HOME/Desktop/Scout}"
+          if ! git diff --quiet || ! git diff --cached --quiet; then
+            echo "::error::working tree has local changes (deploy-via-git-only)"
+            git status --short
+            exit 1
+          fi
+          export SCOUT_PREV_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+          git fetch origin "$BRANCH"
+          git checkout -q "$BRANCH"
+          git merge --ff-only "origin/$BRANCH"
+          exec ./scripts/deploy-pi.sh "$BRANCH" "$SHA"
+
+  deploy-companion:
+    needs: [resolve, companion-images, fleet-status-companion]
+    runs-on: [self-hosted, companion]
+    timeout-minutes: 30
+    steps:
+      - name: Deploy
+        env:
+          BRANCH: ${{ needs.resolve.outputs.companion_branch }}
+          SHA: ${{ needs.resolve.outputs.companion_sha }}
+        run: |
+          cd "${SCOUT_REPO:-$HOME/Scout}/companion"
+          exec ./update.sh "$BRANCH" "$SHA"

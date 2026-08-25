@@ -1,0 +1,86 @@
+# Pi image publishing (arm64). Native ubuntu-24.04-arm runners (free on public
+# repos) replace the Mac buildx + docker save/scp/load sneakernet: the Pi now
+# `docker compose pull`s these from GHCR (deploy.yml -> scripts/deploy-pi.sh).
+#
+# Tags: :<sha> (what deploys pin via SCOUT_TAG in .env), :<branch> (browsing
+# convenience), :latest on main only — so pushes to other branches can never
+# clobber what a `${SCOUT_TAG:-latest}` fallback resolves to.
+#
+# Build cache lives in a :buildcache registry ref, not type=gha — the gha
+# cache's 10 GB cap cannot hold the librealsense layers, and eviction there
+# means a full ~13 min scout rebuild.
+name: pi-images
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - Dockerfile
+      - docker/ros-mcp/**
+      - docker/scout-skills/**
+      - docker/observability-exporter/**
+      - docker/observability-mcp/**
+      - .github/workflows/pi-images.yml
+  workflow_dispatch:
+  # deploy.yml calls this at the exact commit it is about to deploy, so a
+  # deployable :<sha> image always exists even when the push path filters
+  # above skipped the build.
+  workflow_call:
+    inputs:
+      ref:
+        description: commit SHA to build
+        type: string
+        required: true
+      branch:
+        description: branch name for the mutable tag
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-push:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      matrix:
+        include:
+          - image: scout
+            context: .
+          - image: scout-ros-mcp
+            context: docker/ros-mcp
+          - image: scout-skills
+            context: docker/scout-skills
+          - image: scout-observability-exporter
+            context: docker/observability-exporter
+          - image: scout-observability-mcp
+            context: docker/observability-mcp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - name: Compute tags
+        id: tags
+        env:
+          SHA: ${{ inputs.ref || github.sha }}
+          BRANCH: ${{ inputs.branch || github.ref_name }}
+        run: |
+          repo=ghcr.io/bg-bgi/${{ matrix.image }}
+          tags="$repo:$SHA,$repo:${BRANCH//\//-}"
+          [ "$BRANCH" = "main" ] && tags="$tags,$repo:latest"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache,mode=max

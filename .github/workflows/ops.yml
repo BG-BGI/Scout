@@ -1,0 +1,72 @@
+# Container ops on the Pi / companion from the Actions UI — dispatch-only,
+# runs docker compose in the device's own clone via its self-hosted runner.
+#
+# ⚠ Motion caveats (same as ever): `stop`/`down` on the Pi is a COAST, not a
+# brake — the deadman free-wheels the drivetrain within 200 ms. And stopping
+# nav2 does not clear an accepted goal; `restart nav2` is what clears one.
+#
+# `down -v` is deliberately not offered: wiping ros_ws_build +
+# ros_overlay_install belongs to the deploy path (scripts/deploy-pi.sh owns
+# the stamp-guard decision), never to an ad-hoc button.
+name: ops
+run-name: "ops: ${{ inputs.action }} ${{ inputs.services }} on ${{ inputs.target }}"
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: which device
+        type: choice
+        options: [pi, companion]
+        default: pi
+      action:
+        description: compose action
+        type: choice
+        options: [ps, logs, restart, stop, start, up, down]
+        default: ps
+      services:
+        description: "space-separated services; blank = all (in the active profiles)"
+        type: string
+        required: false
+      profiles:
+        description: "compose profiles; blank = 'full' on pi, none on companion. ⚠ 'explore' + up starts frontier exploration = motion"
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+# Shares the deploy concurrency group so ops never interleave with a deploy.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  ops:
+    runs-on: [self-hosted, "${{ inputs.target }}"]
+    timeout-minutes: 15
+    steps:
+      - name: Run compose command
+        env:
+          TARGET: ${{ inputs.target }}
+          ACTION: ${{ inputs.action }}
+          SERVICES: ${{ inputs.services }}
+          PROFILES: ${{ inputs.profiles }}
+        run: |
+          if [ "$TARGET" = pi ]; then
+            cd "${SCOUT_REPO:-$HOME/Desktop/Scout}"
+            DEFAULT_PROFILES="full"
+          else
+            cd "${SCOUT_REPO:-$HOME/Scout}/companion"
+            DEFAULT_PROFILES=""
+          fi
+          P=""
+          for p in ${PROFILES:-$DEFAULT_PROFILES}; do P="$P --profile $p"; done
+          case "$ACTION" in
+            ps)      docker compose $P ps ;;
+            logs)    docker compose $P logs --tail 200 $SERVICES ;;
+            restart) docker compose $P restart $SERVICES ;;
+            stop)    docker compose $P stop $SERVICES ;;
+            start)   docker compose $P start $SERVICES ;;
+            up)      docker compose $P up -d --remove-orphans $SERVICES ;;
+            down)    docker compose $P down --remove-orphans ;;
+          esac
