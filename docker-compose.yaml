@@ -234,8 +234,10 @@ services:
     entrypoint: []
     volumes:
       - ./webui:/webui:ro
-      # The SSOT profile, shadowed into the served dir so app.js's
-      # fetch('robot_profile.yaml') reads the real file — no tracked copy.
+      # The SSOT profile, shadowed over webui/robot_profile.yaml (a tracked
+      # comment-only placeholder — the ro dir bind above means Docker cannot
+      # create the mountpoint, so the file must exist) so app.js's
+      # fetch('robot_profile.yaml') reads the real file, live.
       - ./scout/config/robot_profile.yaml:/webui/robot_profile.yaml:ro
     deploy:
       resources:

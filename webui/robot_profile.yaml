@@ -1,0 +1,7 @@
+# Placeholder MOUNTPOINT only — docker-compose bind-mounts the real SSOT
+# (scout/config/robot_profile.yaml) over this file. The webui dir is a
+# read-only bind, so Docker cannot create the mountpoint itself; this file
+# must exist in git for the shadow mount to land. NEVER put values here —
+# app.js falls back to its baked defaults if it ever reads this file
+# (served outside compose), and test_profile_constants.py (SC10) fails if a
+# real key appears.

@@ -87,12 +87,19 @@ def test_sc8_profile_values_not_hardcoded():
         + '\n'.join(offenders))
 
 
-def test_sc10_webui_profile_copy_is_gone():
-    # The webui reads the SSOT via a compose bind mount; a reappearing copy
-    # means someone re-forked the profile.
-    assert not (REPO / 'webui' / 'robot_profile.yaml').exists(), (
-        'webui/robot_profile.yaml is back — the webui must read the SSOT via '
-        'the compose mount (docker-compose.yaml webui service), not a copy')
+def test_sc10_webui_profile_is_placeholder_only():
+    # The webui reads the SSOT via a compose bind mount shadowing this file
+    # (a ro dir bind cannot create the mountpoint, so a tracked placeholder
+    # must exist). Comments only — a real key means someone re-forked the
+    # profile.
+    text = (REPO / 'webui' / 'robot_profile.yaml').read_text()
+    values = [ln for ln in text.splitlines()
+              if ln.strip() and not ln.lstrip().startswith('#')]
+    assert not values, (
+        'webui/robot_profile.yaml grew real content — it is a mountpoint '
+        'placeholder; the webui must read the SSOT via the compose mount '
+        '(docker-compose.yaml webui service), never a copy:\n'
+        + '\n'.join(values))
 
 
 def _function_sources(path, names):

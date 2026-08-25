@@ -62,7 +62,8 @@ This file names the concepts and maps the running system.
 - **robot profile (robot_profile.yaml)** — the cross-surface SSOT for velocity
   caps, floors, rates, topic names, LED modes, status names, thresholds. Read by
   the ROS nodes, scout-skills (ro mount) and the webui (compose bind-mounts the
-  SSOT into /webui — no copy since 2026-08-24). Distinct from a *profile* above.
+  SSOT over a tracked comment-only placeholder in /webui — no value copy since
+  2026-08-24). Distinct from a *profile* above.
 - **wire format** — every cross-boundary status payload, pipe grammar or JSON,
   formatted/parsed only by `scout.core.status` and frozen by SC9
   (test_status.py). Nodes may not `json.dumps` a status inline.
