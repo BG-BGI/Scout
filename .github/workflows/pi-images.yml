@@ -1,22 +1,25 @@
-# Companion image publishing (ADR-0022 stack). Builds the companion images
-# natively on amd64 runners and pushes to GHCR, so the Debian box updates with
-# `docker compose pull` instead of USB tarballs.
+# Pi image publishing (arm64). Native ubuntu-24.04-arm runners (free on public
+# repos) replace the Mac buildx + docker save/scp/load sneakernet: the Pi now
+# `docker compose pull`s these from GHCR (deploy.yml -> scripts/deploy-pi.sh).
 #
-# The box authenticates with a read:packages PAT (SSO-authorized once from a
-# browser); the repo itself reaches the box via a read-only deploy key —
-# deploy keys are exempt from SAML SSO enforcement.
+# Tags: :<sha> (what deploys pin via SCOUT_TAG in .env), :<branch> (browsing
+# convenience), :latest on main only — so pushes to other branches can never
+# clobber what a `${SCOUT_TAG:-latest}` fallback resolves to.
 #
-# fleet-status moved to fleet-status-image.yml (the Pi pulls it too, so it
-# must be multi-arch, built in exactly one workflow).
-name: companion-images
+# Build cache lives in a :buildcache registry ref, not type=gha — the gha
+# cache's 10 GB cap cannot hold the librealsense layers, and eviction there
+# means a full ~13 min scout rebuild.
+name: pi-images
 on:
   push:
     branches: ["**"]
     paths:
-      - "companion/Dockerfile"
-      - "companion/detector/**"
-      - "companion/captioner/**"
-      - ".github/workflows/companion-images.yml"
+      - Dockerfile
+      - docker/ros-mcp/**
+      - docker/scout-skills/**
+      - docker/observability-exporter/**
+      - docker/observability-mcp/**
+      - .github/workflows/pi-images.yml
   workflow_dispatch:
   # deploy.yml calls this at the exact commit it is about to deploy, so a
   # deployable :<sha> image always exists even when the push path filters
@@ -38,17 +41,21 @@ permissions:
 
 jobs:
   build-push:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
     strategy:
       matrix:
         include:
-          - image: scout-companion
-            context: companion
-          - image: scout-companion-detector
-            context: companion/detector
-          - image: scout-companion-captioner
-            context: companion/captioner
+          - image: scout
+            context: .
+          - image: scout-ros-mcp
+            context: docker/ros-mcp
+          - image: scout-skills
+            context: docker/scout-skills
+          - image: scout-observability-exporter
+            context: docker/observability-exporter
+          - image: scout-observability-mcp
+            context: docker/observability-mcp
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,7 +79,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.context }}
-          platforms: linux/amd64
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache

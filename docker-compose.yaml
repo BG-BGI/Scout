@@ -1,5 +1,9 @@
+# All scout images come from GHCR (built by .github/workflows/pi-images.yml /
+# fleet-status-image.yml on arm64 runners). SCOUT_TAG in .env pins the whole
+# stack to one commit — scripts/deploy-pi.sh writes it; :latest (main's head)
+# is only the fallback for a hand-run stack. `build:` keys stay for local dev.
 x-service: &base
-  image: scout:latest
+  image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
   network_mode: host
   ipc: host
   # DDS stays on loopback (ADR-0022): the re-test showed corp inter-VLAN
@@ -191,7 +195,7 @@ services:
   # under /opt/ros; without the volume the stamp guard compares the image's
   # own copy — always a match).
   foxglove_bridge:
-    image: scout:latest
+    image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
     network_mode: host
     ipc: host
     restart: unless-stopped
@@ -228,7 +232,7 @@ services:
   # entrypoint, no DDS env, and only the ./webui mount (webui/robot_profile.yaml
   # is now a real SC10-synced copy of the SSOT, not a symlink out of the tree).
   webui:
-    image: scout:latest
+    image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     entrypoint: []
@@ -264,7 +268,7 @@ services:
   # as nav2 above); clients must poll get_action_status or cancel.
   ros_mcp:
     build: docker/ros-mcp
-    image: scout-ros-mcp:latest
+    image: ghcr.io/bg-bgi/scout-ros-mcp:${SCOUT_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     profiles: ["full"]
@@ -308,7 +312,7 @@ services:
   # latched-goal semantics still apply: poll nav_status, stop with nav_cancel.
   scout_skills:
     build: docker/scout-skills
-    image: scout-skills:latest
+    image: ghcr.io/bg-bgi/scout-skills:${SCOUT_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     profiles: ["full"]
@@ -343,7 +347,7 @@ services:
   # docker socket mount -- this container can observe but never act.
   observability_exporter:
     build: docker/observability-exporter
-    image: scout-observability-exporter:latest
+    image: ghcr.io/bg-bgi/scout-observability-exporter:${SCOUT_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     profiles: ["observability"]
@@ -358,7 +362,7 @@ services:
   # ⚠ No auth -- LAN-trust only, same caveat as ros_mcp/scout_skills.
   observability_mcp:
     build: docker/observability-mcp
-    image: scout-observability-mcp:latest
+    image: ghcr.io/bg-bgi/scout-observability-mcp:${SCOUT_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     profiles: ["observability"]
@@ -396,7 +400,7 @@ services:
   # actually change NetworkManager state, not just read it.
   fleet_status:
     build: docker/fleet-status
-    image: scout-fleet-status:latest
+    image: ghcr.io/bg-bgi/scout-fleet-status:${SCOUT_TAG:-latest}
     network_mode: host
     privileged: true
     restart: unless-stopped

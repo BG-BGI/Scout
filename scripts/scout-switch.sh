@@ -1,6 +1,11 @@
 #!/bin/bash
 # scout-switch <branch> — switch the Scout stack to another software version.
 #
+# ⚠ SUPERSEDED for normal use by the deploy workflow (ADR-0027): dispatch
+# .github/workflows/deploy.yml, which pulls prebuilt GHCR images and runs
+# scripts/deploy-pi.sh. This script builds the image ON the Pi and is kept
+# only as the offline/no-GHCR fallback.
+#
 # Copy this OUTSIDE the repo on the Pi (e.g. ~/bin/scout-switch) so it exists no
 # matter which branch is checked out:
 #   install -D scripts/scout-switch.sh ~/bin/scout-switch

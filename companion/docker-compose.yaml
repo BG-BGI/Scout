@@ -5,16 +5,18 @@
 #
 # .env: PI_IP=<the Pi's address>  (cp .env.example .env)
 
-# Images come from GHCR (built by .github/workflows/companion-images.yml on
-# push) — box updates via ./update.sh (git pull + compose pull). The build:
-# keys stay for local dev only.
+# Images come from GHCR (built by .github/workflows/companion-images.yml +
+# fleet-status-image.yml) — box updates via ./update.sh (git pull + compose
+# pull), normally driven by the deploy workflow, which pins COMPANION_TAG in
+# .env to the deployed commit's sha. :latest = main's head, the fallback for a
+# hand-run stack. The build: keys stay for local dev only.
 # Pin the project name so container labels are deterministic regardless of the
 # clone directory — fleet_status filters containers by this exact project.
 name: scout-companion
 
 x-companion: &companion
   build: .
-  image: ghcr.io/bg-bgi/scout-companion:latest
+  image: ghcr.io/bg-bgi/scout-companion:${COMPANION_TAG:-latest}
   network_mode: host
   ipc: host
   environment:
@@ -96,7 +98,7 @@ services:
   # robot_state_publisher ships in ros-base (this image), so no rebuild. Meshes
   # are irrelevant — kdl_parser reads only links/joints for TF.
   robot_state_publisher:
-    image: ghcr.io/bg-bgi/scout-companion:latest
+    image: ghcr.io/bg-bgi/scout-companion:${COMPANION_TAG:-latest}
     network_mode: host
     ipc: host
     restart: unless-stopped
@@ -120,7 +122,7 @@ services:
   # local-graph env so it shares this box's DDS with rtabmap.
   detector:
     build: ./detector
-    image: ghcr.io/bg-bgi/scout-companion-detector:latest
+    image: ghcr.io/bg-bgi/scout-companion-detector:${COMPANION_TAG:-latest}
     network_mode: host
     ipc: host
     restart: unless-stopped
@@ -187,7 +189,7 @@ services:
   # the bag. Profile-gated so `compose up` never starts a 2 GB torch container.
   captioner:
     build: ./captioner
-    image: ghcr.io/bg-bgi/scout-companion-captioner:latest
+    image: ghcr.io/bg-bgi/scout-companion-captioner:${COMPANION_TAG:-latest}
     profiles: ["caption"]
     volumes:
       - ./captures:/captures
@@ -199,7 +201,7 @@ services:
   # it unset). privileged + the docker & dbus sockets: docker.sock for container
   # control, the system bus for logind Reboot. /hostfs for disk vitals.
   fleet_status:
-    image: ghcr.io/bg-bgi/scout-fleet-status:latest
+    image: ghcr.io/bg-bgi/scout-fleet-status:${COMPANION_TAG:-latest}
     network_mode: host
     ipc: host
     privileged: true
