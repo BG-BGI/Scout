@@ -1,9 +1,10 @@
 import math
 
-import rclpy
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
+
+from scout.node_util import run_node
 
 # Defaults measured on this robot's D455 (BMI085) over a 30 s stationary run:
 #   yaw-axis bias  -0.203 deg/s  (-0.00354 rad/s)
@@ -52,14 +53,22 @@ class GyroCalibrator(Node):
         self.refresh_weight = self.declare_parameter('refresh_weight', 0.25).value
         self.angular_velocity_variance = self.declare_parameter(
             'angular_velocity_variance', _DEFAULT_VARIANCE).value
+        # Every Nth corrected sample also goes out on 'imu_out_slow' (10 -> 20 Hz
+        # from the 200 Hz stream). A python subscriber pays executor+deserialize
+        # cost PER MESSAGE even if its callback discards most samples, so slow
+        # consumers (tilt_monitor) read the decimated topic instead of the full one.
+        self.slow_decimation = int(self.declare_parameter('slow_decimation', 10).value)
 
         self._bias = None            # None until the startup window closes
         self._sum = [0.0, 0.0, 0.0]  # accumulator, reused for startup and refresh
         self._count = 0
         self._window_start = None
         self._refreshes = 0
+        self._slow_i = 0
 
         self._pub = self.create_publisher(Imu, 'imu_out', qos_profile_sensor_data)
+        self._slow_pub = self.create_publisher(Imu, 'imu_out_slow',
+                                               qos_profile_sensor_data)
         self.create_subscription(Imu, 'imu_in', self._on_imu, qos_profile_sensor_data)
         self.get_logger().info(
             'Calibrating gyro bias — hold the robot still for %.1f s '
@@ -120,14 +129,18 @@ class GyroCalibrator(Node):
         # to fuse yaw would quietly peg heading to zero rather than complain.
         msg.orientation_covariance[0] = -1.0
         self._pub.publish(msg)
+        self._slow_i += 1
+        if self._slow_i >= self.slow_decimation:
+            self._slow_i = 0
+            self._slow_pub.publish(msg)
 
     def _refresh_bias(self):
         window = [s / self._count for s in self._sum]
         previous = list(self._bias)
         self._bias = [b + self.refresh_weight * (w - b)
-                      for b, w in zip(self._bias, window)]
+                      for b, w in zip(self._bias, window, strict=True)]
         self._refreshes += 1
-        drift = max(abs(n - p) for n, p in zip(self._bias, previous))
+        drift = max(abs(n - p) for n, p in zip(self._bias, previous, strict=True))
         message = ('Gyro bias refresh %d: x=%+.5f y=%+.5f z=%+.5f rad/s '
                    '(moved %.4f deg/s)'
                    % (self._refreshes, *self._bias, math.degrees(drift)))
@@ -139,15 +152,7 @@ class GyroCalibrator(Node):
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = GyroCalibrator()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    run_node(GyroCalibrator, args=args)
 
 
 if __name__ == '__main__':

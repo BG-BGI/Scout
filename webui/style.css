@@ -1,0 +1,392 @@
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+:root {
+  --bg: #101418;
+  --panel: #1a2129;
+  --panel-2: #232d38;
+  --edge: #2c3641;
+  --text: #dde5ec;
+  --dim: #8b98a5;
+  --accent: #00c878;
+  --warn: #ffa028;
+  --bad: #ff4040;
+  /* 4px spacing scale */
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+}
+
+html, body { height: 100%; }
+body {
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: none;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- header: identity + live vitals ------------------------------------------ */
+header {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s2) var(--s4);
+  border-bottom: 1px solid var(--edge);
+  flex: 0 0 auto;
+}
+header h1 { font-size: 1.05rem; letter-spacing: 0.02em; margin-right: auto; }
+
+.badge {
+  padding: var(--s1) var(--s3);
+  border-radius: 999px;
+  font-size: 0.85rem;
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  white-space: nowrap;
+}
+.badge.connected { border-color: var(--accent); color: var(--accent); }
+.badge.disconnected { border-color: var(--bad); color: var(--bad); }
+.badge.batt-warn { border-color: var(--warn); color: var(--warn); }
+.badge.batt-bad { border-color: var(--bad); color: var(--bad); }
+.badge.stale { border-color: var(--dim); color: var(--dim); }
+
+#health-list { list-style: none; padding: 0; margin: 0.4rem 0 0; }
+#health-list .health-item { padding: 0.15rem 0; }
+#health-list .batt-warn { color: var(--warn); }
+#health-list .batt-bad { color: var(--bad); }
+#health-list .stale { color: var(--dim); }
+
+/* --- app frame ------------------------------------------------------------------
+   Phone (default): one scrolling column, teleop first: STOP+pad, map, panels.
+   Desktop (≥940px): fixed app frame — map fills the stage, right rail holds
+   STOP+pad pinned on top and the panels scrolling beneath. */
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s4);
+  padding: var(--s4);
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+main > *, aside > * { min-width: 0; }
+#drive { order: 1; }
+#stage { order: 2; }
+aside  { order: 3; }
+
+/* stage: map + camera. Phone stacks them; desktop puts them side by side. */
+#stage { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+#stage > * { min-width: 0; }
+
+@media (min-width: 940px) {
+  main {
+    grid-template-columns: minmax(0, 1fr) 360px;
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas:
+      "stage drive"
+      "stage aside";
+    overflow: hidden;
+    height: 100%;
+  }
+  #stage { grid-area: stage; flex-direction: row; min-height: 0; }
+  #stage #nav { flex: 1 1 0; }
+  #stage #camera-panel { flex: 1 1 0; align-self: flex-start; max-height: 100%; }
+  #stage #camera-panel img { object-fit: contain; }
+  #drive { grid-area: drive; }
+  aside  { grid-area: aside; overflow-y: auto; min-height: 0; padding-right: 2px; }
+}
+
+/* --- map: the stage ---------------------------------------------------------- */
+#nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: var(--s4);
+  min-height: 0;
+}
+.map-head { display: flex; align-items: baseline; gap: var(--s3); flex-wrap: wrap; }
+.map-head h2 { font-size: 0.95rem; }
+.map-head #nav-state { margin-right: auto; }
+
+#map-frame { min-width: 0; }
+@media (min-width: 940px) {
+  #map-frame {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+#map-canvas {
+  width: 100%;
+  height: auto;
+  /* explicit ratio (JS updates it per map) breaks the intrinsic-sizing
+     cycle that collapses a %-width canvas inside an auto grid row */
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
+  image-rendering: pixelated;
+  background: #0a0d10;
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  touch-action: manipulation;
+}
+@media (min-width: 940px) {
+  /* fixed-height frame: intrinsic ratio scales within both limits */
+  #map-canvas { width: auto; height: auto; max-width: 100%; max-height: 100%; }
+}
+.map-hint { flex: 0 0 auto; }
+
+#cancel-goal {
+  padding: var(--s2) var(--s4);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--warn);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+#cancel-goal:active { filter: brightness(1.2); }
+
+/* --- manual drive -------------------------------------------------------------- */
+#drive {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s3);
+}
+#stop {
+  width: 100%;
+  padding: var(--s3);
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #fff;
+  background: var(--bad);
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+}
+#stop:active { filter: brightness(1.3); }
+
+/* Latching software e-stop: outline until engaged (distinct from the one-shot
+   STOP), solid + pulsing while the /estop lock is held. */
+#estop {
+  width: 100%;
+  margin-top: 8px;
+  padding: var(--s3);
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--bad);
+  background: transparent;
+  border: 2px solid var(--bad);
+  border-radius: 12px;
+  cursor: pointer;
+}
+#estop.engaged {
+  color: #fff;
+  background: var(--bad);
+  animation: estop-pulse 1s infinite;
+}
+@keyframes estop-pulse { 50% { filter: brightness(1.4); } }
+
+/* Collision-monitor bypass (ADR-0016 addendum): outline amber = available,
+   solid pulsing red = the safety stage is CURRENTLY off (bounded, loud). */
+#cm-bypass {
+  width: 100%;
+  margin-top: 8px;
+  padding: var(--s2);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+  background: transparent;
+  border: 2px solid var(--warn);
+  border-radius: 12px;
+  cursor: pointer;
+}
+#cm-bypass.bypassed {
+  color: #fff;
+  background: var(--bad);
+  animation: estop-pulse 1s infinite;
+}
+
+#pad {
+  position: relative;
+  width: min(70vw, 260px);
+  height: min(70vw, 260px);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 42%, #202a34 0%, var(--panel) 72%);
+  border: 2px solid var(--edge);
+  touch-action: none;   /* the pad owns its touches; no scroll/zoom */
+}
+#stick {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 34%; height: 34%;
+  border-radius: 50%;
+  background: #33404d;
+  border: 2px solid var(--dim);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+#pad.active #stick { border-color: var(--accent); }
+
+#gamepad-row { font-size: 0.8rem; color: var(--dim); min-height: 1.2em; }
+
+/* --- control rail ---------------------------------------------------------------- */
+aside { display: flex; flex-direction: column; gap: var(--s3); }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 12px;
+  padding: var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+}
+.panel h2 {
+  font-size: 0.95rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+}
+
+details.panel { gap: 0; }
+details.panel summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+}
+details.panel summary::-webkit-details-marker { display: none; }
+details.panel summary h2::after {
+  content: "▸";
+  color: var(--dim);
+  font-size: 0.8rem;
+  transition: transform 120ms ease-out;
+}
+details.panel[open] summary h2::after { transform: rotate(90deg); }
+details.panel[open] summary { margin-bottom: var(--s3); }
+details.panel > *:not(summary) { margin-top: var(--s2); }
+details.panel > *:first-of-type { margin-top: 0; }
+
+label { display: flex; flex-direction: column; gap: var(--s1); font-size: 0.85rem; color: var(--dim); }
+label output { color: var(--text); }
+input[type=range] { width: 100%; accent-color: var(--accent); height: 1.8rem; }
+input[type=color] { width: 100%; height: 2.2rem; border: none; background: none; }
+input[type=text], input[type=password] {
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  color: var(--text);
+  border-radius: 6px;
+  padding: var(--s2);
+  font: inherit;
+}
+input[type=text]:focus, input[type=password]:focus { outline: none; border-color: var(--accent); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: var(--s2); }
+.grid.tight { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
+.grid button {
+  padding: var(--s2) var(--s1);
+  min-height: 44px;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.grid button:active { border-color: var(--accent); }
+.grid button:disabled { opacity: 0.4; }
+.grid button.selected { border-color: var(--accent); color: var(--accent); }
+.grid button.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.grid button.primary:active { background: var(--accent); color: #04140c; }
+
+#patrol-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+  display: none;   /* shown by JS while a patrol runs */
+}
+#patrol-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 400ms ease-out;
+}
+
+#cam-img { width: 100%; border-radius: 8px; display: none; }
+#cam-toggle {
+  padding: var(--s2);
+  min-height: 44px;
+  font-size: 0.9rem;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.dim { color: var(--dim); font-size: 0.8rem; line-height: 1.4; }
+
+/* Live-recording marker (bag_recorder /record/active). */
+.rec-live { color: var(--bad); font-weight: 700; }
+
+/* --- system panel: host vitals + per-container controls ------------------------- */
+#sys-vitals { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
+#sys-vitals span.bad { color: var(--bad); }
+#sys-vitals span.warn { color: var(--warn); }
+
+#sys-containers { display: flex; flex-direction: column; gap: var(--s2); }
+.svc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s2);
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+.svc-name { font-weight: 600; min-width: 84px; }
+.svc-stat { color: var(--dim); margin-right: auto; white-space: nowrap; }
+.svc-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--dim); }
+.svc-dot.running { background: var(--accent); }
+.svc-dot.exited, .svc-dot.dead { background: var(--bad); }
+.svc-dot.restarting { background: var(--warn); }
+.svc-actions { display: flex; gap: var(--s1); }
+.svc-actions button {
+  padding: var(--s1) var(--s2);
+  min-height: 32px;
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.svc-actions button:disabled { opacity: 0.35; cursor: default; }
+
+#sys-restart-all {
+  padding: var(--s2);
+  min-height: 44px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--panel-2);
+  border: 1px solid var(--edge);
+  border-radius: 8px;
+  cursor: pointer;
+}

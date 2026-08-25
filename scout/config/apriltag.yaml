@@ -1,0 +1,41 @@
+# apriltag_ros: single-family AprilTag detection on the D455 color stream.
+# Publishes /detections (apriltag_msgs/AprilTagDetectionArray) and a TF frame
+# per tag ("36h11:0").
+#
+# ⚠ FAMILY STRING HAS NO "tag" PREFIX. apriltag_ros 3.4.0's tag_fun map keys
+# are "36h11"/"25h9"/"16h5"/"Circle21h7"/"Circle49h12"/"Custom48h12"/
+# "Standard41h12"/"Standard52h13" (src/tag_functions.cpp) — the old "tag36h11"
+# throws `Unsupported tag family: tag36h11` and the node respawn-loops. This
+# bit us on the 3.4.0 image bump (2026-08-17). scout-skills' norm_family()
+# strips the prefix, so /detections + the TF frame ("36h11:0") still resolve.
+#
+# ⚠ ONE family, deliberately. The 2026-08-14 all-families fan-out (8 nodes on
+# a throttled stream) was reverted the same hour: the big-codebook families
+# (Custom48h12/Circle49h12/Standard52h13 × several nodes) blew up to 4-6 GB
+# RSS each (apriltag quick-decode tables), OOM-killed one node and pegged the
+# Pi; and image_transport derives camera_info from the image topic's
+# NAMESPACE, so remapping camera_info alone never synchronized. Revisit only
+# with per-family memory budgets and a camera_info relay.
+#
+# Detection COVERAGE lives here (family/size change needs a robot-service
+# restart); tag MEANING (names, roles, home, waypoints) lives in
+# scout-skills' sqlite registry at /maps/tags.db.
+#
+# 36h11 (small codebook, ~cheap RAM — unlike the big-codebook families
+# above) matches the checked-in physical artifact tags/doghouse.svg and
+# scout-skills register_tag's defaults. The physical doghouse print: 200 mm
+# page, black square 160 mm edge (registered size_m 0.16).
+apriltag:
+  ros__parameters:
+    image_transport: raw
+    family: 36h11
+    size: 0.16
+    max_hamming: 0
+    detector:
+      threads: 2
+      # Half-resolution quad detection; decode still runs at full res.
+      decimate: 2.0
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false

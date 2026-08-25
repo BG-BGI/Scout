@@ -1,0 +1,33 @@
+# tight_tunnel deltas for collision_monitor (ADR-0016).
+#
+# In a pipe barely wider than the robot the default side margins read the
+# pipe walls as a permanent stop condition and freeze the robot. Shrink both
+# boxes to the physical footprint (+~1 cm): the collision monitor then only
+# fires on genuine contact-imminent points, and clearance decisions stay with
+# nav2's ObstacleFootprint critic (which is tuned for exactly this).
+#
+# The straight/turn split (base collision_monitor.yaml, ADR-0016 addendum)
+# doesn't help INSIDE a pipe — turning at all is already unsafe/impossible in
+# a passage this tight, so both collapse to the same tiny box here; there is
+# no wider "turn" allowance to fall back to.
+collision_monitor:
+  ros__parameters:
+    # Front/rear split still applies in a pipe (reverse recovery must still
+    # escape a front obstacle), so shrink both halves to the footprint. Turn
+    # collapses to the same tiny box — turning is impossible in a passage this
+    # tight, so there is no wider "turn" allowance to fall back to.
+    PolygonStopFront:
+      points: [0.18, 0.175, 0.18, -0.175, -0.06, -0.175, -0.06, 0.175]
+    PolygonStopRear:
+      points: [0.06, 0.175, 0.06, -0.175, -0.18, -0.175, -0.18, 0.175]
+    PolygonStopTurn:
+      points: [0.18, 0.175, 0.18, -0.175, -0.18, -0.175, -0.18, 0.175]
+    PolygonSlow:
+      points: [0.28, 0.175, 0.28, -0.175, -0.28, -0.175, -0.28, 0.175]
+      slowdown_ratio: 0.5
+    # This profile disables the realsense pointcloud, so cliff_detector never
+    # launches (robot.launch.py skips it) and its CM source must go too —
+    # otherwise source_timeout would read the missing /cliff/stop_points as a
+    # fault and freeze autonomy permanently (ADR-0024). Lists REPLACE in
+    # merged_params, so this drops the base file's `cliff` entry wholesale.
+    observation_sources: ["scan"]

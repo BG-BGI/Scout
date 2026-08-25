@@ -165,11 +165,13 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      # Loosened from upstream's 0.5 m / 10 s. Squeezing through a tight opening involves
-      # legitimate shuffling that covers very little ground, and 0.5 m in 10 s would call
-      # that stuck. The trade is that a genuine stall now takes 15 s to notice.
+      # Loosened from upstream's 0.5 m / 10 s, then the allowance doubled again on
+      # 2026-08-14: the deflated tires scrub 1.6-1.9x in pivots, so pivot-heavy phases
+      # legitimately translate <0.25 m for tens of seconds and 15 s was aborting real
+      # progress ("Failed to make progress" in a cluttered office). The trade is that a
+      # genuine stall now takes 30 s to notice.
       required_movement_radius: 0.25
-      movement_time_allowance: 15.0
+      movement_time_allowance: 30.0
 
     general_goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
@@ -199,12 +201,13 @@ controller_server:
       # 0.5 m default because the whole robot is only 0.337 m long, so 0.5 m reaches past
       # the first turn in tight quarters and would aim at the wrong thing.
       forward_sampling_distance: 0.3
-      # ⚠ NOT the ~2.5 rad/s the flat front-left tire wants (CLAUDE.md: below that, the
-      # motor does not overcome the tire's fixed drag torque and the pivot scrubs). A
-      # conventional navigation pivot rate was chosen deliberately; the cost is tire wear
-      # and some in-place dragging until the tire is repaired. Revisit this value, plus
-      # behavior_server's max_rotational_vel and max_vel_theta below, if that changes.
-      rotate_to_heading_angular_vel: 1.2
+      # 2.0, raised from 1.2 on 2026-08-14 for the deflated tires: measured pivot scrub
+      # is 1.6-1.9x (wheel yaw vs gyro yaw), so a commanded 1.2 delivers only ~0.6-0.75
+      # rad/s of real chassis rotation and pivot phases crawled. 2.0 restores roughly the
+      # originally intended real rate, and higher rates also measurably reduce pivot walk
+      # (~10 cm/rev at 1.5 vs ~2.5 cm at 2.5). Keep in step with max_vel_theta and
+      # behavior_server's max_rotational_vel.
+      rotate_to_heading_angular_vel: 2.0
       max_angular_accel: 2.5
       # Refuse the pivot if the footprint would sweep into something within 1 s.
       simulate_ahead_time: 1.0
@@ -214,9 +217,14 @@ controller_server:
 
       # --- DWB: kinematics -------------------------------------------------------------
       debug_trajectory_details: True
-      # 0.35 m/s, well under the driver's 1.0 m/s ceiling. Two reasons: the lidar spins at
-      # 12.3 Hz, so one revolution at 0.35 m/s smears the scan by ~3 cm (8 cm at 1 m/s),
-      # and everything about this robot's mission is precision rather than speed.
+      # 0.35 m/s (lowered from 0.6 on 2026-08-17 — robot wedged on a thin table leg; at
+      # 0.6 the leg strobed in the local costmap faster than observation_persistence 1.0
+      # could hold it, and stopping distance was too long). 0.6 was raised 2026-08-14 for
+      # LLM-driven operation feeling timid, but thin-obstacle marking is the binding
+      # constraint on open floor with furniture. Scan smear at 12.3 Hz is ~3 cm/rev at
+      # 0.35 (was ~5 cm at 0.6). The tight_tunnel overlay already pins 0.35 for precision.
+      # If detection holds at 0.35, raise local obstacle_layer observation_persistence
+      # (1.0 -> ~2.0) as the durable fix, then this can go back up.
       max_vel_x: 0.35
       max_speed_xy: 0.35
       # ⚠ Reverse is OFF for now (0.0, so DWB only samples forward motion and in-place
@@ -227,7 +235,7 @@ controller_server:
       min_vel_x: 0.0
       max_vel_y: 0.0
       min_vel_y: 0.0
-      max_vel_theta: 1.2
+      max_vel_theta: 2.0
 
       # ⚠ THE DRIVETRAIN VELOCITY FLOOR, enforced here rather than as a smoother deadband.
       # CLAUDE.md: below ~300-500 counts/s the encoder yields ~1 count per control tick
@@ -391,7 +399,7 @@ local_costmap:
       # Same layer: lidar beams that pass *over* a low obstacle (shoe in a doorway) to a
       # wall behind raytrace those cells free and wipe the depth marks — robot then
       # plans/drives through. Depth stays local-only for CPU.
-      plugins: ["obstacle_layer", "depth_layer", "inflation_layer"]
+      plugins: ["obstacle_layer", "stvl_layer", "inflation_layer"]
 
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -407,6 +415,12 @@ local_costmap:
           data_type: "LaserScan"
           marking: True
           clearing: True
+          # 1.0 s of observation persistence (2026-08-14): thin chair legs return
+          # specularly and intermittently, so their marks strobed in and out and DWB
+          # alternated between "path clear" and "footprint hits obstacle". Holding each
+          # observation for ~12 scans keeps flickery marks steady; the cost is obstacles
+          # lingering ~1 s after they really move.
+          observation_persistence: 1.0
           # No QoS trap here: nav2's observation buffer subscribes with sensor-data QoS
           # (best effort) and rplidar_node publishes RELIABLE, which is compatible. This
           # is the opposite of the /imu/data case in ekf.yaml.
@@ -428,43 +442,63 @@ local_costmap:
           # something is seen behind it; set true if stale obstacles become the problem.
           inf_is_valid: false
 
-      # Under-lidar band. Own layer so lidar raytrace cannot wipe low marks.
-      # Two sources on the same cloud: mark only the 0.05–0.22 m band; clear along
-      # full-height depth rays (incl. floor hits) so removing a shoe frees those cells.
-      # Lidar still must not clear this layer — that was the doorway drive-over bug.
-      depth_layer:
-        plugin: "nav2_costmap_2d::ObstacleLayer"
+      # Under-lidar band via STVL (2026-08-24, replaced the ObstacleLayer
+      # depth_mark/depth_clear pair AND the Python clutter_mapper node — C++,
+      # in-process, so the per-cloud Python deserialization cost is gone).
+      # Own layer so lidar raytrace cannot wipe low marks (the doorway
+      # drive-over bug). Marks only the 0.05–0.22 m band; clearing is
+      # frustum-based (decay_acceleration) instead of raytrace — space the
+      # camera can currently see decays fast, so removing a shoe frees cells
+      # as soon as the camera looks at where it was.
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
         enabled: True
-        observation_sources: depth_mark depth_clear
-        footprint_clearing_enabled: True
+        voxel_decay: 15.0        # live local view: marks last 15 s unseen
+        decay_model: 0           # linear
+        voxel_size: 0.025        # match this costmap's resolution
+        track_unknown_space: false
+        mark_threshold: 0
+        update_footprint_enabled: True
         combination_method: 1
-        depth_mark:
+        obstacle_range: 1.2
+        origin_z: 0.0
+        publish_voxel_map: false
+        transform_tolerance: 0.3
+        mapping_mode: false
+        observation_sources: depth cliff
+        depth:
+          data_type: PointCloud2
           topic: /camera/camera/depth/color/points
-          data_type: "PointCloud2"
-          marking: True
-          clearing: False
-          obstacle_max_range: 1.2
-          obstacle_min_range: 0.15
-          raytrace_max_range: 1.2
-          raytrace_min_range: 0.15
+          marking: true
+          clearing: true
           min_obstacle_height: 0.05
           max_obstacle_height: 0.22
+          expected_update_rate: 0.0
           observation_persistence: 0.0
-          inf_is_valid: false
-        depth_clear:
-          topic: /camera/camera/depth/color/points
-          data_type: "PointCloud2"
-          marking: False
-          clearing: True
-          obstacle_max_range: 1.2
-          obstacle_min_range: 0.15
-          raytrace_max_range: 1.2
-          raytrace_min_range: 0.15
-          # Include floor returns so rays clear through where a removed shoe was.
-          min_obstacle_height: 0.0
-          max_obstacle_height: 2.0
+          filter: "voxel"
+          voxel_min_points: 2
+          clear_after_reading: true
+          # D455 depth FOV 87°x58° -> radians; frustum clearing needs these.
+          vertical_fov_angle: 1.012
+          horizontal_fov_angle: 1.518
+          decay_acceleration: 5.0
+          model_type: 0
+        # Negative obstacles (ADR-0024): cliff_detector's odom-latched ledge
+        # marks, published at z=0.12 (inside the band above) so a down-stair
+        # reads as a lethal wall. Marking-only — nothing may clear a ledge;
+        # the node republishes its whole memory at ~5 Hz, so re-marking
+        # outruns both voxel_decay and the depth source's frustum decay.
+        cliff:
+          data_type: PointCloud2
+          topic: /cliff/points
+          marking: true
+          clearing: false
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.22
+          expected_update_rate: 0.0
           observation_persistence: 0.0
-          inf_is_valid: false
+          filter: "passthrough"   # node already binned + voted the cells
+          model_type: 0
 
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
@@ -514,7 +548,7 @@ global_costmap:
       # makes the planner's allow_unknown a deliberate choice instead of an accident.
       track_unknown_space: true
 
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer", "stvl_layer", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -537,6 +571,9 @@ global_costmap:
           data_type: "LaserScan"
           marking: True
           clearing: True
+          # Same chair-leg flicker damping as the local costmap; 2.0 s here because this
+          # costmap only updates at 1 Hz.
+          observation_persistence: 2.0
           obstacle_max_range: 4.0
           obstacle_min_range: 0.0
           raytrace_max_range: 5.0
@@ -545,12 +582,76 @@ global_costmap:
           max_obstacle_height: 2.0
           inf_is_valid: false
 
+      # Under-lidar band + clutter memory via STVL (2026-08-24, replaced the
+      # depth_mark/depth_clear pair AND the /clutter_points source from the
+      # retired Python clutter_mapper node). One persistent-while-running voxel
+      # grid: marks in the 0.05–0.22 m band survive 4 h unseen (voxel_decay),
+      # so global planning routes around shoes/toys/thresholds seen anywhere
+      # the camera has looked — but inside the camera's live frustum decay is
+      # sharply accelerated, so re-observing where a shoe was frees the cells
+      # in ~a second (the old depth_clear semantics). Memory dies with the
+      # nav2 process; that is the accepted trade vs the old clutter.npz.
+      stvl_layer:
+        plugin: "spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer"
+        enabled: True
+        voxel_decay: 14400.0     # 4 h: clutter memory while the stack runs
+        decay_model: 0           # linear (NOT -1: frustum clearing must win)
+        voxel_size: 0.05         # match this costmap's resolution
+        track_unknown_space: false
+        mark_threshold: 0
+        update_footprint_enabled: True
+        combination_method: 1
+        obstacle_range: 1.2
+        origin_z: 0.0
+        publish_voxel_map: false
+        transform_tolerance: 0.5
+        mapping_mode: false
+        observation_sources: depth cliff
+        depth:
+          data_type: PointCloud2
+          topic: /camera/camera/depth/color/points
+          marking: true
+          clearing: true
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.22
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          filter: "voxel"
+          voxel_min_points: 2
+          clear_after_reading: true
+          vertical_fov_angle: 1.012
+          horizontal_fov_angle: 1.518
+          # High acceleration: inside the live frustum the 4 h decay collapses
+          # to ~a second, so seen-empty space clears immediately.
+          decay_acceleration: 10.0
+          model_type: 0
+        # Negative obstacles (ADR-0024) — same source as the local costmap;
+        # see the note there. Marking-only so the planner never routes over a
+        # remembered ledge, even hours later (4 h voxel_decay above applies).
+        cliff:
+          data_type: PointCloud2
+          topic: /cliff/points
+          marking: true
+          clearing: false
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.22
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          filter: "passthrough"
+          model_type: 0
+
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         # Must stay in step with the local costmap's, or the planner and the controller
         # disagree about how expensive it is to hug a wall. Same reasoning as there.
         inflation_radius: 0.25
         cost_scaling_factor: 10.0
+        # ⚠ inflate_around_unknown was tried here (2026-08-24) and REVERTED: it does not
+        # inflate lethal cells into adjacent unknown — it treats EVERY unknown cell as an
+        # inflation SOURCE, so the entire unexplored map turned lethal (measured: 273k
+        # unknown cells -> cost 100) and allow_unknown planning died. Unknown cells within
+        # the inscribed radius of a lethal cell already receive INSCRIBED cost by default,
+        # so sub-footprint wall gaps are already closed without it.
 
 # ------------------------------------------------------------------------------------
 # planner_server — global path from the current pose to the goal
@@ -627,9 +728,9 @@ behavior_server:
 
     # Abort the behavior if the footprint would hit something within 2 s of continuing.
     simulate_ahead_time: 2.0
-    # Matches the controller's max_vel_theta and the shim's pivot rate; see the flat-tire
-    # note there for why this is not 2.5.
-    max_rotational_vel: 1.2
+    # Matches the controller's max_vel_theta and the shim's pivot rate (2.0 for the
+    # deflated tires' 1.6-1.9x pivot scrub; see the shim comment).
+    max_rotational_vel: 2.0
     # Above the ~0.35 rad/s in-place tracking floor, so the tail of a Spin still moves.
     min_rotational_vel: 0.4
     rotational_acc_lim: 2.5
@@ -672,8 +773,8 @@ velocity_smoother:
     # Must not be tighter than the controller's own limits or the smoother silently
     # contradicts DWB's plan. Reverse is allowed here even though DWB does not currently
     # request it.
-    max_velocity: [0.35, 0.0, 1.2]
-    min_velocity: [-0.35, 0.0, -1.2]
+    max_velocity: [0.6, 0.0, 1.2]
+    min_velocity: [-0.6, 0.0, -1.2]
     max_accel: [1.5, 0.0, 2.5]
     max_decel: [-2.0, 0.0, -2.5]
 
@@ -689,8 +790,8 @@ velocity_smoother:
 
     # ⚠ How long the last command stays latched when the input goes silent. On timeout
     # the smoother ramps to zero and publishes one stop, so this is the window in which a
-    # crashed or killed controller_server keeps the robot moving: 0.5 s at 0.35 m/s is
-    # ~17 cm of coast. Upstream's 1.0 s is twice that.
+    # crashed or killed controller_server keeps the robot moving: 0.5 s at 0.6 m/s is
+    # ~30 cm of coast. Upstream's 1.0 s is twice that.
     # It also fires at the START of every recovery behavior, since controller_server goes
     # quiet then — the resulting single zero Twist is a brief stutter before the behavior
     # server's own commands take over, and is harmless.

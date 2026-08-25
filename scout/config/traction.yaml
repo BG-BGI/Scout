@@ -1,0 +1,44 @@
+# traction_monitor: per-side derate from RoboClaw current-vs-speed
+# (docs/traction_control_spec.md). Sits between the final twist_mux output
+# and the driver: /cmd_vel_out -> traction_monitor -> /cmd_vel_trac -> driver.
+#
+# SHIPS UNCALIBRATED: with the curves below empty the node is a pure
+# passthrough (plus /traction/status) and never derates. Calibrate first:
+#   1. set calibration_log: true, rebuild/restart robot service
+#   2. drive on a normal floor at 2-3 speeds with measured speed >= gate
+#      (>= ~0.29 m/s; 1850 counts/s), both directions — this is the LOADED
+#      baseline
+#   3. prop ONE front wheel on a block (rear stays weighted), repeat — this
+#      shows the unloaded-current gap and calibrates the margin
+#   4. fit/table expected LOADED current per channel from the CSV in
+#      scout/traction_logs/ into curve_speeds + m*_curve_amps below
+#   5. while propped, note which channel's current dropped for which side —
+#      verify m1_side
+traction_monitor:
+  ros__parameters:
+    track: 0.278                # keep in step with roboclaw.yaml wheel_separation
+    # No verdict below this measured speed (counts/s): RoboClaw current
+    # telemetry is noise below ~20% duty (CLAUDE.md). 1850 ~= 20% of 9240 QPPS.
+    gate_counts: 1850.0
+    # Flag "unloaded" when current < (1 - margin) * expected(speed).
+    # Spec starting point 30-40%; tune from the calibration data.
+    margin: 0.35
+    derate_floor: 0.4           # never throttle a side below this factor
+    step_down: 0.15             # per 10 Hz status tick — full derate ~0.4 s
+    step_up: 0.02               # per tick — recovery ~3 s (asymmetric, anti-chatter)
+    status_timeout: 1.0         # s without /roboclaw_status -> release derates
+    # Which side channel M1 drives — VERIFY during calibration step 5.
+    m1_side: "left"
+
+    # --- calibration curves (empty [0.0] placeholder = uncalibrated) ---
+    # Ascending measured speeds (counts/s), and the loaded-baseline current
+    # (A) each channel draws at those speeds. Channels differ slightly (PID
+    # gains differ per roboclaw.yaml) — table both.
+    curve_speeds: [0.0]
+    m1_curve_amps: [0.0]
+    m2_curve_amps: [0.0]
+
+    # --- calibration instrument ---
+    calibration_log: true     # true -> CSV of t, m*_speed, m*_current
+    # "" = <scout src dir>/traction_logs (bind mount, reaches the host)
+    log_dir: ""

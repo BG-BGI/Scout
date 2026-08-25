@@ -1,0 +1,862 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="scout_description">
+  <!-- REP-103 root. The export has forward along -Y with its origin on the chassis
+       plate, so this yaws the body 90 deg to put forward on +X and lifts it by
+       (wheel radius 0.079 - hub height 0.031915) so the tires rest on z=0. -->
+  <link
+    name="base_link" />
+  <joint
+    name="base_link_to_chassis"
+    type="fixed">
+    <origin
+      xyz="0 0 0.047085"
+      rpy="0 0 1.5707963267949" />
+    <parent
+      link="base_link" />
+    <child
+      link="chassis_link" />
+  </joint>
+  <link
+    name="chassis_link">
+    <inertial>
+      <origin
+        xyz="-2.05133475403087E-07 0.0134919234773477 1.16119861437405E-09"
+        rpy="0 0 0" />
+      <mass
+        value="0.628253833536181" />
+      <inertia
+        ixx="0.00527449992314681"
+        ixy="1.49341221243653E-09"
+        ixz="-6.50016094967778E-09"
+        iyy="0.00878074361297849"
+        iyz="-1.80045112754674E-09"
+        izz="0.00369642689872633" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.807843137254902 0.811764705882353 0.827450980392157 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="spacer_link">
+    <inertial>
+      <origin
+        xyz="0.000197527385681256 -1.02412729467648E-16 0.00960326154184477"
+        rpy="0 0 0" />
+      <mass
+        value="0.0727570000000002" />
+      <inertia
+        ixx="0.000727189014800202"
+        ixy="-6.19885483493687E-19"
+        ixz="-4.16304767514318E-08"
+        iyy="0.000557527029097879"
+        iyz="1.37604985473919E-20"
+        izz="0.00128096940333934" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/spacer_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0 0.156862745098039 0.941176470588235 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/spacer_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="base_to_spacer"
+    type="fixed">
+    <origin
+      xyz="0 0 0.04045"
+      rpy="0 0 0" />
+    <parent
+      link="chassis_link" />
+    <child
+      link="spacer_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lid_link">
+    <inertial>
+      <origin
+        xyz="-5.90796921207222E-05 -8.17963188809673E-06 0.0015029268816516"
+        rpy="0 0 0" />
+      <mass
+        value="0.162322772396665" />
+      <inertia
+        ixx="0.000874883332732845"
+        ixy="6.49448789501585E-07"
+        ixz="-2.35805250538555E-08"
+        iyy="0.000635386183112481"
+        iyz="-2.86484235043486E-08"
+        izz="0.00151002603453141" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lid_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.807843137254902 0.811764705882353 0.827450980392157 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lid_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="spacer_to_lid"
+    type="fixed">
+    <origin
+      xyz="0 0 0.019"
+      rpy="0 0 0" />
+    <parent
+      link="spacer_link" />
+    <child
+      link="lid_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="mount_link">
+    <inertial>
+      <origin
+        xyz="-6.64625778188209E-05 -0.0078883946161637 0.053831360572386"
+        rpy="0 0 0" />
+      <mass
+        value="0.313573385007994" />
+      <inertia
+        ixx="0.000639365050518883"
+        ixy="-6.44807296161262E-07"
+        ixz="5.93109068766818E-07"
+        iyy="0.0017204243036312"
+        iyz="-1.15657524613188E-05"
+        izz="0.00149197210979415" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/mount_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.807843137254902 0.811764705882353 0.827450980392157 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/mount_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lid_to_mount"
+    type="fixed">
+    <origin
+      xyz="0 -0.0725 0.00299999999999989"
+      rpy="0 0 0" />
+    <parent
+      link="lid_link" />
+    <child
+      link="mount_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <!-- Exporter's camera frame: Z out of the lens, Y up, X to the robot's left.
+       Renamed from camera_link so the name is free for the REP-103 sensor frame
+       below, which is what realsense2_camera roots its optical frames on. -->
+  <link
+    name="camera_body_link">
+    <inertial>
+      <origin
+        xyz="0.000277512825265069 0.000294389543929602 -0.0135772996514738"
+        rpy="0 0 0" />
+      <mass
+        value="0.0236867347433105" />
+      <inertia
+        ixx="2.80822628723906E-06"
+        ixy="2.79444531533659E-08"
+        ixz="-1.38614165535007E-08"
+        iyy="3.23846816719998E-05"
+        iyz="-2.6287464214589E-08"
+        izz="3.45245699648636E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/camera_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/camera_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="mount_to_camera"
+    type="fixed">
+    <origin
+      xyz="0 -0.066 0.0955"
+      rpy="1.5707963267949 0 0" />
+    <parent
+      link="mount_link" />
+    <child
+      link="camera_body_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <!-- REP-103 sensor frame: X out of the lens, Y left, Z up. realsense2_camera
+       roots its whole tree here (base_frame_id = <camera_name>_link) and assumes
+       a body frame, so handing it the exporter's optical-style frame aims the
+       boresight down the robot's left and rolls the image 90 deg. Rotation only;
+       the origin still sits where the CAD frame does, which is NOT the depth
+       imager realsense measures from. -->
+  <link
+    name="camera_link" />
+  <joint
+    name="camera_body_to_camera"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="-1.5707963267949 -1.5707963267949 0" />
+    <parent
+      link="camera_body_link" />
+    <child
+      link="camera_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lens_link">
+    <inertial>
+      <origin
+        xyz="8.12762737623786E-16 0 -0.000374999999999959"
+        rpy="0 0 0" />
+      <mass
+        value="0.00111062343059037" />
+      <inertia
+        ixx="3.04707470445964E-08"
+        ixy="5.82053463846387E-22"
+        ixz="3.20842615796104E-22"
+        iyy="1.11409811311008E-06"
+        iyz="-3.97785661047127E-24"
+        izz="1.14451303350383E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lens_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.164705882352941 0.164705882352941 0.164705882352941 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lens_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="camera_to_lens"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 0 0" />
+    <parent
+      link="camera_body_link" />
+    <child
+      link="lens_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lidar2_link">
+    <inertial>
+      <origin
+        xyz="-2.40795824818487E-15 0.0121144991864107 -1.21936715905269E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.10773590450219" />
+      <inertia
+        ixx="4.26802409371355E-05"
+        ixy="-2.57878394280843E-20"
+        ixz="4.59909336363118E-21"
+        iyy="7.46209690453417E-05"
+        iyz="-1.17766288567913E-08"
+        izz="4.27190109949372E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lidar2_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.215686274509804 0.207843137254902 0.164705882352941 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lidar2_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="mount_to_lidar2"
+    type="fixed">
+    <origin
+      xyz="0 0 0.11"
+      rpy="1.5707963267949 0 0" />
+    <parent
+      link="mount_link" />
+    <child
+      link="lidar2_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="lidar1_link">
+    <inertial>
+      <origin
+        xyz="-6.79284396693771E-05 0.0127582910572877 -0.00287745718272379"
+        rpy="0 0 0" />
+      <mass
+        value="0.0553294443219569" />
+      <inertia
+        ixx="1.7720011787333E-05"
+        ixy="-5.01380876339831E-09"
+        ixz="3.90002280633357E-08"
+        iyy="3.29678736378217E-05"
+        iyz="-2.52610062775517E-07"
+        izz="1.80444163063016E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lidar1_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.215686274509804 0.207843137254902 0.164705882352941 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/lidar1_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lidar2_to_lidar1"
+    type="fixed">
+    <origin
+      xyz="0 0.0211 0"
+      rpy="0 0 0" />
+    <parent
+      link="lidar2_link" />
+    <child
+      link="lidar1_link" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <!-- REP-103 scan frame: X out the front of the scanner, Y left, Z up. Same problem
+       and same fix as camera_link above — the exporter's lidar frames are CAD-style
+       (Z forward, Y up), so pointing the driver at one would tip every range reading
+       90 deg out of the floor plane. The driver's frame_id is set to this instead.
+       Rotation only; the origin stays on lidar1_link, the rotating head, as the closest
+       thing the CAD offers to the beam origin (7.3 cm ahead of base_link, 24 cm up, on
+       centreline).
+       The rpy carries TWO things. The first is the CAD-to-REP-103 correction, which on
+       its own works out to exactly zero net rotation against base_link. The second is a
+       180 deg yaw, because the scanner is physically MOUNTED BACKWARDS: measured
+       2026-07-30 against a room with a known-asymmetric layout, a feature 8.5 m away in
+       front of the robot was reported at 180 deg, and obstacles 0.35 m off the robot's
+       left were reported on the right. Fitting bearing = s*reported + offset gives
+       s = +1, offset = 180 deg, so the scan is NOT mirrored (driver stays
+       inverted: false) and this is a pure yaw. Composing that yaw is what flips both
+       signs relative to the CAD-only correction (0 -pi/2 -pi/2).
+       Check it with `tf2_echo base_link laser`: it must read RPY 0 0 +/-pi with
+       translation (0.073, 0, 0.241). Anything else means the chain is broken. -->
+  <link
+    name="laser" />
+  <joint
+    name="lidar1_to_laser"
+    type="fixed">
+    <origin
+      xyz="0 0 0"
+      rpy="0 1.5707963267949 1.5707963267949" />
+    <parent
+      link="lidar1_link" />
+    <child
+      link="laser" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="batterym_link">
+    <inertial>
+      <origin
+        xyz="1.6947007653915E-16 0.00242659541762764 0.0142485318440091"
+        rpy="0 0 0" />
+      <mass
+        value="0.248922879913385" />
+      <inertia
+        ixx="0.000214734657911992"
+        ixy="2.09093707906613E-19"
+        ixz="-3.56770084369574E-21"
+        iyy="0.000176135300347817"
+        iyz="3.02399111309702E-06"
+        izz="0.000353244154913819" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/batterym_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.196078431372549 0.196078431372549 0.2 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/batterym_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="lid_to_batterym"
+    type="fixed">
+    <origin
+      xyz="0 0.058 0.003"
+      rpy="0 0 3.14159265358979" />
+    <parent
+      link="lid_link" />
+    <child
+      link="batterym_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="battery2_link">
+    <inertial>
+      <origin
+        xyz="0.00356409854564139 -4.93989481279082E-06 0.0128800322039038"
+        rpy="0 0 0" />
+      <mass
+        value="0.245273999891397" />
+      <inertia
+        ixx="0.000143231524586307"
+        ixy="5.99241048237948E-08"
+        ixz="2.70899560254507E-06"
+        iyy="0.000306197402580858"
+        iyz="1.08329264906422E-08"
+        izz="0.000409138611513668" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/battery2_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.917647058823529 0.690196078431373 0.00392156862745098 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/battery2_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="batterym_to_battery2"
+    type="fixed">
+    <origin
+      xyz="0 -0.00981069409924784 0.0546631361304657"
+      rpy="3.14159265358979 0.141897054604163 1.5707963267949" />
+    <parent
+      link="batterym_link" />
+    <child
+      link="battery2_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="battery1_link">
+    <inertial>
+      <origin
+        xyz="-0.000648946663499711 -5.1449797614796E-07 -0.0208675710085726"
+        rpy="0 0 0" />
+      <mass
+        value="0.458824452680413" />
+      <inertia
+        ixx="0.000333300422174506"
+        ixy="2.20420351975092E-09"
+        ixz="-1.32903008247267E-06"
+        iyy="0.000721396419182853"
+        iyz="-3.34521158831995E-09"
+        izz="0.000920494631836151" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/battery1_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.227450980392157 0.227450980392157 0.227450980392157 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/battery1_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="battery2_to_battery1"
+    type="fixed">
+    <origin
+      xyz="0 -0.00981069409924784 0.0546631361304657"
+      rpy="3.14159265358979 0.141897054604163 1.5707963267949" />
+    <parent
+      link="batterym_link" />
+    <child
+      link="battery1_link" />
+    <axis
+      xyz="0 0 0" />
+  </joint>
+  <link
+    name="wheel1_link">
+    <inertial>
+      <origin
+        xyz="0.0315846280216946 3.232872720179E-05 -6.887606772088E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661364365595557" />
+      <inertia
+        ixx="0.00252789625291628"
+        ixy="-1.74768796826414E-07"
+        ixz="5.12126242838257E-08"
+        iyy="0.00137382804723504"
+        iyz="7.86987583617194E-08"
+        izz="0.00137430436664017" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.211764705882353 0.215686274509804 0.176470588235294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="base_to_wheel1"
+    type="continuous">
+    <origin
+      xyz="0.111 -0.089606 0.031915"
+      rpy="1.5708 0 0" />
+    <parent
+      link="chassis_link" />
+    <child
+      link="wheel1_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="wheel2_link">
+    <inertial>
+      <origin
+        xyz="0.0315846280216945 3.23287272018941E-05 -6.88760677217126E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661364365595554" />
+      <inertia
+        ixx="0.00252789625291627"
+        ixy="-1.74768796829608E-07"
+        ixz="5.12126242840896E-08"
+        iyy="0.00137382804723503"
+        iyz="7.8698758356388E-08"
+        izz="0.00137430436664016" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.211764705882353 0.215686274509804 0.176470588235294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="base_to_wheel2"
+    type="continuous">
+    <origin
+      xyz="-0.111 -0.089606 0.031915"
+      rpy="2.7498 0 3.1416" />
+    <parent
+      link="chassis_link" />
+    <child
+      link="wheel2_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="wheel3_link">
+    <inertial>
+      <origin
+        xyz="0.0315846280216946 3.23287272019773E-05 -6.88760677227535E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661364365595557" />
+      <inertia
+        ixx="0.00252789625291628"
+        ixy="-1.74768796828711E-07"
+        ixz="5.12126242856907E-08"
+        iyy="0.00137382804723504"
+        iyz="7.86987583596406E-08"
+        izz="0.00137430436664017" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.211764705882353 0.215686274509804 0.176470588235294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="base_to_wheel3"
+    type="continuous">
+    <origin
+      xyz="-0.111 0.089606 0.031915"
+      rpy="2.7498 0 3.1416" />
+    <parent
+      link="chassis_link" />
+    <child
+      link="wheel3_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+  <link
+    name="wheel4_link">
+    <inertial>
+      <origin
+        xyz="0.0315846280216946 3.23287272017969E-05 -6.88760677203248E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.661364365595557" />
+      <inertia
+        ixx="0.00252789625291628"
+        ixy="-1.74768796830251E-07"
+        ixz="5.12126242821824E-08"
+        iyy="0.00137382804723504"
+        iyz="7.86987583559277E-08"
+        izz="0.00137430436664017" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.211764705882353 0.215686274509804 0.176470588235294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://scout_description/meshes/wheel_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="base_to_wheel"
+    type="continuous">
+    <origin
+      xyz="0.111 0.0896063711074998 0.0319150350544574"
+      rpy="1.5707963267949 0 0" />
+    <parent
+      link="chassis_link" />
+    <child
+      link="wheel4_link" />
+    <axis
+      xyz="1 0 0" />
+  </joint>
+</robot>

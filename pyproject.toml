@@ -1,0 +1,28 @@
+# Ruff config only — no [project]/[build-system], so colcon/setuptools ignore this file.
+# Root config covers docker/scout-skills + scripts (py312, double quotes, f-strings);
+# scout/ruff.toml extends this for the ROS package (py310, single quotes, %-format).
+# Custom repo rules (SC1-SC10) live in scout/test/test_conventions.py and friends —
+# see docs/adr/0013-conventions-as-tests.md.
+
+[tool.ruff]
+line-length = 99
+target-version = "py312"
+extend-exclude = ["webui/vendor"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes
+    "W",      # pycodestyle warnings
+    "I",      # isort import order
+    "B",      # bugbear
+    "BLE",    # blind except Exception — requires reasoned noqa
+    "Q",      # quote style (single in scout/, double elsewhere)
+    "RUF100", # unused noqa — keeps waivers honest
+]
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "double"
+
+[tool.ruff.lint.isort]
+known-first-party = ["scout"]

@@ -1,24 +1,72 @@
+# All scout images come from GHCR (built by .github/workflows/pi-images.yml /
+# fleet-status-image.yml on arm64 runners). SCOUT_TAG in .env pins the whole
+# stack to one commit — scripts/deploy-pi.sh writes it; :latest (main's head)
+# is only the fallback for a hand-run stack. `build:` keys stay for local dev.
 x-service: &base
-  build: .
-  image: scout:latest
+  image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
   network_mode: host
   ipc: host
+  # DDS stays on loopback (ADR-0022): the re-test showed corp inter-VLAN
+  # filtering drops Pi<->companion UDP, so cross-machine topics ride the
+  # zenoh_bridge service (one TCP port) instead of the DDS wire. Simple
+  # discovery on localhost, NOT the old discovery server — the zenoh bridge is
+  # CycloneDDS-based and cannot register with a Fast DDS discovery server, so
+  # the server (and super_client.xml) are retired with ADR-0022. Trade-off
+  # knowingly reaccepted: throwaway-container discovery false negatives are
+  # back (judge liveness from logs/data topics, re-check negatives after
+  # 10-20 s). Domain 17 must match companion/docker-compose.yaml exactly.
+  environment:
+    - ROS_DOMAIN_ID=17
+    - ROS_LOCALHOST_ONLY=1
   entrypoint: /ros_entrypoint.sh
   volumes:
     - .:/ros_ws/src/
     - ros_ws_build:/ros_ws/build
     - ros_ws_log:/ros_ws/log
     # Single install tree (image-baked forks + Scout). Empty volume seeds from the
-    # image once; wipe it when bumping an overlay fork pin (compose down -v).
+    # image once; the entrypoint stamp guard (ADR-0005) refuses to start on a
+    # stale volume, so `down -v` when bumping an image-baked fork.
     - ros_overlay_install:/opt/overlay/install
-  privileged: true
+  # privileged is NOT here: only `robot` touches /dev (UART, USB lidar/camera,
+  # SPI), so only it gets privileged. Bridges/compute services run unprivileged.
 
 services:
+
+  # Pi<->companion transport (ADR-0022): zenoh-bridge-ros2dds joins the local
+  # loopback DDS graph as an ordinary participant and serves ONE TCP listener
+  # (:7447) that the companion's bridge dials. Per-topic allowlist in
+  # scout/config/zenoh_bridge.json5 — nothing crosses that isn't named there,
+  # and nothing companion-side can reach a /cmd_vel_* topic (ADR-0001 audit).
+  # Absent/blocked companion costs the Pi nothing: the bridge idles.
+  zenoh_bridge:
+    image: eclipse/zenoh-bridge-ros2dds:1.10.0
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+      - ROS_DISTRO=humble
+      # Cyclone must unicast-ping a wide participant-index range on loopback:
+      # Fast DDS under ROS_LOCALHOST_ONLY announces only to indices 0-3 and
+      # ignores multicast, so without this the two vendors are mutually deaf
+      # (observed: bridge session up, zero routes created).
+      - 'CYCLONEDDS_URI=<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>'
+    volumes:
+      - ./scout/config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+    command: -c /zenoh_bridge.json5
 
   # Installs scout (+ deps) into $OVERLAY. Symlink-install: edits under the bind
   # mount take effect after rebuild without a second copy.
   build_package:
     <<: *base
+    # The one service that builds the image (runtime services are pure
+    # image: scout:latest consumers — no redundant parallel builds).
+    build: .
     profiles: ["build"]
     command: >
       colcon build --packages-up-to scout --symlink-install
@@ -27,18 +75,74 @@ services:
       --install-base /opt/overlay/install
 
   # Drivetrain, sensors, odom chain, LED. Comment/uncomment one command line.
+  #
+  # restart: unless-stopped => comes back on power-on (docker.service is enabled by
+  # default on Pi OS). Applies only to containers created by `up -d`, never `run`.
+  # slam/nav2 became always-on with patrol_capture (2026-08-12): marking needs the
+  # map frame, patrols need the planner, and reboots kept stranding both. The old
+  # "latched-goal trap" argument was about killing CLIENTS of a running nav2 — a
+  # freshly booted nav2 holds no goal, so autostart adds no unattended motion.
+  #
+  # No `profiles:` => starts on plain `docker compose up -d` (the "dev_mode" set:
+  # camera/motor/LED + webui + bridges, no planner). heavy services below are
+  # gated behind `--profile full` so a boot doesn't fire all 8 launches' worth of
+  # DDS discovery + node bring-up in the same second (measured load avg 13+ on
+  # 4 cores doing that). `deploy.resources.limits.cpus` on each service is a
+  # ceiling, not a reservation -- it exists so one runaway container (nav2's BT,
+  # or a throwaway diagnostic `run`) can't starve the others off the Pi's 4 cores,
+  # which is exactly what aborted a live nav2 goal once (see nav2's comment below).
   robot:
     <<: *base
-    command: ros2 launch scout robot.launch.py enable_joystick:=false
-    # command: ros2 launch scout robot.launch.py enable_joystick:=false camera_config:=realsense_tight_tunnel.yaml
+    restart: unless-stopped
+    privileged: true   # sole device user: UART, USB lidar/camera, SPI strip
+    # `environment:` here overrides the &base merge, so the two shared vars are
+    # re-listed (same trap as rosbridge below). The XML enables ASYNCHRONOUS
+    # publish on the big sensor streams (§9.5a): with WiFi subscribers
+    # (ADR-0020) a blocked wlan0 write must not stall a sensor callback.
+    # Gate: record `ros2 topic hz /scan` + depth cloud before/after enabling.
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+      - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/sensor_publish_profiles.xml
+      - RMW_FASTRTPS_USE_QOS_FROM_XML=1
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+    command: ros2 launch scout robot.launch.py enable_joystick:=true profile:=${SCOUT_PROFILE:-default}
+    # One knob switches nav2/slam/realsense together: set SCOUT_PROFILE=tight_tunnel
+    # in .env (see .env.example) or pass profile:= on the command line (ADR-0010).
 
-  # Occupancy grid from /scan. Needs `robot` up first. Comment/uncomment one line.
+  # App-behavior nodes split out of `robot` for fault isolation (2026-08-18):
+  # patrol_capture is inert until triggered and
+  # touches no drivetrain/sensor stack, so a crash or restart here no longer
+  # takes camera/lidar/driver/EKF down with it.
+  behaviors:
+    <<: *base
+    restart: unless-stopped
+    depends_on:
+      - robot
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+    command: sh -c "sleep 3 && ros2 launch scout behaviors.launch.py"
+
+  # Occupancy grid from /scan. Needs `robot` up first. mode:=site resolves the
+  # map + mode from sites/active/site.json (ADR-0023) — switch sites from the
+  # webui Site panel, not by editing this line. Hand-run other modes with
+  # `ros2 launch scout slam.launch.py mode:=continue map:=x` for debugging.
   slam:
     <<: *base
-    command: ros2 launch scout slam.launch.py mode:=new
-    # command: ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
-    # command: ros2 launch scout slam.launch.py mode:=localization map:=house
-    # command: ros2 launch scout slam.launch.py mode:=continue map:=office
+    restart: unless-stopped
+    profiles: ["full"]
+    depends_on:
+      - robot
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+    command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=site profile:=${SCOUT_PROFILE:-default}"
 
   # Path planning and following. Needs `slam` up first for /map and map->odom.
   # Reuses upstream's navigation_launch.py because it owns the cmd_vel plumbing: it
@@ -55,25 +159,272 @@ services:
   # Comment/uncomment one command line.
   nav2:
     <<: *base
-    command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2.yaml use_sim_time:=false
-    # command: ros2 launch nav2_bringup navigation_launch.py params_file:=/ros_ws/src/scout/config/nav2_tight_tunnel.yaml use_sim_time:=false
+    restart: unless-stopped
+    profiles: ["full"]
+    depends_on:
+      - slam
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+    command: sh -c "sleep 10 && ros2 launch scout nav2.launch.py profile:=${SCOUT_PROFILE:-default}"
 
   # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
-  # starts it. Start after robot+slam+nav2 look healthy:
+  # starts it. scout-switch pre-creates it in Created state (`compose --profile
+  # explore create explore`), so scout_skills' explore_start can lazily start it
+  # via the fleet_status API — no manual step. Manual start still works:
   #   docker compose --profile explore up -d explore
+  # Once running, scout_skills exposes pause/resume (via /explore/resume) to MCP
+  # clients — deliberately NOT container start/stop (no docker socket in a
+  # no-auth LAN endpoint).
   # Kill switch (stop alone leaves Nav2 driving — deactivate bt_navigator to clear the goal):
   #   docker compose --profile explore stop explore
   #   docker compose exec -T robot ros2 lifecycle set /bt_navigator deactivate
   explore:
     <<: *base
     profiles: ["explore"]
-    command: ros2 launch scout explore.launch.py
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+    command: ros2 launch scout explore.launch.py profile:=${SCOUT_PROFILE:-default}
 
+  # Trimmed off the &base anchor (ADR-0005): a DDS participant, so it keeps
+  # host net + ipc + the discovery env + the ROS entrypoint, but it needs no
+  # repo bind mount and no overlay volume (foxglove_bridge is an apt package
+  # under /opt/ros; without the volume the stamp guard compares the image's
+  # own copy — always a match).
   foxglove_bridge:
-    <<: *base
+    image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+    entrypoint: /ros_entrypoint.sh
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
     # network_mode: bridge  # only in WSL
     # ports: ["8765:8765"]  # only in WSL
     command: ros2 run foxglove_bridge foxglove_bridge
+
+  # Web UI transport: JSON<->DDS bridge on ws://:9090 (roslibjs speaks to this).
+  # Publishes /connected_clients, which led_status uses for connect/disconnect flashes.
+  rosbridge:
+    <<: *base
+    restart: unless-stopped
+    # Under simple discovery (ADR-0022) rosbridge sees the full graph natively;
+    # the old discovery-server SUPER_CLIENT workaround (service calls failing
+    # with "Service ... does not exist" while topics worked) no longer applies.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+    command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+
+  # Static files for the web UI (http://scout.local). Serves the bind-mounted
+  # ./webui directly, so UI edits are live without a rebuild. Host networking +
+  # root in the container makes port 80 fine.
+  # Trimmed off the &base anchor (ADR-0005): a plain http server — no ROS
+  # entrypoint, no DDS env, and only the ./webui mount (webui/robot_profile.yaml
+  # is now a real SC10-synced copy of the SSOT, not a symlink out of the tree).
+  webui:
+    image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    entrypoint: []
+    volumes:
+      - ./webui:/webui:ro
+      # The SSOT profile, shadowed over webui/robot_profile.yaml (a tracked
+      # comment-only placeholder — the ro dir bind above means Docker cannot
+      # create the mountpoint, so the file must exist) so app.js's
+      # fetch('robot_profile.yaml') reads the real file, live.
+      - ./scout/config/robot_profile.yaml:/webui/robot_profile.yaml:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+    command: python3 -m http.server 80 --directory /webui
+
+  # Internal-only since 2026-08-18: no longer a direct Magnus connector.
+  # scout_skills (below) mounts this server's tools as a live FastMCP proxy,
+  # so Magnus talks to one endpoint (9001) that exposes both raw ROS
+  # primitives and task-level skills under their original tool names. Still
+  # its own container/image so a `ros-mcp` version bump doesn't touch the
+  # scout_skills build, and so a crash here doesn't take skills down for
+  # anything skills doesn't itself proxy through. Kept on port 9000 for
+  # direct debugging (e.g. an MCP inspector) — just no longer registered as
+  # a Magnus connector.
+  # ros-mcp speaks only the rosbridge websocket — its hardcoded default
+  # target is 127.0.0.1:9090, which host networking makes exactly right — so
+  # it gets a tiny standalone image (see docker/ros-mcp/Dockerfile) instead
+  # of scout:latest: no ROS, no 13-min librealsense layer. Tool baked at
+  # build time, so container start needs no network.
+  # ⚠ No auth — LAN-trust only. send_action_goal BLOCKS until result/timeout,
+  # and a timed-out call leaves the goal RUNNING (same latched-goal semantics
+  # as nav2 above); clients must poll get_action_status or cancel.
+  ros_mcp:
+    build: docker/ros-mcp
+    image: ghcr.io/bg-bgi/scout-ros-mcp:${SCOUT_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["full"]
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+    command: ros-mcp --transport streamable-http --host 0.0.0.0 --port 9000
+
+  # THE single MCP endpoint for Magnus (http://<pi>:9001/mcp) since
+  # 2026-08-18: mounts ros_mcp's raw ROS primitives as a live FastMCP proxy
+  # (see server.py's `mcp.mount(FastMCP.as_proxy(...))`, no prefix so tool
+  # names are unchanged) alongside its own task-level skills, so Magnus needs
+  # only one connector/one serverUrl instead of two. `depends_on: ros_mcp` is
+  # for boot ordering only — the proxy connects lazily per-call, so a
+  # ros_mcp restart doesn't require restarting this container.
+  #
+  # Same rosbridge-only standalone design as ros_mcp for its OWN tools:
+  # get_map (occupancy grid rendered as an image, robot pose marked), go_to
+  # (map-framed /goal_pose, returns immediately), go_through/patrol
+  # (NavigateThroughPoses via rosbridge send_action_goal — fluid multi-point
+  # drives with no stop at intermediate points), nav_status (both actions +
+  # live feedback distance/poses remaining), nav_cancel (zeroed CancelGoal on
+  # both actions = the webui cancel button), named waypoints
+  # (save/list/delete/go_to_waypoint — JSON in the active site's maps/,
+  # per-map validity),
+  # move/rotate (closed-loop relative motion on /odom, streams /cmd_vel
+  # directly — BYPASSES Nav2 costmaps, blocks for the drive, refuses while a
+  # nav goal is active), explore_for (time-budgeted frontier exploration,
+  # auto-pause timer lives in this server), AprilTags (detect_tags/
+  # register_tag/list_tags/delete_tag/tag_watch — DETECTION runs in the
+  # apriltag_ros node in the robot service (/detections + TF per tag); this
+  # server owns MEANING: sqlite registry in the site's tags.db, passive 2 s
+  # watcher, sightings refresh a standoff waypoint named after the tag;
+  # "doghouse" role=home is the dock),
+  # camera_snapshot (raw D455 color frame), detect_objects
+  # (YOLO11n on CPU + aligned depth → map-frame positions; needs
+  # align_depth.enable in realsense.yaml), explore_resume/pause/status
+  # (pause/resume a running explore_lite — never container lifecycle).
+  # ⚠ No auth — LAN-trust only. go_to never blocks on the drive, so the
+  # latched-goal semantics still apply: poll nav_status, stop with nav_cancel.
+  scout_skills:
+    build: docker/scout-skills
+    image: ghcr.io/bg-bgi/scout-skills:${SCOUT_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["full"]
+    depends_on:
+      - ros_mcp
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+    environment:
+      # Site-bundle paths (ADR-0023). Both files are opened per call, so a
+      # site switch applies live with no restart of this container.
+      - WAYPOINTS_PATH=/sites/active/maps/waypoints.json
+      - TAGS_DB=/sites/active/maps/tags.db
+    volumes:
+      # Parent dir, NEVER ./sites/active/... — mounting through the symlink
+      # would freeze its target at container create (ADR-0023).
+      - ./sites:/sites
+      # Cross-surface SSOT (velocity caps, status names, thresholds, cmd_vel
+      # topics). Read-only; robot_profile.py falls back to baked defaults if
+      # this mount is ever missing.
+      - ./scout/config/robot_profile.yaml:/robot_profile.yaml:ro
+
+  # --- Observability stack (profile: observability) ---
+  # Opt-in, same as `explore`: `docker compose --profile observability up -d`.
+  # Feeds a localhost-only Prometheus/Grafana/Dozzle stack over LAN (see
+  # observability/ in the repo root) -- nothing in this profile stores data
+  # on the Pi itself, it only exposes ports for a dev machine to scrape/pull.
+
+  # Container CPU/mem/net/restarts + ROS topic Hz + DDS pub/sub counts,
+  # scraped by localhost Prometheus at http://<pi>:9100/metrics. Read-only
+  # docker socket mount -- this container can observe but never act.
+  observability_exporter:
+    build: docker/observability-exporter
+    image: ghcr.io/bg-bgi/scout-observability-exporter:${SCOUT_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["observability"]
+    environment:
+      - COMPOSE_PROJECT=scout
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Read + safe-restart MCP endpoint for Claude (http://<pi>:9002/mcp,
+  # streamable-http). rw docker socket -- restart_container needs it, but the
+  # tool itself refuses `robot` unconditionally (see server.py docstring).
+  # ⚠ No auth -- LAN-trust only, same caveat as ros_mcp/scout_skills.
+  observability_mcp:
+    build: docker/observability-mcp
+    image: ghcr.io/bg-bgi/scout-observability-mcp:${SCOUT_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["observability"]
+    environment:
+      - COMPOSE_PROJECT=scout
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Log-streaming agent for the localhost Dozzle UI (dozzle --remote-agent).
+  # Read-only socket; agent-mode Dozzle ships no web UI of its own here, so
+  # this container is invisible unless something connects to :7007.
+  dozzle_agent:
+    image: amir20/dozzle:latest
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["observability"]
+    command: agent
+    environment:
+      - DOZZLE_AGENT_ADDR=:7007
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # Backend for the webui System panel (http://<pi>:9003/api/... — 9002 is
+  # observability_mcp's): host
+  # vitals (cpu/mem/temp/disk/load) + per-container status, and
+  # stop/restart/restart-all buttons. Holds the Docker socket read-write, so
+  # its action endpoints are scoped to only this compose project's
+  # containers (docker/fleet-status/server.py) and it refuses to touch its
+  # own container.
+  # ⚠ No auth — LAN-trust only, same as ros_mcp/scout_skills, but this is the
+  # one service that can actually stop/restart the drivetrain/sensor stack —
+  # see server.py's docstring before loosening its scope.
+  # ⚠ Also controls the host's WiFi via nmcli over the D-Bus system bus
+  # (mounted below) — privileged: true is needed for nmcli-over-D-Bus to
+  # actually change NetworkManager state, not just read it.
+  fleet_status:
+    build: docker/fleet-status
+    image: ghcr.io/bg-bgi/scout-fleet-status:${SCOUT_TAG:-latest}
+    network_mode: host
+    privileged: true
+    restart: unless-stopped
+    environment:
+      - COMPOSE_PROJECT_NAME=scout
+      # Companion VM health check (ADR-0021); unset = panel hidden, Pi
+      # standalone unaffected. Set in .env once the VM has a stable IP.
+      - COMPANION_HOST=${COMPANION_HOST:-}
+      # Location sites (ADR-0023): owns the sites/active symlink switch +
+      # restarts the launch-bound services after a switch.
+      - SITES_DIR=/sites
+      - SITE_SCAFFOLD=pi
+      - SITE_RESTART_SERVICES=slam,nav2,behaviors
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/hostfs:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      # Site bundles (rw: creates dirs, repoints the active symlink). Parent
+      # dir, never ./sites/active — see the scout_skills mount comment.
+      - ./sites:/sites
 
 volumes:
   ros_ws_build:

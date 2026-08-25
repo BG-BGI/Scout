@@ -15,7 +15,13 @@ roboclaw_driver:
     status_rate: 10.0
 
     # --- drive geometry ---
-    wheel_radius: 0.0775              # m (155 mm wheel diameter)
+    # Re-verified 2026-08-14 after the operator deliberately DEFLATED all four tires
+    # (traction fix): 2 m out-and-back on hard floor, tape 2.0066 m vs /wheel_odom
+    # 1.9896/1.9958 m per leg → wheels under-report +0.70%, robot returned to the mark
+    # within 0.5 in. 0.0775 × 1.007 = 0.0780. Direction matches deflation (smaller
+    # effective rolling radius); magnitude is tiny — these tires barely deflect even soft.
+    # Re-run the tape test if pressure is ever changed again.
+    wheel_radius: 0.0780              # m (was 0.0775 at full inflation)
     # Track (L-R) taken from the CAD in scout_description: the wheel joints sit at
     # x = +/-0.111 on the hub face, and the wheel mesh is 0.05617 m thick, so the
     # centerlines are 2 * (0.111 + 0.05617/2) = 0.2782 m apart. Wheelbase (F-B) is
@@ -82,7 +88,13 @@ roboclaw_driver:
     # uncapped, with no dips — so cadence is not a straight-line limiter at this accel.
     # MIXEDSPEEDACCELDIST still ramps (not an instant sign flip). Dial down toward 12000-16000
     # if starts feel too abrupt (but keep accel >= max_linear_counts/0.4 or top speed re-clips).
-    accel: 20000                       # counts/s^2
+    #
+    # 40000 (~6 m/s^2 chassis) raised from 20000 for trick punch: at 20000 (~3 m/s^2) the
+    # wheelie's reverse->forward flip ramps over ~0.65 s and the nose never unloads; ~5 m/s^2
+    # is the rough lift threshold with the rear-mounted pack. Cost: teleop starts are jerkier
+    # and hard launches can break traction (burnout trick relies on exactly that). Drop back
+    # to 20000 if normal driving feels too abrupt.
+    accel: 40000                       # counts/s^2
 
     # --- outputs ---
     publish_odom: true                 # remapped to /wheel_odom; it feeds the EKF

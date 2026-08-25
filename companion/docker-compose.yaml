@@ -1,0 +1,232 @@
+# Companion stack (ADR-0022). Runs on a native Linux host — the Debian box.
+# It keeps its OWN loopback DDS graph; the only thing that crosses the network
+# is zenoh_bridge's single outbound TCP connection to the Pi (corp inter-VLAN
+# filtering drops UDP, so plain shared-domain DDS is out — measured 2026-08-20).
+#
+# .env: PI_IP=<the Pi's address>  (cp .env.example .env)
+
+# Images come from GHCR (built by .github/workflows/companion-images.yml +
+# fleet-status-image.yml) — box updates via ./update.sh (git pull + compose
+# pull), normally driven by the deploy workflow, which pins COMPANION_TAG in
+# .env to the deployed commit's sha. :latest = main's head, the fallback for a
+# hand-run stack. The build: keys stay for local dev only.
+# Pin the project name so container labels are deterministic regardless of the
+# clone directory — fleet_status filters containers by this exact project.
+name: scout-companion
+
+x-companion: &companion
+  build: .
+  image: ghcr.io/bg-bgi/scout-companion:${COMPANION_TAG:-latest}
+  network_mode: host
+  ipc: host
+  environment:
+    # Local graph only — the bridge is the sole cross-machine path. Domain
+    # matches the Pi (cosmetic across the bridge, load-bearing locally).
+    - ROS_DOMAIN_ID=17
+    - ROS_LOCALHOST_ONLY=1
+  restart: unless-stopped
+
+services:
+
+  # The one network-crossing process: subscribes the allowlisted Pi topics
+  # over zenoh/TCP and republishes them into this box's loopback DDS graph.
+  # Allowlist: config/zenoh_bridge.json5 (must mirror the Pi side's).
+  zenoh_bridge:
+    image: eclipse/zenoh-bridge-ros2dds:1.10.0
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+      - ROS_DISTRO=humble
+      # Cyclone must unicast-ping a wide participant-index range on loopback:
+      # Fast DDS under ROS_LOCALHOST_ONLY announces only to indices 0-3 and
+      # ignores multicast, so without this the two vendors are mutually deaf
+      # (observed: bridge session up, zero routes created).
+      - 'CYCLONEDDS_URI=<CycloneDDS><Domain><Discovery><ParticipantIndex>auto</ParticipantIndex><MaxAutoParticipantIndex>120</MaxAutoParticipantIndex><Peers><Peer address="127.0.0.1"/></Peers></Discovery></Domain></CycloneDDS>'
+    volumes:
+      - ./config/zenoh_bridge.json5:/zenoh_bridge.json5:ro
+    command: -c /zenoh_bridge.json5 -e tcp/${PI_IP}:7447
+
+  # Live 3D capture (spec §2.1). Consumes the bridged topics from the local
+  # graph exactly as if the camera were local. The compressed encoders on the
+  # Pi are per-subscriber lazy — the Pi-side zenoh bridge is that subscriber,
+  # so the Pi pays the JPEG/PNG cost only while this stack is up. Visual
+  # odometry OFF: the EKF's fused /odom (wheel speed + gyro yaw) is the pose
+  # input; rtabmap does appearance-based loop closure on top.
+  rtabmap:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      # Per-site rtabmap databases (ADR-0023): ./data/sites/<site>/rtabmap.db,
+      # selected through the relative `active` symlink that this box's
+      # fleet_status repoints on a site switch (then restarts this container —
+      # database_path is opened at node startup). Mount the PARENT dir, never
+      # ./data/sites/active, or the target freezes at container create.
+      # Per-site dbs also stop cross-site loop-closure pollution.
+      - ./data/sites:/sites
+      - ./config:/companion/config:ro
+    command: >
+      ros2 launch rtabmap_launch rtabmap.launch.py
+        database_path:=/sites/active/rtabmap.db
+        rtabmap_args:="--Rtabmap/DetectionRate 1"
+        rgb_topic:=/camera/camera/color/image_raw
+        depth_topic:=/camera/camera/aligned_depth_to_color/image_raw
+        camera_info_topic:=/camera/camera/color/camera_info
+        rgb_image_transport:=compressed
+        depth_image_transport:=compressedDepth
+        visual_odometry:=false
+        odom_topic:=/odom
+        frame_id:=base_link
+        subscribe_scan:=true
+        scan_topic:=/scan
+        approx_sync:=true
+        approx_sync_max_interval:=0.15
+        rtabmap_viz:=false
+        rviz:=false
+
+  # Local robot_state_publisher (WORLDMODEL.md TF fix). The URDF static chain
+  # base_link->...->camera_link does NOT survive the zenoh bridge: /tf_static has
+  # two latched publishers on the Pi (rsp + realsense) and transient_local replay
+  # over the bridge keeps only the last-received, so only realsense's camera-
+  # internal frames reach this box (measured: `tf2_echo base_link camera_link` =
+  # two unconnected trees, while `tf2_echo odom base_link` resolves fine — dynamic
+  # /tf crosses, static does not). Publishing the URDF LOCALLY is the standard
+  # multi-machine pattern and removes all dependence on /tf_static crossing.
+  # robot_state_publisher ships in ros-base (this image), so no rebuild. Meshes
+  # are irrelevant — kdl_parser reads only links/joints for TF.
+  robot_state_publisher:
+    image: ghcr.io/bg-bgi/scout-companion:${COMPANION_TAG:-latest}
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+    volumes:
+      - ./description/scout_description.urdf:/urdf/scout_description.urdf:ro
+    # Pass the URDF as a positional file path — `--ros-args -p
+    # robot_description:=<xml>` cannot parse multiline XML (rcl param-rule
+    # parser aborts on the first newline/quote). The positional form loads the
+    # file straight into robot_description (Humble-supported).
+    command: ros2 run robot_state_publisher robot_state_publisher /urdf/scout_description.urdf
+
+  # World-model detector (WORLDMODEL.md, gate 1). Continuous YOLO11n on the
+  # bridged D455 stream -> map-frame object table on /world/objects (latched
+  # std_msgs/String JSON). CPU-only, onnxruntime, no torch. Consumes only
+  # already-bridged topics (color/depth/info/tf) and publishes LOCALLY — the
+  # Pi does not see /world/objects until gate 2 adds it to both allowlists.
+  # Own build context (./detector), NOT the &companion anchor, but the same
+  # local-graph env so it shares this box's DDS with rtabmap.
+  detector:
+    build: ./detector
+    image: ghcr.io/bg-bgi/scout-companion-detector:${COMPANION_TAG:-latest}
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    depends_on:
+      - zenoh_bridge
+    environment:
+      - ROS_DOMAIN_ID=17
+      - ROS_LOCALHOST_ONLY=1
+
+  # Inspection MCAP recorder (confined-space inspection F1/F1b). Records the
+  # bridged sensor topics to ./captures/inspection/<UTC>/ as .mcap — one run
+  # per patrol/explore pass (auto, via bridged /patrol_status + /explore/resume)
+  # or manual via the local /inspection/{start,stop} Triggers. Post-run it
+  # drops cloud.ply beside the bag via rtabmap-export (db volume ro).
+  # Review: drag the .mcap into Foxglove desktop; layout in ./foxglove/.
+  inspection_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./inspection:/inspection:ro
+      - ./captures:/captures
+      # Same per-site tree as rtabmap (ADR-0023): run dirs are keyed by the
+      # active site name and cloud.ply exports read /sites/active/rtabmap.db.
+      - ./data/sites:/sites:ro
+    command: python3 /inspection/recorder.py
+
+  # RFID read recorder (ADR-0025) — the PRIMARY tag DB. Subscribes the bridged
+  # /rfid/reads (pose-stamped JSON, latched depth-50 for outage replay) into
+  # /sites/active/rfid.db (per-site: a pose only means anything on its map)
+  # and republishes the deduped /rfid/registry back across the bridge for the
+  # webui/MCP. Base companion image + bind-mounted script — no new image. The
+  # script (rfid/recorder.py) is now the SHARED tag recorder; db/topics default
+  # to the RFID values, and the node name is remapped so it and nfc_recorder
+  # (same script, NFC params) do not collide on the DDS graph.
+  rfid_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./rfid:/rfid:ro
+      # Writable — this service owns rfid.db (rtabmap owns rtabmap.db).
+      - ./data/sites:/sites
+    command: python3 /rfid/recorder.py --ros-args -r __node:=rfid_recorder
+
+  # NFC read recorder (ADR-0026) — the PRIMARY NFC tag DB. Same shared script
+  # as rfid_recorder, pointed at nfc.db and the /nfc/reads,/nfc/registry topics.
+  nfc_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./rfid:/rfid:ro
+      - ./data/sites:/sites   # writable — this service owns nfc.db
+    command: >
+      python3 /rfid/recorder.py --ros-args -r __node:=nfc_recorder
+      -p db_path:=/sites/active/nfc.db
+      -p reads_topic:=/nfc/reads
+      -p registry_topic:=/nfc/registry
+
+  # Batch anomaly captioner (inspection F2) — run-on-demand, NOT a daemon:
+  #   docker compose run --rm captioner /captures/inspection/<UTC>
+  # Florence-2-base on CPU over the run's .mcap; writes anomalies.json beside
+  # the bag. Profile-gated so `compose up` never starts a 2 GB torch container.
+  captioner:
+    build: ./captioner
+    image: ghcr.io/bg-bgi/scout-companion-captioner:${COMPANION_TAG:-latest}
+    profiles: ["caption"]
+    volumes:
+      - ./captures:/captures
+
+  # Companion-side fleet_status (:9003) — same image/code as the Pi's, scoped
+  # to THIS box's compose project. Backs the webui System panel's "Companion"
+  # subsection: per-container stop/restart + restart-all + a host reboot.
+  # FLEET_ALLOW_HOST_REBOOT=1 enables /api/reboot-host HERE only (the Pi leaves
+  # it unset). privileged + the docker & dbus sockets: docker.sock for container
+  # control, the system bus for logind Reboot. /hostfs for disk vitals.
+  fleet_status:
+    image: ghcr.io/bg-bgi/scout-fleet-status:${COMPANION_TAG:-latest}
+    network_mode: host
+    ipc: host
+    privileged: true
+    restart: unless-stopped
+    environment:
+      - COMPOSE_PROJECT_NAME=scout-companion
+      - FLEET_ALLOW_HOST_REBOOT=1
+      # Location sites (ADR-0023): mirrors the Pi's switch on this box. The
+      # webui best-effort POSTs /api/sites/<name>/activate here after a Pi
+      # switch; 'plain' scaffold = bare per-site dirs (just rtabmap.db).
+      - SITES_DIR=/sites
+      - SITE_SCAFFOLD=plain
+      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder,nfc_recorder
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /:/hostfs:ro
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      - ./data/sites:/sites
+
+  # Local Foxglove bridge (:8766) — view /rtabmap/cloud_map from this box
+  # without hauling the cloud back through the Pi's :8765.
+  foxglove_bridge:
+    <<: *companion
+    command: ros2 run foxglove_bridge foxglove_bridge --ros-args -p port:=8766
+
+# The old rtabmap_db named volume is retired (ADR-0023) — per-site dbs live in
+# ./data/sites/<site>/rtabmap.db. update.sh migrates the old volume's db into
+# ./data/sites/default/ once, then `docker volume rm scout-companion_rtabmap_db`.

@@ -1,0 +1,131 @@
+# nav2_collision_monitor — the last-hop safety stage (ADR-0016).
+#
+# Sits on the AUTONOMOUS branch, between twist_mux_auto and the final mux:
+#   twist_mux_auto (autonomous winner) -> /cmd_vel_auto -> collision_monitor
+#   -> /cmd_vel_safe -> final twist_mux (`auto`, prio 10) -> roboclaw
+# so it guards every AUTONOMOUS source (skills, nav2),
+# unlike nav2's costmaps which only constrain nav goals. Human teleop
+# (joystick, webui) bypasses it and keeps full authority (operator decision
+# 2026-08-17) — the operator can see the robot; the estop lock still binds it.
+#
+# Verified against nav2 1.1.20 source: the per-polygon point threshold is
+# `max_points` (points > max_points triggers; renamed min_points only in
+# later distros — do not "fix" it), polygons are boxes in base_frame_id, and
+# a scan source is transformed through TF (the 180° lidar mount is already
+# in base_link->laser, so no angle handling here).
+#
+# Interplay notes:
+# - estop stays upstream (twist_mux prio-255 lock, ADR-0001); this is an
+#   independent second layer. A zero Twist passes through unchanged.
+# - source_timeout 2.0: a lidar gap >2 s (e.g. the rplidar respawn window,
+#   ADR-0015) treats the scan as invalid and STOPS motion until it returns.
+#   That is the deliberate fail-safe direction.
+# - The deadman is unaffected: output publishes per input message, so the
+#   20–50 Hz cadence and the explicit-zero stop convention pass through.
+# - tight_tunnel: the default side margins would read pipe walls as a stop
+#   condition — the overlay shrinks both boxes to the footprint (see
+#   overlays/tight_tunnel/collision_monitor.yaml).
+#
+# ⚠ STOP zone is direction-blind by nav2 design (verified against
+# nav2_collision_monitor/src/polygon.cpp: getPointsInside/isTriggeredInternal
+# take only a geometric point count, never the commanded Twist). A single
+# symmetric box therefore reads a static obstacle to the SIDE as a stop
+# condition even while driving straight PAST it (found on hardware
+# 2026-08-17 — passing between two obstacles narrower than ~0.42 m tripped
+# the stop though the 0.334 m chassis physically fit). Humble's nav2 predates
+# the native fix (`velocity_polygon`, merged Iron+, absent from this apt
+# build — confirmed empirically, no VelocityPolygon symbol in
+# libnav2_collision_monitor_core.so). So THREE mutually-exclusive stop
+# polygons stand in for it, switched live by `collision_polygon_manager`
+# (ADR-0016 addendum) via collision_monitor's own set_parameters:
+#   - Front  (narrow sides) while driving essentially straight forward,
+#   - Rear   (narrow sides) while reversing — so the STOP is also direction-
+#     aware in vx, not just yaw. This is what lets BackUp recovery escape a
+#     front obstacle: a single symmetric box zeroes the reverse command too
+#     (the STOP is Twist-blind), so an obstacle in front deadlocks the robot
+#     — it "sits there and dies" instead of backing up (found on hardware
+#     2026-08-17, the second face of the same direction-blindness bug).
+#   - Turn   (original wide sides, full box) while actually turning/pivoting,
+#     which sweeps the chassis sideways for real.
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    # Guards the AUTONOMOUS stream only (twist_mux_auto winner). Human teleop
+    # (joystick/web) bypasses this stage entirely — operator decision
+    # 2026-08-17. /cmd_vel_safe re-enters the final twist_mux as `auto` (prio 10).
+    cmd_vel_in_topic: "/cmd_vel_auto"
+    cmd_vel_out_topic: "/cmd_vel_safe"
+    # Matches the stack-wide 0.5 tolerance (nav2.yaml) — the 0.1 upstream
+    # default throws on the Pi's TF latency.
+    transform_tolerance: 0.5
+    source_timeout: 2.0
+    base_shift_correction: true
+    stop_pub_timeout: 1.0
+    polygons: ["PolygonStopFront", "PolygonStopRear", "PolygonStopTurn", "PolygonSlow"]
+    # Footprint is ±0.169 x ±0.167 (mesh bounds, nav2.yaml). THREE
+    # mutually-exclusive stop shapes, exactly one enabled at a time by
+    # collision_polygon_manager from the commanded Twist:
+    #   Front  (default-enabled): guards forward travel. Extends +0.24 ahead
+    #     (~7 cm past the chassis), only -0.06 behind base_link. ±0.175 side
+    #     (footprint + ~1 cm). Disabled while reversing so BackUp recovery can
+    #     escape a front obstacle — the whole reason the split-in-vx exists.
+    #   Rear   (default-disabled): the front box mirrored, guards reverse
+    #     travel so a backing robot still stops before a wall behind it.
+    #   Turn   (default-disabled): full symmetric ±0.24 box, ±0.21 side — the
+    #     original margin, gives real sideways-sweep clearance while
+    #     pivoting/arcing (a pivot sweeps every corner, so guard front+rear).
+    # The ±0.06 overlap at base_link leaves no gap during a front<->rear swap.
+    # Forward stop margin (~7 cm) is identical in all three — braking distance
+    # doesn't depend on direction or turning; only the side margin and which
+    # half is guarded change.
+    PolygonStopFront:
+      type: "polygon"
+      points: [0.24, 0.175, 0.24, -0.175, -0.06, -0.175, -0.06, 0.175]
+      action_type: "stop"
+      max_points: 3
+      enabled: true
+      visualize: true
+      polygon_pub_topic: "polygon_stop_front"
+    PolygonStopRear:
+      type: "polygon"
+      points: [0.06, 0.175, 0.06, -0.175, -0.24, -0.175, -0.24, 0.175]
+      action_type: "stop"
+      max_points: 3
+      enabled: false
+      visualize: true
+      polygon_pub_topic: "polygon_stop_rear"
+    PolygonStopTurn:
+      type: "polygon"
+      points: [0.24, 0.21, 0.24, -0.21, -0.24, -0.21, -0.24, 0.21]
+      action_type: "stop"
+      max_points: 3
+      enabled: false
+      visualize: true
+      polygon_pub_topic: "polygon_stop_turn"
+    PolygonSlow:
+      type: "polygon"
+      points: [0.45, 0.32, 0.45, -0.32, -0.45, -0.32, -0.45, 0.32]
+      action_type: "slowdown"
+      max_points: 3
+      slowdown_ratio: 0.4
+      visualize: true
+      polygon_pub_topic: "polygon_slowdown"
+    observation_sources: ["scan", "cliff"]
+    scan:
+      type: "scan"
+      topic: "/scan"
+    # Negative-obstacle hard stop (ADR-0024): cliff_detector publishes a fixed
+    # 5-point cluster at x 0.10–0.20 m (inside PolygonStopFront/Turn, OUTSIDE
+    # PolygonStopRear so BackUp recovery still escapes a front ledge) whenever
+    # a remembered ledge sits in its forward stop corridor, and an EMPTY cloud
+    # otherwise. The node deliberately goes SILENT on camera/TF loss, so
+    # source_timeout (2.0 above) turns "blind" into "stopped" — the same
+    # fail-safe direction as the lidar-gap note above. tight_tunnel (depth
+    # off) strips this source in its overlay; robot.launch.py fail-louds if
+    # that coupling is ever broken.
+    cliff:
+      type: "pointcloud"
+      topic: "/cliff/stop_points"
+      min_height: 0.05
+      max_height: 0.30

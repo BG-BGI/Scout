@@ -4,8 +4,8 @@
   <name>scout_description</name>
   <version>1.0.0</version>
   <description>URDF description, meshes and display launch for the Scout robot.</description>
-  <maintainer email="TODO@email.com">TODO</maintainer>
-  <license>BSD</license>
+  <maintainer email="cdrew@brasfieldgorrie.com">cdrew</maintainer>
+  <license>MIT</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 

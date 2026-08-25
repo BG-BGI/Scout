@@ -1,0 +1,28 @@
+# QoS overrides for `ros2 bag record` (bag_recorder, ADR-0017).
+#
+# ⚠ Without this file the bag SILENTLY misses /imu/data: gyro_calibrator
+# publishes best-effort (qos_profile_sensor_data) and a reliable-by-default
+# recorder subscription receives nothing — the same trap documented for the
+# EKF. Symptom: `ros2 bag info` shows the topic with count 0.
+#
+# A best-effort subscription is compatible with BOTH best-effort and reliable
+# publishers, so pinning the sensor streams best-effort here is always safe
+# (it can drop under load, which is correct for sensor data). /scan is
+# published RELIABLE by rplidar_node but stays listed so a future driver
+# change cannot re-open the trap. The depth cloud is in the 5b-bag topic set,
+# not the default one — its override still lives here so `ros2 param set
+# /bag_recorder topics` needs no second knob.
+#
+# Format: Humble "Overriding QoS Policies For Recording And Playback" how-to.
+/imu/data:
+  reliability: best_effort
+  history: keep_last
+  depth: 50
+/scan:
+  reliability: best_effort
+  history: keep_last
+  depth: 10
+/camera/camera/depth/color/points:
+  reliability: best_effort
+  history: keep_last
+  depth: 5

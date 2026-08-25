@@ -1,6 +1,8 @@
-"""Bring up slam_toolbox in one of three map modes.
+"""Bring up slam_toolbox in one of four map modes.
 
-    mode:=new           (default) start a fresh map
+    mode:=site          (compose default) read sites/active/site.json and
+                        resolve to one of the three modes below (ADR-0023)
+    mode:=new           start a fresh map
     mode:=localization  load a saved map and localize in it, adding nothing
     mode:=continue      load a saved map and keep building on top of it
 
@@ -8,25 +10,31 @@ A launch file rather than a bare `ros2 run` because the mode is not a parameter 
 see the block comment on MODES below.
 
 Examples:
-    ros2 launch scout slam.launch.py
+    ros2 launch scout slam.launch.py mode:=site
     ros2 launch scout slam.launch.py mode:=continue map:=house
     ros2 launch scout slam.launch.py mode:=localization map:=house \
         map_start_pose:=1.5,0.0,3.14159
-    ros2 launch scout slam.launch.py mode:=new params_file:=slam_tight_tunnel.yaml
+    ros2 launch scout slam.launch.py mode:=new profile:=tight_tunnel
 """
 
 import os
 
-from ament_index_python.packages import get_package_share_directory
-from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-# Serialized pose graphs live in the repo, which is bind-mounted at /ros_ws/src, so
-# they land on the host where they can be inspected and copied off. Deliberately not
-# the package share directory: that is inside the image/volume and is rebuilt.
-MAPS_DIR = '/ros_ws/src/maps'
+from launch import LaunchDescription
+from scout.core import sites
+from scout.robot_profile import merged_params
+
+# Serialized pose graphs live in the active site's bundle in the repo, which is
+# bind-mounted at /ros_ws/src, so they land on the host where they can be inspected
+# and copied off. Deliberately not the package share directory: that is inside the
+# image/volume and is rebuilt. `sites/active` is a relative symlink repointed by
+# fleet_status on a site switch (ADR-0023); resolved fresh at every launch, which is
+# exactly when this container restarts.
+SITES_ROOT = os.environ.get('SCOUT_SITES_ROOT', '/ros_ws/src/sites')
+MAPS_DIR = os.path.join(SITES_ROOT, 'active', 'maps')
 
 # ⚠ THE MODE IS NOT A PARAMETER. Every upstream slam_toolbox config and nearly every
 # tutorial carries `mode: mapping` / `mode: localization`, but that key is DEAD: no
@@ -46,7 +54,7 @@ MAPS_DIR = '/ros_ws/src/maps'
 # overrides loadPoseGraphByParams and warns "Starting localization at first node (dock)
 # is correctly not supported", then localizes at the pose anyway -- so localization must
 # be given a pose and continue is the only mode that can use the dock.
-MODES = ('new', 'localization', 'continue')
+MODES = ('site', 'new', 'localization', 'continue')
 
 
 def _saved_maps():
@@ -77,41 +85,33 @@ def _map_params(map_name):
     return {'map_file_name': path}
 
 
-def _resolve_params_file(name):
-    """Basename under scout/config; bind-mount wins over install share."""
-    if os.path.isabs(name):
-        path = name
-    else:
-        src = os.path.join('/ros_ws/src/scout/config', name)
-        if os.path.isfile(src):
-            path = src
-        else:
-            path = os.path.join(
-                get_package_share_directory('scout'), 'config', name)
-    if not os.path.isfile(path):
-        raise RuntimeError(f"slam params_file not found: {path}")
-    return path
-
-
 def _launch_setup(context, *args, **kwargs):
     mode = LaunchConfiguration('mode').perform(context)
     map_name = LaunchConfiguration('map').perform(context)
     params_file = LaunchConfiguration('params_file').perform(context)
+    profile = LaunchConfiguration('profile').perform(context)
 
     if mode not in MODES:
         raise RuntimeError(
             f"Unknown mode '{mode}'. Expected one of: {', '.join(MODES)}."
         )
 
-    if mode == 'new':
-        executable = 'async_slam_toolbox_node'
-        mode_params = {}
-    elif mode == 'continue':
-        executable = 'async_slam_toolbox_node'
-        # Resume at the loaded graph's first node and keep adding to it.
-        mode_params = {**_map_params(map_name), 'map_start_at_dock': True}
+    if mode == 'site':
+        # Resolve the active site's policy to one of the three real modes below.
+        # Only computes (mode, map, pose) — the executable table stays the switch.
+        active = sites.active_site_name(SITES_ROOT)
+        if active is None:
+            raise RuntimeError(
+                f'No active site: {SITES_ROOT}/active is missing or broken. '
+                'Run `python3 scripts/migrate_sites.py` on the Pi once, or '
+                'create a site from the webui Site panel.'
+            )
+        try:
+            site = sites.load_site(os.path.join(SITES_ROOT, active))
+            mode, map_name, start_pose = sites.resolve_slam(site, MAPS_DIR)
+        except (OSError, ValueError) as e:
+            raise RuntimeError(f"Bad site '{active}': {e}") from e
     else:
-        executable = 'localization_slam_toolbox_node'
         pose = LaunchConfiguration('map_start_pose').perform(context)
         try:
             start_pose = [float(v) for v in pose.split(',')]
@@ -122,6 +122,16 @@ def _launch_setup(context, *args, **kwargs):
                 f"map_start_pose must be three comma-separated numbers 'x,y,theta', "
                 f"got '{pose}'."
             )
+
+    if mode == 'new':
+        executable = 'async_slam_toolbox_node'
+        mode_params = {}
+    elif mode == 'continue':
+        executable = 'async_slam_toolbox_node'
+        # Resume at the loaded graph's first node and keep adding to it.
+        mode_params = {**_map_params(map_name), 'map_start_at_dock': True}
+    else:
+        executable = 'localization_slam_toolbox_node'
         mode_params = {
             **_map_params(map_name),
             'map_start_pose': start_pose,
@@ -131,7 +141,8 @@ def _launch_setup(context, *args, **kwargs):
             'scan_buffer_size': 3,
         }
 
-    config = _resolve_params_file(params_file)
+    # Base params + the profile's slam overlay (tight_tunnel = finer grid).
+    config = merged_params(params_file, profile)
 
     return [
         Node(
@@ -150,14 +161,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'mode',
             default_value='new',
-            description='new (fresh map) | localization (load, do not extend) | '
-                        'continue (load and keep mapping)',
+            description='site (resolve from sites/active/site.json) | new (fresh '
+                        'map) | localization (load, do not extend) | continue '
+                        '(load and keep mapping)',
         ),
         DeclareLaunchArgument(
             'map',
             default_value='map',
             description=f'Basename of the saved pose graph in {MAPS_DIR}, no '
-                        'extension. Ignored by mode:=new.',
+                        'extension. Ignored by mode:=new and mode:=site.',
         ),
         DeclareLaunchArgument(
             'map_start_pose',
@@ -170,7 +182,12 @@ def generate_launch_description():
             'params_file',
             default_value='slam.yaml',
             description='Basename (or absolute path) of the slam_toolbox params '
-                        'YAML under scout/config. Use slam_tight_tunnel.yaml for pipes.',
+                        'YAML under scout/config (the profile overlay merges on top).',
+        ),
+        DeclareLaunchArgument(
+            'profile',
+            default_value='default',
+            description='Config profile (default | tight_tunnel).',
         ),
         OpaqueFunction(function=_launch_setup),
     ])

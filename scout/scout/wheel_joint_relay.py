@@ -23,9 +23,10 @@ This publishes on the same topic it subscribes to. That is safe because the two
 name sets are disjoint: its own output carries none of the names it acts on.
 """
 
-import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+
+from scout.node_util import run_node
 
 # Driver joint -> the URDF joints it drives, with the sign that makes a positive
 # driver angle roll that wheel forward. Left is (front, rear) = wheel1, wheel4;
@@ -96,21 +97,13 @@ class WheelJointRelay(Node):
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.name = list(self._names)
-        msg.position = [s * p for s, p in zip(self._signs, source_position)]
-        msg.velocity = [s * v for s, v in zip(self._signs, source_velocity)]
+        msg.position = [s * p for s, p in zip(self._signs, source_position, strict=False)]
+        msg.velocity = [s * v for s, v in zip(self._signs, source_velocity, strict=False)]
         self._pub.publish(msg)
 
 
 def main(args=None):
-    rclpy.init(args=args)
-    node = WheelJointRelay()
-    try:
-        rclpy.spin(node)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.shutdown()
+    run_node(WheelJointRelay, args=args)
 
 
 if __name__ == '__main__':

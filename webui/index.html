@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Scout</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>Scout</h1>
+  <div id="conn" class="badge disconnected">connecting…</div>
+  <div id="battery" class="badge">— V</div>
+  <div id="health" class="badge stale">health —</div>
+</header>
+
+<main>
+  <!-- Stage: map + camera, the robot's two live views side by side -->
+  <div id="stage">
+    <section id="nav">
+      <div class="map-head">
+        <h2>Map</h2>
+        <span id="nav-state" class="dim">no map</span>
+        <button id="cancel-goal">Cancel Goal</button>
+      </div>
+      <div id="map-frame">
+        <canvas id="map-canvas" width="300" height="300"></canvas>
+      </div>
+      <div class="dim map-hint">Tap the map to send a nav goal — the robot drives
+        itself. Select area in Patrol to outline a coverage zone.</div>
+    </section>
+
+    <section class="panel" id="camera-panel">
+      <h2>Camera <span id="cam-state" class="dim">off</span></h2>
+      <img id="cam-img" alt="camera view">
+      <button id="cam-toggle">Show camera</button>
+    </section>
+  </div>
+
+  <!-- Manual drive: STOP + touch stick -->
+  <section id="drive">
+    <button id="stop">STOP</button>
+    <button id="estop">E-STOP</button>
+    <div id="pad">
+      <div id="stick"></div>
+    </div>
+    <div id="gamepad-row">
+      <span id="gamepad-state">no gamepad</span>
+      <span id="gamepad-debug"></span>
+    </div>
+    <!-- Direction-aware stop zone status (narrow while driving straight,
+         wide while turning — ADR-0016 addendum). Read-only. -->
+    <div id="cm-zone-row" class="dim">stop zone: <span id="cm-zone-mode">—</span></div>
+    <!-- Collision-monitor bypass: only for the direction-blind stop lockout
+         (a plain polygon STOP zone zeroes cmd_vel in EVERY direction, even
+         reverse, once tripped — ADR-0016 addendum). Bounded + loud: the
+         node auto-releases after ~30s regardless of this button. -->
+    <button id="cm-bypass">BYPASS COLLISION SAFETY</button>
+  </section>
+
+  <aside>
+    <section class="panel">
+      <h2>Patrol <span id="patrol-state" class="dim">idle</span></h2>
+      <div class="grid">
+        <button id="patrol-mark">Mark waypoint</button>
+        <button id="patrol-clear">Clear route</button>
+        <button id="patrol-area">Select area</button>
+        <button id="patrol-start" class="primary">Start patrol</button>
+        <button id="patrol-stop">Stop patrol</button>
+      </div>
+      <div id="patrol-bar"><div id="patrol-bar-fill"></div></div>
+      <div id="patrol-result" class="dim">Drive to a vantage point and Mark,
+        or Select area and tap out a shape on the map. Start drives the route
+        and photographs each stop.</div>
+    </section>
+
+    <details class="panel">
+      <summary><h2>Explore <span id="explore-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="explore-resume" class="primary">Resume</button>
+        <button id="explore-pause">Pause</button>
+      </div>
+      <div id="explore-result" class="dim">Frontier exploration (explore_lite).
+        Needs the explore service up first:
+        <code>docker compose --profile explore up -d explore</code>.
+        Frontiers draw cyan on the map. Pause stops NEW goals — the current
+        drive keeps going (use Cancel Goal / STOP to halt it).</div>
+    </details>
+
+    <section class="panel">
+      <h2>Speed</h2>
+      <label>Linear <output id="lin-out">0.35</output> m/s
+        <input type="range" id="lin" min="0.05" max="1.0" step="0.05" value="0.35">
+      </label>
+      <label>Turn <output id="ang-out">1.5</output> rad/s
+        <input type="range" id="ang" min="0.35" max="3.0" step="0.05" value="1.5">
+      </label>
+    </section>
+
+    <details class="panel">
+      <summary><h2>Health <span id="health-worst" class="dim">—</span></h2></summary>
+      <ul id="health-list" class="dim"></ul>
+    </details>
+
+    <details class="panel">
+      <summary><h2>Recording <span id="rec-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="rec-start" class="primary">Start REC</button>
+        <button id="rec-stop">Stop REC</button>
+      </div>
+      <div id="rec-result" class="dim">Records the diagnosis topic set to
+        captures/bags/ on the Pi. Auto-stops at the profile limit; splitting
+        is disabled, so stop before the SD card minds.</div>
+    </details>
+
+    <details class="panel" id="site-panel">
+      <summary><h2>Site <span id="site-state" class="dim">—</span></h2></summary>
+      <div id="site-list"></div>
+      <form id="site-add-form" class="grid">
+        <input id="site-add-name" type="text" placeholder="new-site-name"
+               pattern="[a-z0-9][a-z0-9_-]{0,31}" autocomplete="off" required>
+        <button type="submit">Create site</button>
+      </form>
+      <div class="grid">
+        <input id="site-map-name" type="text" placeholder="map name"
+               pattern="[a-z0-9][a-z0-9_-]{0,31}" autocomplete="off">
+        <button id="site-save-map">Save map</button>
+      </div>
+      <div id="site-result" class="dim">Each site bundles its own maps,
+        waypoints, tags and captures. Switching restarts slam/nav2/behaviors
+        (~20 s) — driving and camera stay up, but the map and waypoints change
+        to that site's.</div>
+    </details>
+
+    <details class="panel">
+      <summary><h2>System <span id="sys-state" class="dim">—</span></h2></summary>
+      <div id="sys-vitals" class="dim">loading…</div>
+      <div id="sys-containers"></div>
+      <button id="sys-restart-all">Restart All</button>
+    </details>
+
+    <details class="panel" id="cmp-panel">
+      <summary><h2>Companion <span id="cmp-state" class="dim">—</span></h2></summary>
+      <div id="cmp-vitals" class="dim">loading…</div>
+      <div id="cmp-containers"></div>
+      <button id="cmp-restart-all">Restart All</button>
+      <button id="cmp-reboot-host">Reboot Host</button>
+    </details>
+
+    <details class="panel">
+      <summary><h2>Network <span id="net-state" class="dim">—</span></h2></summary>
+      <div id="net-status" class="dim">loading…</div>
+      <div id="net-connections"></div>
+      <button id="net-rescan">Rescan</button>
+      <div id="net-scan-results"></div>
+      <form id="net-add-form" class="grid tight">
+        <input id="net-add-ssid" type="text" placeholder="SSID" autocomplete="off" required>
+        <input id="net-add-password" type="password" placeholder="Password (blank if open)" autocomplete="off">
+        <button type="submit">Connect</button>
+      </form>
+    </details>
+
+    <details class="panel">
+      <summary><h2>RFID <span id="rfid-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="rfid-enable" class="primary">Enable scanning</button>
+        <button id="rfid-disable">Disable</button>
+      </div>
+      <ul id="rfid-list" class="dim"></ul>
+      <div id="rfid-result" class="dim">Flipper Zero 125 kHz reader. Scanning
+        stays OFF until enabled here; while on, every card read is stamped
+        with the robot's map pose and stored in the companion DB.</div>
+    </details>
+
+    <details class="panel">
+      <summary><h2>NFC <span id="nfc-state" class="dim">—</span></h2></summary>
+      <div class="grid">
+        <button id="nfc-enable" class="primary">Enable scanning</button>
+        <button id="nfc-disable">Disable</button>
+      </div>
+      <ul id="nfc-list" class="dim"></ul>
+      <div id="nfc-result" class="dim">Flipper Zero 13.56 MHz reader
+        (MIFARE/NTAG/ISO14443). Mutually exclusive with RFID — one radio at a
+        time. Each tag UID is stamped with the robot's map pose and stored in
+        the companion DB.</div>
+    </details>
+
+    <details class="panel">
+      <summary><h2>Lights</h2></summary>
+      <div class="grid tight" id="led-modes">
+        <button data-mode="off">Off</button>
+        <button data-mode="solid">Solid</button>
+        <button data-mode="blink">Blink</button>
+        <button data-mode="breathe">Breathe</button>
+        <button data-mode="rainbow">Rainbow</button>
+        <button data-mode="chase">Chase</button>
+      </div>
+      <label>Color <input type="color" id="led-color" value="#00ff88"></label>
+      <label>Brightness <output id="led-bright-out">50</output>%
+        <input type="range" id="led-bright" min="0" max="100" step="5" value="50">
+      </label>
+      <label>Speed <output id="led-speed-out">1.0</output>
+        <input type="range" id="led-speed" min="0.2" max="4" step="0.2" value="1.0">
+      </label>
+      <div id="led-result" class="dim"></div>
+    </details>
+  </aside>
+</main>
+
+<script src="vendor/roslib.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

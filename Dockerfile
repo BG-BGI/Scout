@@ -64,12 +64,6 @@ rm -rf "$OVERLAY/build" "$OVERLAY/log"
 EOF
 RUN chmod +x /usr/local/bin/build-overlay && mkdir -p "$OVERLAY/src"
 
-# roboclaw_driver from source
-RUN git clone --depth 1 https://github.com/kahleeeb3/roboclaw_driver.git \
-        "$OVERLAY/src/roboclaw_driver" \
-    && build-overlay --packages-up-to roboclaw_driver \
-    && rm -rf "$OVERLAY/src/roboclaw_driver"
-
 # librealsense from source, RSUSB backend — D455 IMU without host kernel patching
 RUN git clone https://github.com/realsenseai/librealsense.git -b v2.57.7 --depth 1 --recurse-submodules \
     && cd librealsense \
@@ -101,11 +95,13 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
 # at "A1/A2/A3/S1/S2/S3/T1" and it ships no rplidar_c1_launch.py, while the ros2 branch
 # does, even though BOTH call themselves 2.1.4 (the deb is just built from an older
 # commit, so the version string cannot distinguish them). That keeps the image valid if
-# the scanner is ever swapped. Trade-off: this tracks the `ros2` branch and so is NOT
-# pinned to a commit. Needs no extra apt packages (std_srvs is already present), so it
-# sits with the other source builds without disturbing the librealsense cache above.
-RUN git clone --depth 1 -b ros2 https://github.com/Slamtec/rplidar_ros.git \
+# the scanner is ever swapped. Pinned to the ros2-branch tip at pin time (ADR-0005;
+# --depth 1 cannot fetch a bare SHA, hence clone-then-detach). Needs no extra apt
+# packages (std_srvs is already present), so it sits with the other source builds
+# without disturbing the librealsense cache above.
+RUN git clone -b ros2 https://github.com/Slamtec/rplidar_ros.git \
         "$OVERLAY/src/rplidar_ros" \
+    && git -C "$OVERLAY/src/rplidar_ros" checkout --detach 24cc9b6dea97e045bda1408eaa867ce730fd3fc3 \
     && build-overlay --packages-up-to rplidar_ros \
     && rm -rf "$OVERLAY/src/rplidar_ros"
 
@@ -128,26 +124,91 @@ RUN apt-get update && apt-get install -y \
     ros-humble-slam-toolbox \
     ros-humble-navigation2 \
     ros-humble-nav2-bringup \
+    ros-humble-spatio-temporal-voxel-layer \
     ros-humble-map-msgs \
     ros-humble-compressed-image-transport \
     ros-humble-compressed-depth-image-transport \
+    ros-humble-rosbridge-suite \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# apriltag_ros (christianrauch's ROS 2 port of the official AprilRobotics
+# wrapper): continuous AprilTag detection as a native node — /detections +
+# a TF frame per tag. Own RUN layer so adding it never invalidates the big
+# apt layer above.
+RUN apt-get update && apt-get install -y \
+    ros-humble-apriltag-ros \
+    ros-humble-topic-tools \
+    ros-humble-twist-mux \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# roboclaw_driver from source. Below librealsense DELIBERATELY (layer-order rule,
+# ADR-0005): this is the fork most likely to get pin bumps, and sitting under the
+# apt layers means a bump rebuilds only this + explore + the stamp — never the
+# 13-min librealsense layer. Pinned to the default-branch tip at pin time.
+# BG-BGI/roboclaw_driver is our org fork (wimblerobotics/Sigyn lineage) — no
+# build-time dependency on personal repos; bump flow in ADR-0005.
+RUN git clone https://github.com/BG-BGI/roboclaw_driver.git \
+        "$OVERLAY/src/roboclaw_driver" \
+    && git -C "$OVERLAY/src/roboclaw_driver" checkout --detach cc4d0e78acb6f65a60e1e9135258a55d4624ecb7 \
+    && build-overlay --packages-up-to roboclaw_driver \
+    && rm -rf "$OVERLAY/src/roboclaw_driver"
 
 # explore_lite (frontier exploration) — no Humble apt package; build into $OVERLAY.
 # Repo is a multi-package workspace; only lift explore + explore_lite_msgs into src.
 # Wipe ros_overlay_install after rebuild so the volume re-seeds with this package.
-RUN git clone --depth 1 https://github.com/robo-friends/m-explore-ros2.git /tmp/m-explore-ros2 \
+# Pinned to the default-branch tip at pin time (ADR-0005).
+RUN git clone https://github.com/robo-friends/m-explore-ros2.git /tmp/m-explore-ros2 \
+    && git -C /tmp/m-explore-ros2 checkout --detach 326cf8a0b487c34246bb8f3326afbcd69576dc60 \
     && mv /tmp/m-explore-ros2/explore /tmp/m-explore-ros2/explore_lite_msgs "$OVERLAY/src/" \
     && rm -rf /tmp/m-explore-ros2 \
     && build-overlay --packages-up-to explore_lite \
     && rm -rf "$OVERLAY/src/explore" "$OVERLAY/src/explore_lite_msgs"
+
+# rosbag2 for bag_recorder (ADR-0017): ros:humble-ros-core ships NO ros2bag.
+# The metapackage pulls the CLI verb, transport, sqlite3 storage and the
+# python API. Own layer below the source forks so adding it cost no fork
+# rebuild; cheap (~30 s) if it ever changes.
+RUN apt-get update && apt-get install -y \
+    ros-humble-rosbag2 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# pyserial for flipper_node (ADR-0025) — the Flipper Zero CLI over USB
+# CDC-ACM. Late layer on purpose (ADR-0005): never invalidates librealsense.
+RUN apt-get update && apt-get install -y \
+    python3-serial \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Version stamp for the ros_overlay_install volume (ADR-0005). MUST stay the last
+# layer that writes $OVERLAY/install: the entrypoint compares the image's stamp
+# against the volume's copy and refuses to start on a mismatch, turning the
+# silent-shadow trap (a rebuilt image running the volume's OLD forks) into a loud
+# one-time `down -v`. Layer caching reruns this only when a layer above changed,
+# so an unchanged image keeps its stamp and the volume stays valid.
+RUN date +%s.%N > "$OVERLAY/.image_build_id" \
+    && cp "$OVERLAY/.image_build_id" "$OVERLAY/install/.image_build_id"
 
 # Modify the ROS entrypoint
 RUN cat > /ros_entrypoint.sh <<'EOF'
 #!/bin/bash
 set -e
 source "/opt/ros/$ROS_DISTRO/setup.bash"
+# ⚠ Stale-overlay-volume guard (ADR-0005): ros_overlay_install seeds from the
+# image ONCE, so a rebuilt image with an unwiped volume silently runs the old
+# forks and looks healthy. Refuse to start on a stamp mismatch (an absent
+# volume stamp counts as stale — forces the one-time migration).
+img="$OVERLAY/.image_build_id"
+vol="$OVERLAY/install/.image_build_id"
+if [ -f "$img" ] && { [ ! -f "$vol" ] || ! cmp -s "$img" "$vol"; }; then
+  echo "FATAL: ros_overlay_install volume is stale (seeded from an older image)." >&2
+  echo "  docker compose down -v" >&2
+  echo "  docker compose --profile build run --rm build_package" >&2
+  echo "  docker compose up -d" >&2
+  exit 1
+fi
 # Single install tree: image-baked forks and locally built Scout packages both live
 # under $OVERLAY/install. Adding a source package means adding a RUN above.
 if [ -f "$OVERLAY/install/setup.bash" ]; then

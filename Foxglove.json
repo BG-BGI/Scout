@@ -194,6 +194,9 @@
         },
         "/cost_cloud": {
           "visible": false
+        },
+        "/explore/frontiers": {
+          "visible": true
         }
       },
       "layers": {
@@ -277,7 +280,7 @@
       }
     },
     "Teleop!38o4jge": {
-      "topic": "/cmd_vel",
+      "topic": "/cmd_vel_web",
       "publishRate": 30,
       "autoSendStopOnRelease": true,
       "upButton": {
@@ -290,11 +293,11 @@
       },
       "leftButton": {
         "field": "angular-z",
-        "value": 2
+        "value": 2.0
       },
       "rightButton": {
         "field": "angular-z",
-        "value": -1
+        "value": -2.0
       },
       "stopButton": {
         "field": "linear-x",
@@ -322,10 +325,17 @@
       "requestPayload": "{\n  \"mode\": \"solid\",\n  \"color\": \"ffffff\",\n  \"brightness\":12,\n  \"speed\": 1\n}",
       "layout": "vertical",
       "timeoutSeconds": 10,
-      "serviceName": "/set_led_mode",
+      "serviceName": "/set_user_led",
       "buttonText": "Lights",
       "editingMode": true,
       "foxglovePanelTitle": "LED Mode"
+    },
+    "DiagnosticSummary!scout1": {
+      "minLevel": 0,
+      "pinnedIds": [],
+      "hardwareIdFilter": "",
+      "topicToRender": "/diagnostics",
+      "sortByLevel": true
     }
   },
   "globalVariables": {},
@@ -342,10 +352,15 @@
         "direction": "column"
       },
       "second": {
-        "first": "Gauge!2wgcbj6",
-        "second": "CallService!p1hfrr",
+        "first": {
+          "first": "Gauge!2wgcbj6",
+          "second": "CallService!p1hfrr",
+          "direction": "column",
+          "splitPercentage": 2
+        },
+        "second": "DiagnosticSummary!scout1",
         "direction": "column",
-        "splitPercentage": 2
+        "splitPercentage": 60
       },
       "direction": "column",
       "splitPercentage": 68.36159900037285

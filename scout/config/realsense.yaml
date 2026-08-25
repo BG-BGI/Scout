@@ -5,9 +5,29 @@ enable_infra: false
 enable_infra1: false
 enable_infra2: false
 
-# 5 FPS is the lowest D455 profile at 640x480 (probed: 5/15/30/60 — no 6).
-rgb_camera.color_profile: '640x480x5'
-depth_module.depth_profile: '640x480x5'
+# 5 FPS is the lowest D455 profile (probed: 5/15/30/60 — no 6). Depth runs at
+# 848x480, the D455's optimal stereo resolution — precision degrades below it,
+# and MinZ scales with X-resolution. If the wrapper rejects the profile it
+# logs the full supported list; fall back to '640x480x5'.
+# Color at 15 FPS for the web UI live view (5 is a slideshow). JPEG encoding
+# is per-subscriber lazy, so the always-on cost is only the wrapper's color
+# path; the ~5-8% of a core for compression happens only while a panel looks.
+rgb_camera.color_profile: '640x480x15'
+depth_module.depth_profile: '848x480x5'
+
+# Advanced-mode preset: DefaultPreset_D455 base with the High Accuracy overlay
+# (raised param-secondpeakdelta 325->647 etc. — higher stereo confidence, fewer
+# false depth points feeding the costmaps) plus Scout deltas:
+# controls-laserpower 240 (matches depth_module.laser_power below) and
+# param-disparityshift (0 here; raised to shrink MinZ — see the JSON).
+# Bind-mount path, same resolution trick as robot.launch.py's config_file.
+json_file_path: /ros_ws/src/scout/config/d455_scout_preset.json
+
+# Laser power is NOT settable here — rs_launch.py's config parser rejects the
+# key ("Parameter ... not supported"). It is set by the preset JSON instead
+# (controls-laserpower: 240 — default 150, max 360; denser low-texture floor
+# returns for the stvl_layer mark band).
+depth_module.enable_auto_exposure: true
 
 # Untextured XYZ from depth for Nav2 local costmap (under-lidar band). stream_filter 1
 # = RS2_STREAM_DEPTH. Decimation x4 ~1/16 points before the NEON cloud — required so
@@ -25,14 +45,13 @@ decimation_filter.filter_magnitude: 4
 # IMU: gyro + accel united into one sensor_msgs/Imu on /camera/camera/imu.
 # 200 Hz is the rate measured clean on this camera (199 Hz delivered).
 #
-# ⚠ If the log shows "Hardware Notification:Motion Module force pause", the IMU
-# is dead for that whole session and so is color — depth keeps running, so the
-# node looks healthy. Seen once in three starts, on the first start after the
-# camera had sat idle since boot. The device stays wedged afterwards: even an
-# IMU-only open returns nothing until it is hardware-reset or replugged.
-# Remedy is `initial_reset: true` below, which resets the device at launch (adds
-# ~10 s and a USB re-enumeration). Left off because the fault would not
-# reproduce on demand, so it is untested against an actual force pause.
+# ⚠ "Hardware Notification:Motion Module force pause" — UPDATE 2026-08-12: with
+# wrapper 4.57.7 this fired on two separate starts and the IMU kept publishing
+# at 200 Hz both times (the wrapper's stop/start of the Motion Module right
+# after recovers it). The old "dead for the whole session" behaviour has not
+# recurred; treat the warning as check-don't-panic: verify /camera/camera/imu
+# rate before trusting or fearing it. `initial_reset: true` remains the remedy
+# if a wedged session ever reappears (adds ~10 s and a USB re-enumeration).
 # initial_reset: true
 enable_gyro: true
 enable_accel: true
@@ -42,8 +61,22 @@ unite_imu_method: 2   # 0-none, 1-copy, 2-linear_interpolation
 
 # Left off on purpose — each costs CPU on the Pi for nothing Nav2 needs here.
 enable_rgbd: false
-align_depth.enable: false
+# Aligned depth for scout_skills detect_objects: depth resampled into the color
+# frame so a detection box indexes depth directly (color intrinsics deproject).
+# The align path is per-subscriber lazy like JPEG, so the always-on cost is
+# zero; the resample runs only while a detect_objects call is subscribed.
+align_depth.enable: true
 colorizer.enable: false
-spatial_filter.enable: false
+
+# Spatial runs AFTER decimation in the wrapper pipeline, so it filters the
+# 212x120 grid: <1 ms/frame at 5 FPS. Edge-preserving speckle suppression in
+# the 0.05-0.25 m mark band = cheap false-mark rejection.
+spatial_filter.enable: true
+# Temporal stays OFF, deliberately: at 5 FPS on a moving robot, temporal
+# averaging/persistence smears moving objects into ghost points — the exact
+# failure mode STVL frustum decay tolerates.
+# Do not enable without a persistency_index=0 bench test.
 temporal_filter.enable: false
+# Hole-filling fabricates depth; fabricated points become fabricated costmap
+# marks — worse than holes for these consumers.
 hole_filling_filter.enable: false

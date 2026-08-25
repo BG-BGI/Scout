@@ -1,0 +1,6 @@
+# Off-ROS dev/CI deps: bare pytest on the dev Mac + GitHub Actions (ADR-0012/0013).
+# ruff pinned exactly — config semantics must not drift under CI.
+pytest
+numpy
+pyyaml
+ruff==0.16.3

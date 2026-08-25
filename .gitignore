@@ -13,3 +13,37 @@ maps/*.posegraph
 maps/*.data
 maps/*.pgm
 maps/*.yaml
+# Runtime state written into the tracked maps/ dir by patrol_capture and
+# scout-skills (waypoint store + AprilTag registry) — never committed.
+maps/waypoints.json
+maps/tags.db
+captures/*
+!captures/.gitkeep
+# Companion inspection recordings (.mcap runs + cloud.ply + anomalies.json)
+companion/captures/*
+!companion/captures/.gitkeep
+
+# Location sites (ADR-0023): per-location data bundles (maps, zones,
+# waypoints, tags, clutter, captures) + the active symlink. The sites/ dir is
+# tracked (sites/.gitkeep) so the fleet_status bind mount exists on a fresh
+# clone; the legacy maps/*+captures/* rules above stay for stragglers on
+# pre-sites branches. Companion side: per-site rtabmap.db under data/.
+sites/*
+!sites/.gitkeep
+companion/data/
+
+# uv/pytest local artifacts
+.venv/
+.pytest_cache/
+
+# Local profile selection (see .env.example); never committed.
+.env
+
+# traction-control Phase 0 slip capture CSVs (instrument output, not source)
+scout/slip_logs/
+companion/*.tar.gz
+
+# traction calibration CSVs (instrument output, not source)
+scout/traction_logs/
+
+*.tar.gz

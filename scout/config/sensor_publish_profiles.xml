@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Per-topic ASYNCHRONOUS publish mode for the big sensor streams (§9.5a of
+     docs/remaining-implementation-plan.md). NOT ENABLED BY DEFAULT — this is
+     a measure-first knob: record a `ros2 topic hz /scan` + pointcloud baseline
+     under load before and after.
+
+     Why: rmw_fastrtps on Humble defaults to SYNCHRONOUS publication (verified
+     against the humble branch README) — the data is sent inside the user
+     thread, so a blocking network write stalls the sensor callback that
+     published it. ASYNCHRONOUS copies to a queue and a background thread
+     sends; the sensor thread never blocks on the wire.
+
+     To enable, add to the `robot` service environment in docker-compose.yaml:
+       - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/sensor_publish_profiles.xml
+       - RMW_FASTRTPS_USE_QOS_FROM_XML=1
+     then `up -d robot`.
+
+     ⚠ Two traps (both from the Humble "Unlocking Fast DDS" tutorial):
+     - RMW_FASTRTPS_USE_QOS_FROM_XML=1 makes rmw take publishMode AND
+       historyMemoryPolicy from XML, and any profile that omits them gets the
+       Fast DDS defaults (PREALLOCATED breaks ROS 2 types) instead of the rmw
+       defaults — hence every profile below, including the is_default_profile
+       pair, states BOTH explicitly. The defaults reproduce today's rmw
+       behavior (SYNCHRONOUS + PREALLOCATED_WITH_REALLOC); only the named
+       topics change.
+     - This variable also overrides RMW_FASTRTPS_PUBLICATION_MODE — don't mix.
+
+     Does not conflict with the Discovery Server: the &base services configure
+     discovery via ROS_DISCOVERY_SERVER (env), not XML, and this file declares
+     no participant profile. super_client.xml remains a diagnostic-shell-only
+     file. -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <!-- Fallbacks reproducing rmw_fastrtps' own defaults for everything not
+       named below. -->
+  <publisher profile_name="default_publisher" is_default_profile="true">
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    <qos>
+      <publishMode><kind>SYNCHRONOUS</kind></publishMode>
+    </qos>
+  </publisher>
+  <subscriber profile_name="default_subscriber" is_default_profile="true">
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+  </subscriber>
+
+  <!-- The two multi-megabyte-per-second streams: 1590-point scans at 11.7 Hz
+       and the decimated depth cloud. -->
+  <publisher profile_name="/scan">
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+    </qos>
+  </publisher>
+  <publisher profile_name="/camera/camera/depth/color/points">
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+    </qos>
+  </publisher>
+  <publisher profile_name="/camera/camera/color/image_raw">
+    <historyMemoryPolicy>PREALLOCATED_WITH_REALLOC</historyMemoryPolicy>
+    <qos>
+      <publishMode><kind>ASYNCHRONOUS</kind></publishMode>
+    </qos>
+  </publisher>
+</profiles>

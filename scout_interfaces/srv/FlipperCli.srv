@@ -1,0 +1,19 @@
+# Run one Flipper Zero CLI command inline and return its output — the generic
+# escape hatch that keeps ir/subghz/led/vibro reachable without a new srv per
+# feature. Bounded: the node clamps timeout_s to its cli_timeout_s parameter
+# and executes in the service handler (sub-second commands only — long-running
+# commands like `rfid read` belong to the node's own scan loop, not here).
+#
+# Rejected (`success: false`) while the Flipper is disconnected or while RFID
+# scanning is enabled (the scan loop owns the serial line then).
+string command
+
+# Seconds to wait for the CLI prompt to return. <= 0 uses the node default;
+# values above the node's cli_timeout_s parameter are clamped down to it.
+float32 timeout_s
+---
+bool success
+
+# On success: the command's output, echo and prompt stripped. On failure: why
+# (not connected / busy scanning / timeout waiting for the prompt).
+string output

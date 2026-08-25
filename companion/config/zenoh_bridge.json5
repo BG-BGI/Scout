@@ -1,0 +1,54 @@
+// Companion-side zenoh-bridge-ros2dds (ADR-0022). Joins the box's own local
+// DDS graph and dials the Pi's bridge over ONE outbound TCP connection.
+// The connect endpoint is NOT in this file — compose passes it on the CLI
+// (`-e tcp/${PI_IP}:7447`) so .env interpolation works; CLI args merge with
+// this config.
+{
+  plugins: {
+    ros2dds: {
+      domain: 17,
+      // ⚠ The ROS_LOCALHOST_ONLY env var OVERRIDES this key (verified
+      // v1.10.0) — compose sets it; this key is documentation + belt.
+      ros_localhost_only: true,
+      allow: {
+        // World-model telemetry exported toward the Pi (WORLDMODEL.md gate 2).
+        // Read-only; the Pi's subscribers list must mirror this exactly.
+        publishers: [
+          "^/world/objects$",
+          "^/world/registry$",
+          // Deduped RFID tag registry from rfid_recorder (ADR-0025) — same
+          // read-only telemetry class as /world/registry.
+          "^/rfid/registry$",
+          // Same, deduped NFC tag registry from nfc_recorder (ADR-0026).
+          "^/nfc/registry$",
+        ],
+        // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
+        // the Pi bridge's `publishers` list exactly.
+        subscribers: [
+          "^/camera/camera/color/image_raw/compressed$",
+          "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$",
+          "^/camera/camera/color/camera_info$",
+          "^/odom$",
+          "^/scan$",
+          "^/tf$",
+          "^/tf_static$",
+          // Run-boundary state for the inspection recorder.
+          "^/patrol_status$",
+          "^/explore/resume$",
+          // Pose-stamped RFID reads for rfid_recorder (ADR-0025).
+          "^/rfid/reads$",
+          // Pose-stamped NFC reads for nfc_recorder (ADR-0026).
+          "^/nfc/reads$",
+        ],
+        service_servers: [],
+        service_clients: [],
+        action_servers: [],
+        action_clients: [],
+      },
+    },
+  },
+  mode: "peer",
+  scouting: {
+    multicast: { enabled: false },
+  },
+}
