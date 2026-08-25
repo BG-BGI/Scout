@@ -255,6 +255,12 @@ class FlipperNode(Node):
             self._set_state(IDLE)
             return
         self._buf += self._cli.read_available()
+        # TEMPORARY bench capture at INFO (revert to debug once the real
+        # firmware shapes are pinned in test_nfc.py): core/nfc.py's header says
+        # the scanner output format was written unverified against firmware.
+        if self._buf:
+            self.get_logger().info('%s raw buf: %r' % (self._scan_mode, self._buf),
+                                   throttle_duration_sec=2.0)
         if self._scan_mode == RFID:
             hit = parse_read_output(self._buf)
         else:
