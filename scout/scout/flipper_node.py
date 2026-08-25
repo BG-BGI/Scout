@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Flipper Zero bridge: enable-gated RFID scan loop + generic CLI passthrough.
+"""Flipper Zero bridge: enable-gated RFID/NFC scan loop + generic CLI passthrough.
 
-Design (ADR-0025, led_node conventions):
+Design (ADR-0025/0026, led_node conventions):
   * The node owns the single FlipperCli serial handle; the poll timer is the
     SOLE serial reader/writer. Services only mutate target state (the enable
-    flag) or run one short bounded command inline.
-  * RFID scanning is OFF at boot and only ever turned on by a human via
-    /flipper/rfid_enable (std_srvs/SetBool — the webui RFID panel). While
-    enabled the node loops `rfid read` (the CLI blocks alternating ASK/PSK
-    until a card or Ctrl+C); each card is stamped with the robot's map pose
-    (lookup_pose2 at detection time — null when unlocalized) and published as
-    latched JSON on /rfid/reads, where the zenoh bridge carries it to the
-    companion's rfid_recorder (the primary DB).
-  * A serial fault drops the enable flag: after an unplug the operator
-    re-enables deliberately instead of the robot resuming radio work alone.
+    flag / scan mode) or run one short bounded command inline.
+  * Scanning is OFF at boot and only ever turned on by a human via
+    /flipper/rfid_enable or /flipper/nfc_enable (std_srvs/SetBool — the webui
+    RFID and NFC panels). One serial line means the two modes are MUTUALLY
+    EXCLUSIVE: enabling one while the other is on is rejected.
+      - RFID: loop `rfid read` (flat command, blocks ASK/PSK until a card).
+      - NFC: the `nfc` command opens a sub-shell, so the loop is `nfc` (enter
+        once) then `scanner` (each cycle), and `exit` on disable to return to
+        the top-level `>:` (ADR-0026, core/nfc.py).
+    Each read is stamped with the robot's map pose (lookup_pose2 at detection
+    time — null when unlocalized) and published as latched JSON on /rfid/reads
+    or /nfc/reads, where the zenoh bridge carries it to the companion recorder
+    (the primary DB).
+  * A serial fault drops the enable flag AND the sub-shell state: after an
+    unplug the operator re-enables deliberately instead of the robot resuming
+    radio work alone.
   * Flipper absent is normal (tier 2): the node idles in DISCONNECTED with a
     throttled warn and keeps retrying; the robot stays fully drivable.
 """
@@ -28,8 +34,13 @@ from scout_interfaces.srv import FlipperCli as FlipperCliSrv
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
+from scout.core.nfc import NFC_ENTER, NFC_EXIT, NFC_SCAN, parse_scan_output
 from scout.core.rfid import PROMPT, parse_read_output, strip_echo
-from scout.core.status import format_flipper_status, format_rfid_read
+from scout.core.status import (
+    format_flipper_status,
+    format_nfc_read,
+    format_rfid_read,
+)
 from scout.flipper_cli import FlipperCli
 from scout.node_util import lookup_pose2, run_node
 from scout.qos import LATCHED_HISTORY_QOS, LATCHED_QOS
@@ -37,6 +48,9 @@ from scout.qos import LATCHED_HISTORY_QOS, LATCHED_QOS
 DISCONNECTED = 'disconnected'
 IDLE = 'idle'
 SCANNING = 'scanning'
+
+RFID = 'rfid'
+NFC = 'nfc'
 
 
 class FlipperNode(Node):
@@ -60,6 +74,8 @@ class FlipperNode(Node):
 
         self._state = DISCONNECTED
         self._enabled = False
+        self._scan_mode = RFID         # which radio the loop drives when enabled
+        self._in_nfc_shell = False     # inside the Flipper `nfc` sub-shell
         self._last_error = ''
         self._buf = ''
         self._last_connect_attempt = 0.0
@@ -72,19 +88,27 @@ class FlipperNode(Node):
                                                  LATCHED_QOS)
         self._reads_pub = self.create_publisher(String, 'rfid/reads',
                                                 LATCHED_HISTORY_QOS)
-        self.create_service(SetBool, 'flipper/rfid_enable', self._on_enable)
+        self._nfc_reads_pub = self.create_publisher(String, 'nfc/reads',
+                                                    LATCHED_HISTORY_QOS)
+        self.create_service(SetBool, 'flipper/rfid_enable',
+                            lambda req, resp: self._on_enable(RFID, req, resp))
+        self.create_service(SetBool, 'flipper/nfc_enable',
+                            lambda req, resp: self._on_enable(NFC, req, resp))
         self.create_service(FlipperCliSrv, 'flipper/cli', self._on_cli)
         self.create_timer(1.0 / float(p('poll_hz').value), self._tick)
 
         self._publish_status()
         self.get_logger().info(
-            'flipper_node up on %s: RFID scanning DISABLED until '
-            '/flipper/rfid_enable (webui RFID panel)' % str(p('port').value))
+            'flipper_node up on %s: RFID/NFC scanning DISABLED until '
+            '/flipper/rfid_enable or /flipper/nfc_enable (webui panels)'
+            % str(p('port').value))
 
     # --- status ---------------------------------------------------------------
     def _publish_status(self):
         self._status_pub.publish(String(data=format_flipper_status(
-            self._state, self._cli.connected, self._enabled,
+            self._state, self._cli.connected,
+            self._enabled and self._scan_mode == RFID,
+            self._enabled and self._scan_mode == NFC,
             self._last_error)))
 
     def _set_state(self, state, error=None):
@@ -95,27 +119,46 @@ class FlipperNode(Node):
             self._publish_status()
 
     def _fault(self, exc, where):
-        self.get_logger().warn('serial fault (%s): %s — disconnected, RFID '
-                               'disabled until re-enabled' % (where, exc))
+        self.get_logger().warn('serial fault (%s): %s — disconnected, '
+                               'scanning disabled until re-enabled'
+                               % (where, exc))
         try:
             self._cli.close()
         except OSError:
             pass
         self._enabled = False
+        self._in_nfc_shell = False
         self._buf = ''
         self._set_state(DISCONNECTED, error='%s: %s' % (where, exc))
 
     # --- services (mutate state / short bounded I/O only) ----------------------
-    def _on_enable(self, request, response):
-        if request.data and not self._cli.connected:
-            response.success = False
-            response.message = 'flipper not connected'
-            return response
-        self._enabled = bool(request.data)
+    def _on_enable(self, mode, request, response):
+        """Shared handler for /flipper/rfid_enable and /flipper/nfc_enable.
+        One serial line => the two modes are mutually exclusive; enabling one
+        while the OTHER is scanning is rejected (disable it first)."""
+        other = NFC if mode == RFID else RFID
+        if request.data:
+            if not self._cli.connected:
+                response.success = False
+                response.message = 'flipper not connected'
+                return response
+            if self._enabled and self._scan_mode == other:
+                response.success = False
+                response.message = ('busy: %s scanning enabled — disable it '
+                                    'first' % other.upper())
+                return response
+            self._scan_mode = mode
+            self._enabled = True
+        else:
+            # A disable only clears the flag if it names the active mode, so a
+            # stale RFID-disable cannot silently stop an NFC scan.
+            if self._enabled and self._scan_mode == mode:
+                self._enabled = False
         self._publish_status()
         response.success = True
-        response.message = ('RFID scanning enabled'
-                            if self._enabled else 'RFID scanning disabled')
+        response.message = ('%s scanning enabled' % mode.upper()
+                            if (self._enabled and self._scan_mode == mode)
+                            else '%s scanning disabled' % mode.upper())
         self.get_logger().info(response.message)
         return response
 
@@ -126,7 +169,8 @@ class FlipperNode(Node):
             return response
         if self._enabled or self._state == SCANNING:
             response.success = False
-            response.output = 'busy: RFID scanning enabled — disable it first'
+            response.output = ('busy: %s scanning enabled — disable it first'
+                               % self._scan_mode.upper())
             return response
         timeout = request.timeout_s if request.timeout_s > 0.0 else self._cli_timeout
         timeout = min(timeout, self._cli_timeout)
@@ -188,24 +232,39 @@ class FlipperNode(Node):
 
     def _tick_idle(self):
         self._cli.read_available()        # keep the buffer drained
-        if self._enabled:
-            self._buf = ''
+        if not self._enabled:
+            return
+        self._buf = ''
+        if self._scan_mode == RFID:
             self._cli.send_line('rfid read')
-            self._set_state(SCANNING)
+        else:                             # NFC: enter the sub-shell once, then
+            if not self._in_nfc_shell:    # run `scanner` each cycle within it
+                self._cli.send_line(NFC_ENTER)
+                self._in_nfc_shell = True
+            self._cli.send_line(NFC_SCAN)
+        self._set_state(SCANNING)
 
     def _tick_scanning(self):
         if not self._enabled:
             self._cli.send_ctrl_c()
             self._cli.drain_to_prompt(self._cli_timeout)
+            if self._scan_mode == NFC and self._in_nfc_shell:
+                self._cli.send_line(NFC_EXIT)   # leave sub-shell -> top-level
+                self._cli.drain_to_prompt(self._cli_timeout)
+                self._in_nfc_shell = False
             self._set_state(IDLE)
             return
         self._buf += self._cli.read_available()
-        hit = parse_read_output(self._buf)
+        if self._scan_mode == RFID:
+            hit = parse_read_output(self._buf)
+        else:
+            hit = parse_scan_output(self._buf)
         if hit is None:
             return
         self._publish_read(hit)
-        # Restart the read: back to the prompt, then IDLE re-arms next tick
-        # (still enabled), so the loop keeps scanning until disabled.
+        # Restart the read: Ctrl+C back to the prompt (top-level for RFID, the
+        # nfc> sub-shell prompt for NFC — we stay in the shell), then IDLE
+        # re-arms next tick (still enabled) so the loop keeps scanning.
         self._cli.send_ctrl_c()
         self._cli.drain_to_prompt(self._cli_timeout)
         self._buf = ''
@@ -220,16 +279,22 @@ class FlipperNode(Node):
 
         pose = lookup_pose2(self._tf_buffer, 'map', 'base_link')
         if pose is None:
-            self.get_logger().warn('RFID read without map localization — '
-                                   'pose recorded as null',
+            self.get_logger().warn('%s read without map localization — pose '
+                                   'recorded as null'
+                                   % self._scan_mode.upper(),
                                    throttle_duration_sec=10.0)
         stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-        payload = format_rfid_read(hit['protocol'], hit['data_hex'], pose,
-                                   stamp, str(uuid.uuid4()))
-        self._reads_pub.publish(String(data=payload))
-        self.get_logger().info('RFID read: %s %s pose=%s'
-                               % (hit['protocol'], hit['data_hex'],
-                                  'null' if pose is None else
+        if self._scan_mode == RFID:
+            payload = format_rfid_read(hit['protocol'], hit['data_hex'], pose,
+                                       stamp, str(uuid.uuid4()))
+            self._reads_pub.publish(String(data=payload))
+        else:
+            payload = format_nfc_read(hit['protocol'], hit['data_hex'], pose,
+                                      stamp, str(uuid.uuid4()))
+            self._nfc_reads_pub.publish(String(data=payload))
+        self.get_logger().info('%s read: %s %s pose=%s'
+                               % (self._scan_mode.upper(), hit['protocol'],
+                                  hit['data_hex'], 'null' if pose is None else
                                   '(%.2f, %.2f)' % (pose[0], pose[1])))
 
     def shutdown(self):

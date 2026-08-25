@@ -926,6 +926,100 @@ async def list_rfid_tags() -> dict:
     return {"count": len(tags), "tags": tags}
 
 
+# --- NFC (Flipper Zero, ADR-0026) --------------------------------------------
+#
+# Mirror of the RFID tools for the Flipper's 13.56 MHz HF radio. flipper_node
+# loops the `nfc`/`scanner` sub-shell ONLY while a human has enabled scanning in
+# the webui NFC panel (/flipper/nfc_enable). One serial line => NFC and RFID
+# scanning are mutually exclusive. Reads land pose-stamped on /nfc/reads (UID in
+# `data_hex`); the companion's nfc_recorder is the primary DB and republishes
+# the deduped /nfc/registry back across the zenoh bridge.
+
+NFC_READS_TOPIC = "/nfc/reads"
+NFC_REGISTRY_TOPIC = "/nfc/registry"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def wait_nfc_read(timeout_s: float = 30.0) -> dict:
+    """Wait for the NEXT NFC tag read from the Flipper Zero and return it
+    (protocol/tech, data_hex UID, map pose, stamp). Does NOT start scanning —
+    the scan loop is enabled by a human in the webui NFC panel, never by tools;
+    if scanning is disabled this fails immediately with instructions instead
+    of waiting. Compose with go_to: drive to the spot, then call this and
+    present the tag to the Flipper's back. Returns within timeout_s or reports
+    that nothing was read."""
+    timeout_s = max(1.0, min(timeout_s, 120.0))
+    async with RosBridge() as rb:
+        status_msg = await rb.subscribe_once(
+            RFID_STATUS_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+        if status_msg is None:
+            raise ToolError(
+                "flipper_node silent (/flipper/status) — robot service down "
+                "or node not launched"
+            )
+        status = json.loads(status_msg["data"])
+        if not status.get("connected"):
+            raise ToolError("Flipper Zero not connected (USB)")
+        if not status.get("nfc_enabled"):
+            raise ToolError(
+                "NFC scanning is disabled — enable it in the webui NFC "
+                "panel first (manual gate, ADR-0026)"
+            )
+        # The latched depth-50 window replays PAST reads on subscribe; swallow
+        # that backlog first, then wait for a read_id we have not seen.
+        await rb.subscribe(NFC_READS_TOPIC, "std_msgs/msg/String")
+        seen: set = set()
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        settling = True
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return {
+                    "status": "no tag read within %.0f s (scanning stays "
+                    "enabled)" % timeout_s,
+                    "read": None,
+                }
+            msg = await rb.recv_msg(
+                NFC_READS_TOPIC, timeout=0.5 if settling else remaining
+            )
+            if msg is None:
+                settling = False  # replay backlog drained; now block for new
+                continue
+            read = json.loads(msg["data"])
+            if settling:
+                seen.add(read.get("read_id"))
+                continue
+            if read.get("read_id") not in seen:
+                return {"status": "read", "read": read}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_nfc_tags() -> dict:
+    """Every NFC tag Scout has ever read at this site, deduplicated by UID with
+    hit counts, last-seen time, and the map pose of the most recent localized
+    read (hand pose straight to go_to to return to a tag). Served from the
+    companion's persistent per-site DB via the latched /nfc/registry; empty
+    with a note when the companion is offline or no reads exist yet."""
+    async with RosBridge() as rb:
+        msg = await rb.subscribe_once(
+            NFC_REGISTRY_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+    if msg is None:
+        return {
+            "status": "nfc registry offline (companion down, /nfc/registry "
+            "not bridged, or no reads recorded yet)",
+            "count": 0,
+            "tags": [],
+        }
+    try:
+        payload = json.loads(msg["data"])
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"malformed /nfc/registry payload: {e}") from e
+    tags = payload.get("tags", [])
+    return {"count": len(tags), "tags": tags}
+
+
 # --- AprilTags ---------------------------------------------------------------
 #
 # Registry (sqlite, /maps/tags.db) + standoff geometry live in tags.py;

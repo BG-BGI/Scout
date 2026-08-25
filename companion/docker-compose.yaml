@@ -152,7 +152,10 @@ services:
   # /rfid/reads (pose-stamped JSON, latched depth-50 for outage replay) into
   # /sites/active/rfid.db (per-site: a pose only means anything on its map)
   # and republishes the deduped /rfid/registry back across the bridge for the
-  # webui/MCP. Base companion image + bind-mounted script — no new image.
+  # webui/MCP. Base companion image + bind-mounted script — no new image. The
+  # script (rfid/recorder.py) is now the SHARED tag recorder; db/topics default
+  # to the RFID values, and the node name is remapped so it and nfc_recorder
+  # (same script, NFC params) do not collide on the DDS graph.
   rfid_recorder:
     <<: *companion
     depends_on:
@@ -161,7 +164,22 @@ services:
       - ./rfid:/rfid:ro
       # Writable — this service owns rfid.db (rtabmap owns rtabmap.db).
       - ./data/sites:/sites
-    command: python3 /rfid/recorder.py
+    command: python3 /rfid/recorder.py --ros-args -r __node:=rfid_recorder
+
+  # NFC read recorder (ADR-0026) — the PRIMARY NFC tag DB. Same shared script
+  # as rfid_recorder, pointed at nfc.db and the /nfc/reads,/nfc/registry topics.
+  nfc_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./rfid:/rfid:ro
+      - ./data/sites:/sites   # writable — this service owns nfc.db
+    command: >
+      python3 /rfid/recorder.py --ros-args -r __node:=nfc_recorder
+      -p db_path:=/sites/active/nfc.db
+      -p reads_topic:=/nfc/reads
+      -p registry_topic:=/nfc/registry
 
   # Batch anomaly captioner (inspection F2) — run-on-demand, NOT a daemon:
   #   docker compose run --rm captioner /captures/inspection/<UTC>
@@ -194,7 +212,7 @@ services:
       # switch; 'plain' scaffold = bare per-site dirs (just rtabmap.db).
       - SITES_DIR=/sites
       - SITE_SCAFFOLD=plain
-      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder
+      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder,nfc_recorder
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro

@@ -19,6 +19,8 @@
           // Deduped RFID tag registry from rfid_recorder (ADR-0025) — same
           // read-only telemetry class as /world/registry.
           "^/rfid/registry$",
+          // Same, deduped NFC tag registry from nfc_recorder (ADR-0026).
+          "^/nfc/registry$",
         ],
         // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
         // the Pi bridge's `publishers` list exactly.
@@ -35,6 +37,8 @@
           "^/explore/resume$",
           // Pose-stamped RFID reads for rfid_recorder (ADR-0025).
           "^/rfid/reads$",
+          // Pose-stamped NFC reads for nfc_recorder (ADR-0026).
+          "^/nfc/reads$",
         ],
         service_servers: [],
         service_clients: [],

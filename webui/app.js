@@ -941,6 +941,53 @@ new ROSLIB.Topic({
   while (rfidList.children.length > 20) rfidList.removeChild(rfidList.lastChild);
 });
 
+// --- NFC (Flipper Zero) ------------------------------------------------------------
+// Mirror of the RFID panel for the 13.56 MHz radio (ADR-0026). Same manual
+// gate (/flipper/nfc_enable, SetBool); the badge renders from the node's
+// latched /flipper/status (nfc_enabled) and the list replays /nfc/reads. NFC
+// and RFID are mutually exclusive on the one serial line — enabling one while
+// the other is on is rejected by the node (shown in the result line).
+const nfcState = document.getElementById('nfc-state');
+const nfcList = document.getElementById('nfc-list');
+const nfcResult = document.getElementById('nfc-result');
+const nfcEnableSrv = new ROSLIB.Service({
+  ros, name: '/flipper/nfc_enable', serviceType: 'std_srvs/srv/SetBool',
+});
+
+function nfcSetEnabled(on) {
+  nfcEnableSrv.callService(new ROSLIB.ServiceRequest({ data: on }),
+    (res) => { nfcResult.textContent = res.message; },
+    (err) => { nfcResult.textContent = 'error: ' + err; });
+}
+document.getElementById('nfc-enable').addEventListener('click', () => nfcSetEnabled(true));
+document.getElementById('nfc-disable').addEventListener('click', () => nfcSetEnabled(false));
+
+new ROSLIB.Topic({
+  ros, name: '/flipper/status', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let s;
+  try { s = JSON.parse(msg.data); } catch (e) { return; }
+  nfcState.textContent = !s.connected ? 'no flipper'
+    : s.nfc_enabled ? 'scanning' : 'disabled';
+  nfcState.classList.toggle('bad', !s.connected);
+});
+
+const nfcSeen = new Set();   // read_ids already rendered (latch replays)
+new ROSLIB.Topic({
+  ros, name: '/nfc/reads', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let r;
+  try { r = JSON.parse(msg.data); } catch (e) { return; }
+  if (nfcSeen.has(r.read_id)) return;
+  nfcSeen.add(r.read_id);
+  const li = document.createElement('li');
+  const where = r.pose ? `(${r.pose.x.toFixed(2)}, ${r.pose.y.toFixed(2)})` : 'no map pose';
+  const when = (r.stamp_utc || '').replace(/^.*T/, '').replace(/\..*$/, '');
+  li.textContent = `${r.protocol} ${r.data_hex} · ${where} · ${when}`;
+  nfcList.prepend(li);
+  while (nfcList.children.length > 20) nfcList.removeChild(nfcList.lastChild);
+});
+
 // --- system panel: host vitals + per-container controls ---------------------------
 // fleet_status (docker/fleet-status) is a standalone REST backend, not a ROS node —
 // it holds the Docker socket, so it runs outside rosbridge entirely. Polls every 30s;

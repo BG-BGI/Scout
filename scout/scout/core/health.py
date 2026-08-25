@@ -83,11 +83,13 @@ def bypass_level(bypassed, zone_mode):
     return OK, 'collision: guarded (%s zone)' % zone_mode
 
 
-def flipper_level(connected, rfid_enabled, last_error):
+def flipper_level(connected, rfid_enabled, last_error, nfc_enabled=False):
     """flipper_node's latched /flipper/status. No Flipper attached is NORMAL
-    (tier-2 peripheral) — only a fault while one was in use is WARN."""
+    (tier-2 peripheral) — only a fault while one was in use is WARN. RFID and
+    NFC are mutually exclusive; either one on reads as 'scanning'."""
     if connected:
-        return OK, ('flipper: scanning' if rfid_enabled else 'flipper: idle')
+        return OK, ('flipper: scanning' if (rfid_enabled or nfc_enabled)
+                    else 'flipper: idle')
     if last_error:
         return WARN, 'flipper: disconnected (%s)' % last_error
     return OK, 'flipper: not attached'

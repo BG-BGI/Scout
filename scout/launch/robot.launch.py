@@ -436,11 +436,12 @@ def generate_launch_description():
             respawn_delay=2.0,
         ),
 
-        # Flipper Zero bridge (ADR-0025): enable-gated RFID scan loop
-        # (/flipper/rfid_enable from the webui RFID panel) + /flipper/cli
-        # passthrough. Flipper absent is normal — the node idles and retries.
-        # respawn: USB unplug/replug is recoverable; loss degrades RFID only,
-        # the robot stays drivable (ADR-0015 tier 2).
+        # Flipper Zero bridge (ADR-0025/0026): enable-gated RFID + NFC scan
+        # loops (/flipper/rfid_enable, /flipper/nfc_enable from the webui
+        # panels — mutually exclusive) + /flipper/cli passthrough. Flipper
+        # absent is normal — the node idles and retries. respawn: USB
+        # unplug/replug is recoverable; loss degrades RFID/NFC only, the robot
+        # stays drivable (ADR-0015 tier 2).
         Node(
             package='scout',
             executable='flipper_node',
@@ -449,8 +450,10 @@ def generate_launch_description():
             remappings=[
                 ('flipper/status', '/flipper/status'),
                 ('flipper/rfid_enable', '/flipper/rfid_enable'),
+                ('flipper/nfc_enable', '/flipper/nfc_enable'),
                 ('flipper/cli', '/flipper/cli'),
                 ('rfid/reads', '/rfid/reads'),
+                ('nfc/reads', '/nfc/reads'),
             ],
             respawn=True,
             respawn_delay=2.0,

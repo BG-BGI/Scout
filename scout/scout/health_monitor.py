@@ -214,7 +214,7 @@ class HealthMonitor(Node):
             f = self._flipper
             lvl, msg = health.flipper_level(
                 f.get('connected', False), f.get('rfid_enabled', False),
-                f.get('last_error', ''))
+                f.get('last_error', ''), f.get('nfc_enabled', False))
         return self._status('flipper', lvl, msg, [])
 
     def _cliff_status(self):

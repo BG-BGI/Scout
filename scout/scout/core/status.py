@@ -5,7 +5,7 @@ stringly-typed std_msgs/String contract (deliberately NOT .msg — ADR-0012):
 
   * `|`-delimited grammars: /nav_state (nav_manager), /patrol_status
     (patrol_capture) — parsed by webui/app.js and companion/inspection.
-  * JSON payloads: /flipper/status, /rfid/reads (flipper_node),
+  * JSON payloads: /flipper/status, /rfid/reads, /nfc/reads (flipper_node),
     /traction/status (traction_monitor) — parsed by webui/app.js,
     scout-skills server.py and companion/rfid/recorder.py.
   * /roboclaw_status (driver-owned JSON) — parse side only, three consumers.
@@ -78,20 +78,23 @@ def parse_patrol_status(data):
 # deterministic and SC9 can assert exact strings.
 
 
-def format_flipper_status(state, connected, rfid_enabled, last_error=''):
-    """/flipper/status (flipper_node, ADR-0025), latched. Consumers: the webui
-    RFID badge (connected/rfid_enabled) and scout-skills' wait_rfid_read gate
-    (rfid_enabled)."""
+def format_flipper_status(state, connected, rfid_enabled, nfc_enabled,
+                          last_error=''):
+    """/flipper/status (flipper_node, ADR-0025/0026), latched. Consumers: the
+    webui RFID + NFC badges (connected/rfid_enabled/nfc_enabled) and
+    scout-skills' wait_rfid_read/wait_nfc_read gates. rfid_enabled and
+    nfc_enabled are mutually exclusive (one serial line, one scan mode)."""
     return json.dumps({
         'state': state,
         'connected': bool(connected),
         'rfid_enabled': bool(rfid_enabled),
+        'nfc_enabled': bool(nfc_enabled),
         'last_error': last_error,
     }, sort_keys=True)
 
 
 def parse_flipper_status(data):
-    """dict with keys state/connected/rfid_enabled/last_error."""
+    """dict with keys state/connected/rfid_enabled/nfc_enabled/last_error."""
     return json.loads(data)
 
 
@@ -110,6 +113,26 @@ def format_rfid_read(protocol, data_hex, pose, stamp_utc, read_id):
 
 
 def parse_rfid_read(data):
+    """dict with keys read_id/protocol/data_hex/pose/stamp_utc."""
+    return json.loads(data)
+
+
+def format_nfc_read(protocol, data_hex, pose, stamp_utc, read_id):
+    """/nfc/reads (flipper_node -> zenoh -> companion nfc_recorder, ADR-0026).
+    Structural mirror of format_rfid_read; `data_hex` carries the tag UID and
+    `protocol` the HF tech (e.g. 'MIFARE Classic 1K'). `pose` is (x, y, yaw) or
+    None (no map localization at read time — degrade, don't break)."""
+    return json.dumps({
+        'read_id': read_id,
+        'protocol': protocol,
+        'data_hex': data_hex,
+        'pose': (None if pose is None
+                 else {'x': pose[0], 'y': pose[1], 'yaw': pose[2]}),
+        'stamp_utc': stamp_utc,
+    }, sort_keys=True)
+
+
+def parse_nfc_read(data):
     """dict with keys read_id/protocol/data_hex/pose/stamp_utc."""
     return json.loads(data)
 

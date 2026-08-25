@@ -33,13 +33,16 @@ class FlipperCli:
         return self._ser is not None
 
     def open(self, settle_s=2.0):
-        """Open the port and return it to an idle prompt: Ctrl+C + CR recovers
-        a Flipper left mid-`rfid read` by a node crash, then the output is
-        drained until the prompt appears (bounded by settle_s). Returns True
-        when the prompt was seen — False means something answered the port
-        but not like a Flipper shell."""
+        """Open the port and return it to the top-level idle prompt: Ctrl+C
+        aborts a `rfid read`/`scanner` a node crash left running, then `exit`
+        leaves the `nfc` sub-shell if the crash was mid-NFC (harmless at the
+        top level — an unknown command that still returns to `>:`), and the
+        output is drained until the prompt appears (bounded by settle_s).
+        Returns True when the prompt was seen — False means something answered
+        the port but not like a Flipper shell.
+        ⚠ Bench-verify the `exit`-from-sub-shell recovery on real firmware."""
         self._ser = serial.Serial(self._port, self._baud, timeout=0)
-        self._ser.write(CTRL_C + b'\r')
+        self._ser.write(CTRL_C + b'exit\r')
         return self.drain_to_prompt(settle_s)
 
     def drain_to_prompt(self, timeout_s):

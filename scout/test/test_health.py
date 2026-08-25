@@ -65,6 +65,9 @@ def test_bypass_levels():
 def test_flipper_levels():
     assert h.flipper_level(True, True, '')[0] == h.OK
     assert h.flipper_level(True, False, '')[0] == h.OK
+    assert h.flipper_level(True, False, '', nfc_enabled=True) == (
+        h.OK, 'flipper: scanning')                            # NFC counts too
+    assert h.flipper_level(True, False, '') == (h.OK, 'flipper: idle')
     assert h.flipper_level(False, False, '')[0] == h.OK      # absent = normal
     lvl, msg = h.flipper_level(False, False, 'cli: unplugged')
     assert lvl == h.WARN and 'unplugged' in msg

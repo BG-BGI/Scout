@@ -61,6 +61,21 @@ def test_rfid_registry_qos_matches_pi_latched():
         'the copy')
 
 
+def test_nfc_recorder_reuses_shared_script_with_nfc_params():
+    # rfid/recorder.py is the SHARED tag recorder (ADR-0026); the nfc_recorder
+    # service must run that same script with the three NFC params, so its QoS
+    # (asserted above) and schema are literally the same as RFID's. Freeze the
+    # wiring so a compose edit cannot silently point NFC at the RFID DB/topics.
+    compose = (COMPANION / 'docker-compose.yaml').read_text()
+    assert 'nfc_recorder:' in compose, 'companion lost the nfc_recorder service'
+    for token in ('/rfid/recorder.py', '__node:=nfc_recorder',
+                  'db_path:=/sites/active/nfc.db', 'reads_topic:=/nfc/reads',
+                  'registry_topic:=/nfc/registry'):
+        assert token in compose, (
+            'nfc_recorder service lost %r — its wiring is frozen (ADR-0026)'
+            % token)
+
+
 def test_site_name_regex_copy_is_identical():
     m = re.search(r'SITE_NAME_RE = re\.compile\(r"([^"]+)"\)',
                   INSPECTION_RECORDER.read_text())

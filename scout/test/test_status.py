@@ -75,16 +75,16 @@ def test_nav_busy_states_literal_copy_in_webui():
 
 
 def test_flipper_status_exact_string():
-    assert s.format_flipper_status('idle', True, False) == (
-        '{"connected": true, "last_error": "", "rfid_enabled": false, '
-        '"state": "idle"}')
+    assert s.format_flipper_status('idle', True, False, False) == (
+        '{"connected": true, "last_error": "", "nfc_enabled": false, '
+        '"rfid_enabled": false, "state": "idle"}')
 
 
 def test_flipper_status_round_trip():
     d = s.parse_flipper_status(
-        s.format_flipper_status('scanning', True, True, 'boom'))
-    assert d == {'state': 'scanning', 'connected': True,
-                 'rfid_enabled': True, 'last_error': 'boom'}
+        s.format_flipper_status('scanning', True, True, False, 'boom'))
+    assert d == {'state': 'scanning', 'connected': True, 'rfid_enabled': True,
+                 'nfc_enabled': False, 'last_error': 'boom'}
 
 
 def test_rfid_read_exact_string():
@@ -98,6 +98,22 @@ def test_rfid_read_exact_string():
 def test_rfid_read_null_pose_round_trip():
     d = s.parse_rfid_read(s.format_rfid_read('EM4100', 'AABB', None, 't', 'id'))
     assert d == {'read_id': 'id', 'protocol': 'EM4100', 'data_hex': 'AABB',
+                 'pose': None, 'stamp_utc': 't'}
+
+
+def test_nfc_read_exact_string():
+    # Structural mirror of format_rfid_read; data_hex carries the tag UID.
+    assert s.format_nfc_read('MIFARE Classic 1K', '04A22B5C',
+                             (1.5, -0.25, 0.79),
+                             '2026-08-24T15:04:05Z', 'abc-123') == (
+        '{"data_hex": "04A22B5C", "pose": {"x": 1.5, "y": -0.25, '
+        '"yaw": 0.79}, "protocol": "MIFARE Classic 1K", "read_id": "abc-123", '
+        '"stamp_utc": "2026-08-24T15:04:05Z"}')
+
+
+def test_nfc_read_null_pose_round_trip():
+    d = s.parse_nfc_read(s.format_nfc_read('NTAG215', 'AABB', None, 't', 'id'))
+    assert d == {'read_id': 'id', 'protocol': 'NTAG215', 'data_hex': 'AABB',
                  'pose': None, 'stamp_utc': 't'}
 
 

@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""RFID read recorder (companion) — the primary tag DB (ADR-0025).
+"""Tag read recorder (companion) — the primary tag DB (ADR-0025/0026).
 
-Subscribes the bridged /rfid/reads (pose-stamped JSON from the Pi's
+Shared by two services: `rfid_recorder` (/rfid/reads -> /sites/active/rfid.db
+-> /rfid/registry) and `nfc_recorder` (/nfc/reads -> nfc.db -> /nfc/registry).
+The three names are ROS params (db_path, reads_topic, registry_topic); the
+defaults are the RFID values, so the rfid_recorder service runs it unchanged.
+The wire schema, dedup and QoS are identical for both radios — /nfc/reads
+carries the tag UID in the same `data_hex` field (core.status.format_nfc_read
+mirrors format_rfid_read), so one recorder body serves both.
+
+Subscribes the bridged reads topic (pose-stamped JSON from the Pi's
 flipper_node, latched depth-50 so a recorder outage replays recent reads) and
-appends every read to a per-site sqlite DB at /sites/active/rfid.db. After
-each insert it republishes /rfid/registry — a deduped latched tag table (one
-row per data_hex, last non-null pose, hit count) that crosses the bridge back
-to the Pi, which is how the webui and MCP list tags without any HTTP surface.
+appends every read to a per-site sqlite DB. After each insert it republishes
+the registry topic — a deduped latched tag table (one row per data_hex, last
+non-null pose, hit count) that crosses the bridge back to the Pi, which is how
+the webui and MCP list tags without any HTTP surface.
 
 Storage follows the tags.db pattern (docker/scout-skills/tags.py): sqlite
 opened per operation, CREATE TABLE IF NOT EXISTS every time, no migrations —
@@ -30,7 +38,11 @@ from rclpy.qos import (
 )
 from std_msgs.msg import String
 
-DB_PATH = Path("/sites/active/rfid.db")
+# Defaults keep the rfid_recorder service (command unchanged) on RFID; the
+# nfc_recorder service overrides all three via --ros-args -p.
+DEFAULT_DB_PATH = "/sites/active/rfid.db"
+DEFAULT_READS_TOPIC = "/rfid/reads"
+DEFAULT_REGISTRY_TOPIC = "/rfid/registry"
 
 # Must match the Pi's LATCHED_HISTORY_QOS (scout/scout/qos.py): reliable +
 # transient_local so the latched replay window arrives on a late join.
@@ -59,16 +71,16 @@ CREATE INDEX IF NOT EXISTS idx_reads_hex ON reads(data_hex);
 """
 
 
-def _connect():
-    con = sqlite3.connect(DB_PATH)
+def _connect(db_path):
+    con = sqlite3.connect(db_path)
     con.executescript(SCHEMA)
     return con
 
 
-def insert_read(read: dict) -> bool:
+def insert_read(db_path, read: dict) -> bool:
     """INSERT OR IGNORE one read; True when the row is new."""
     pose = read.get("pose") or {}
-    with _connect() as con:
+    with _connect(db_path) as con:
         cur = con.execute(
             "INSERT OR IGNORE INTO reads"
             "(read_id, protocol, data_hex, map_x, map_y, map_yaw,"
@@ -80,10 +92,10 @@ def insert_read(read: dict) -> bool:
         return cur.rowcount > 0
 
 
-def registry() -> dict:
+def registry(db_path) -> dict:
     """Deduped tag table: one entry per data_hex with hit count, last seen,
     and the most recent NON-NULL pose (a localized read beats a null one)."""
-    with _connect() as con:
+    with _connect(db_path) as con:
         rows = con.execute(
             "SELECT data_hex, protocol, COUNT(*), MAX(stamp_utc) "
             "FROM reads GROUP BY data_hex").fetchall()
@@ -106,20 +118,26 @@ def registry() -> dict:
                            reverse=True)}
 
 
-class RfidRecorder(Node):
+class TagReadRecorder(Node):
     def __init__(self):
-        super().__init__("rfid_recorder")
-        self._registry_pub = self.create_publisher(String, "/rfid/registry",
-                                                   REGISTRY_QOS)
-        self.create_subscription(String, "/rfid/reads", self._on_read,
-                                 READS_QOS)
+        super().__init__("tag_read_recorder")
+        self._db_path = Path(self.declare_parameter(
+            "db_path", DEFAULT_DB_PATH).value)
+        reads_topic = self.declare_parameter(
+            "reads_topic", DEFAULT_READS_TOPIC).value
+        registry_topic = self.declare_parameter(
+            "registry_topic", DEFAULT_REGISTRY_TOPIC).value
+        self._registry_pub = self.create_publisher(String, registry_topic,
+                                                    REGISTRY_QOS)
+        self.create_subscription(String, reads_topic, self._on_read, READS_QOS)
         self._publish_registry()
-        self.get_logger().info("rfid_recorder up: %s" % DB_PATH)
+        self.get_logger().info("tag_read_recorder up: %s <- %s -> %s"
+                               % (self._db_path, reads_topic, registry_topic))
 
     def _on_read(self, msg):
         try:
             read = json.loads(msg.data)
-            new = insert_read(read)
+            new = insert_read(self._db_path, read)
         except (ValueError, KeyError, sqlite3.Error, OSError) as exc:
             # OSError covers a missing/broken /sites/active symlink; never die
             # over one message — the latched window redelivers on restart.
@@ -133,14 +151,15 @@ class RfidRecorder(Node):
 
     def _publish_registry(self):
         try:
-            self._registry_pub.publish(String(data=json.dumps(registry())))
+            self._registry_pub.publish(
+                String(data=json.dumps(registry(self._db_path))))
         except (sqlite3.Error, OSError) as exc:
             self.get_logger().error("registry publish failed: %s" % exc)
 
 
 def main():
     rclpy.init()
-    node = RfidRecorder()
+    node = TagReadRecorder()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
