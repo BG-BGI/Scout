@@ -72,6 +72,8 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
+from scout.core.collision import desired_zone_state, zone_mode
+from scout.core.latch import Latch
 from scout.node_util import run_node
 from scout.qos import LATCHED_QOS
 
@@ -99,7 +101,7 @@ class CollisionPolygonManager(Node):
         p = self.declare_parameter
         self._max_duration = float(
             p('bypass_max_duration_s', 30.0).value)
-        # 0.8/0.4 (raised from 0.15/0.05 on 2026-08-17): path-following curves
+        # 0.8/0.4 (raised from 0.15/0.05, 2026-08-17): path-following curves  # noqa: E501  profile-exempt: a date, not the battery floor
         # command modest yaw (<0.5 rad/s) while driving straight PAST a side
         # obstacle; at the old 0.15 enter-threshold that armed the WIDE turn
         # polygon (±0.21 side), which then tripped a stop on the side object
@@ -120,10 +122,12 @@ class CollisionPolygonManager(Node):
 
         self._bypassed = False
         self._engaged_at = None
-        self._turning = False          # current direction-derived decision
-        self._reversing = False        # commanded vx is meaningfully negative
-        self._below_exit_since = None  # monotonic time, turn exit hysteresis
-        self._rev_exit_since = None    # monotonic time, reverse exit hysteresis
+        # The shared hysteresis latch (core.latch) — enter immediately above
+        # the enter threshold, leave only after the exit dwell below the exit
+        # threshold. Turn and reverse are independent; precedence is
+        # core.collision's job.
+        self._turn = Latch(off_dwell=self._turn_exit_dwell)
+        self._reverse = Latch(off_dwell=self._rev_exit_dwell)
         self._pushed = None            # last (front, rear, turn) enabled sent
 
         self._client = self.create_client(SetParameters, SET_PARAMS_SERVICE)
@@ -152,58 +156,13 @@ class CollisionPolygonManager(Node):
         w = abs(msg.angular.z)
         vx = msg.linear.x
         now = time.monotonic()
-        # Turn hysteresis.
-        if not self._turning:
-            if w > self._turn_enter:
-                self._turning = True
-                self._below_exit_since = None
-        else:
-            if w > self._turn_exit:
-                self._below_exit_since = None
-            else:
-                if self._below_exit_since is None:
-                    self._below_exit_since = now
-                elif now - self._below_exit_since >= self._turn_exit_dwell:
-                    self._turning = False
-        # Reverse hysteresis (independent; turn takes precedence downstream).
-        if not self._reversing:
-            if vx < -self._rev_enter:
-                self._reversing = True
-                self._rev_exit_since = None
-        else:
-            if vx < -self._rev_exit:
-                self._rev_exit_since = None
-            else:
-                if self._rev_exit_since is None:
-                    self._rev_exit_since = now
-                elif now - self._rev_exit_since >= self._rev_exit_dwell:
-                    self._reversing = False
+        self._turn.update(w > self._turn_enter, w <= self._turn_exit, now)
+        self._reverse.update(vx < -self._rev_enter, vx >= -self._rev_exit, now)
         self._push_zone_state()
 
-    def _mode(self):
-        """'turn' | 'reverse' | 'forward'. Turn wins (a pivot sweeps every
-        corner, so guard the full symmetric box regardless of vx)."""
-        if self._turning:
-            return 'turn'
-        if self._reversing:
-            return 'reverse'
-        return 'forward'
-
-    def _desired_state(self):
-        """(front_enabled, rear_enabled, turn_enabled) for the current
-        bypass/direction state — the single place that decides, so
-        engage/release/cmd_vel transitions all funnel through it."""
-        if self._bypassed:
-            return (False, False, False)
-        mode = self._mode()
-        if mode == 'turn':
-            return (False, False, True)
-        if mode == 'reverse':
-            return (False, True, False)
-        return (True, False, False)
-
     def _push_zone_state(self):
-        state = self._desired_state()
+        state = desired_zone_state(self._bypassed, self._turn.state,
+                                   self._reverse.state)
         if state == self._pushed:
             return
         if not self._client.service_is_ready():
@@ -220,7 +179,8 @@ class CollisionPolygonManager(Node):
             ok = bool(res and all(r.successful for r in res.results))
             if ok:
                 self._pushed = state
-                self._mode_pub.publish(String(data=self._mode()))
+                self._mode_pub.publish(String(
+                    data=zone_mode(self._turn.state, self._reverse.state)))
             else:
                 self.get_logger().error(
                     'zone-state push failed (front=%s rear=%s turn=%s)' % state)

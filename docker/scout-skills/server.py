@@ -772,7 +772,7 @@ async def whats_around_me() -> dict:
     try:
         payload = json.loads(msg["data"])
     except (KeyError, ValueError) as e:
-        raise ToolError(f"malformed /world/objects payload: {e}")
+        raise ToolError(f"malformed /world/objects payload: {e}") from e
     objs = payload.get("objects", [])
     return {
         "frame": payload.get("frame", "map"),
@@ -814,7 +814,7 @@ async def world_query(
     try:
         payload = json.loads(msg["data"])
     except (KeyError, ValueError) as e:
-        raise ToolError(f"malformed /world/registry payload: {e}")
+        raise ToolError(f"malformed /world/registry payload: {e}") from e
     objs = [
         o
         for o in payload.get("objects", [])
@@ -921,7 +921,7 @@ async def list_rfid_tags() -> dict:
     try:
         payload = json.loads(msg["data"])
     except (KeyError, ValueError) as e:
-        raise ToolError(f"malformed /rfid/registry payload: {e}")
+        raise ToolError(f"malformed /rfid/registry payload: {e}") from e
     tags = payload.get("tags", [])
     return {"count": len(tags), "tags": tags}
 
@@ -1314,7 +1314,7 @@ async def recording_status() -> dict:
 EXPLORE_RESUME_TOPIC = "/explore/resume"
 FLEET_STATUS_URL = os.environ.get("FLEET_STATUS_URL", "http://127.0.0.1:9002")
 # explore_lite takes a few seconds to boot + subscribe /explore/resume.
-EXPLORE_NODE_WAIT_S = 25.0
+EXPLORE_NODE_WAIT_S = 25.0  # profile-exempt: a boot wait, not publish_hz
 
 # explore_for's auto-pause. Module-level: one budget at a time; a new
 # explore_for replaces it. ⚠ Dies with this server — if the container is

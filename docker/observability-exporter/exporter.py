@@ -26,9 +26,10 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import docker
 from prometheus_client import Gauge, start_http_server
 from rosbridge import RosBridge
+
+import docker
 
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT", "scout")
 # The Hz pass alone takes len(HZ_TOPICS) * HZ_WINDOW_S (sequential, one
@@ -66,15 +67,19 @@ docker_client = docker.from_env()
 
 cpu_gauge = Gauge("scout_container_cpu_percent", "Container CPU %", ["service"])
 mem_gauge = Gauge("scout_container_mem_bytes", "Container memory usage, bytes", ["service"])
-mem_limit_gauge = Gauge("scout_container_mem_limit_bytes", "Container memory limit, bytes", ["service"])
+mem_limit_gauge = Gauge("scout_container_mem_limit_bytes", "Container memory limit, bytes",
+                        ["service"])
 net_rx_gauge = Gauge("scout_container_net_rx_bytes", "Container network rx, bytes", ["service"])
 net_tx_gauge = Gauge("scout_container_net_tx_bytes", "Container network tx, bytes", ["service"])
 restart_gauge = Gauge("scout_container_restart_count", "Docker restart count", ["service"])
 up_gauge = Gauge("scout_container_up", "1 if the container is running", ["service"])
 
-topic_hz_gauge = Gauge("scout_ros_topic_hz", "Measured message rate over the poll window", ["topic"])
-topic_pub_gauge = Gauge("scout_ros_topic_publisher_count", "DDS matched publisher count", ["topic"])
-topic_sub_gauge = Gauge("scout_ros_topic_subscriber_count", "DDS matched subscriber count", ["topic"])
+topic_hz_gauge = Gauge("scout_ros_topic_hz", "Measured message rate over the poll window",
+                       ["topic"])
+topic_pub_gauge = Gauge("scout_ros_topic_publisher_count", "DDS matched publisher count",
+                        ["topic"])
+topic_sub_gauge = Gauge("scout_ros_topic_subscriber_count", "DDS matched subscriber count",
+                        ["topic"])
 dds_probe_ok_gauge = Gauge("scout_dds_probe_ok", "1 if the last `ros2 topic info` exec succeeded")
 
 
@@ -121,7 +126,8 @@ def poll_docker():
 
 def _find_robot_container():
     for c in docker_client.containers.list():
-        if c.labels.get("com.docker.compose.project") == COMPOSE_PROJECT and _service_name(c) == "robot":
+        if (c.labels.get("com.docker.compose.project") == COMPOSE_PROJECT
+                and _service_name(c) == "robot"):
             return c
     return None
 

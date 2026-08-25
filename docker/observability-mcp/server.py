@@ -16,12 +16,12 @@ which is the only place in the stack with a live ROS/DDS environment.
 """
 
 import os
-import re
 
-import docker
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from rosbridge import RosBridge
+
+import docker
 
 COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT", "scout")
 

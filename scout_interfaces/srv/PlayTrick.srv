@@ -1,4 +1,0 @@
-string name        # spin | wiggle | figure8 | wheelie (see trick_player TRICKS)
----
-bool success
-string message     # rejection reason, or a summary of the accepted trick

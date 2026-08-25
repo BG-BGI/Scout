@@ -42,10 +42,9 @@ TRIGGER_DEADZONE = 0.03    # ignore trigger rest noise
 
 # Live-adjustable speed limits (D-pad), with hard caps and per-press steps.
 # NB the driver clamps at roboclaw.yaml's real caps (1.0 m/s, 3.0 rad/s).
-LINEAR_MIN, LINEAR_MAX = 0.05, _PROFILE['linear_cap']      # m/s
 ANGULAR_MIN, ANGULAR_MAX = 0.5, _PROFILE['angular_cap']    # rad/s
 LINEAR_DEFAULT, ANGULAR_DEFAULT = 0.35, 1.5
-LINEAR_STEP, ANGULAR_STEP = 0.05, 0.5
+ANGULAR_STEP = 0.5
 
 
 class JoystickTeleopNode(Node):
@@ -160,10 +159,6 @@ class JoystickTeleopNode(Node):
         if state and state != self._dpad_x:
             self._adjust_angular(ANGULAR_STEP if state > 0 else -ANGULAR_STEP)
         self._dpad_x = state
-
-    def _adjust_linear(self, delta):
-        self._max_linear = max(LINEAR_MIN, min(LINEAR_MAX, self._max_linear + delta))
-        self.get_logger().info('Max linear speed: %.2f m/s' % self._max_linear)
 
     def _adjust_angular(self, delta):
         self._max_angular = max(ANGULAR_MIN, min(ANGULAR_MAX, self._max_angular + delta))

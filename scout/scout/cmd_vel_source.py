@@ -1,10 +1,11 @@
 """Shared cmd_vel output contract for the robot-side motion producers.
 
-joystick_teleop, trick_player and follow_me all obeyed the same unwritten
-contract by hand: publish a Twist only while actively driving, burst a few
-hundred ms of zeros on release so the RoboClaw stops promptly, then go silent
-and hand /cmd_vel back to whoever else wants it. Three copies of the same
-`_stop_until` state machine drifted apart. This is the one implementation.
+Every Python motion producer obeys the same contract: publish a Twist only
+while actively driving, burst a few hundred ms of zeros on release so the
+RoboClaw stops promptly, then go silent and hand /cmd_vel back to whoever else
+wants it. Before this module, three copies of the same `_stop_until` state
+machine (joystick_teleop + the since-removed trick_player/follow_me) drifted
+apart. This is the one implementation; SC4 keeps it the only one.
 
 A node computes its command however it likes (read a stick, walk a trick, run
 a follow loop) and calls:
@@ -32,11 +33,11 @@ from geometry_msgs.msg import Twist
 
 from scout.robot_profile import load as _load_profile
 
+# 'web' and 'skills' publish over rosbridge (JS/MCP side), not through this
+# class — the keys stay so a future Python producer lands on the right topic.
 _TOPIC_KEY = {
     'joy': 'topic_cmd_vel_joy',
     'web': 'topic_cmd_vel_web',
-    'trick': 'topic_cmd_vel_trick',
-    'follow': 'topic_cmd_vel_follow',
     'skills': 'topic_cmd_vel_skills',
 }
 

@@ -68,7 +68,7 @@ def _iter_frames(mcap_paths, every_s):
     for p in sorted(mcap_paths):
         with open(p, "rb") as f:
             reader = make_reader(f, decoder_factories=[DecoderFactory()])
-            for schema, channel, message, msg in reader.iter_decoded_messages(
+            for _schema, channel, message, msg in reader.iter_decoded_messages(
                     topics=[COLOR_TOPIC, ODOM_TOPIC]):
                 t = message.log_time / 1e9
                 if channel.topic == ODOM_TOPIC:
@@ -94,7 +94,7 @@ def main():
     if not mcaps:
         sys.exit(f"no .mcap under {args.run_dir}")
 
-    print(f"loading Florence-2-base (CPU)...", flush=True)
+    print("loading Florence-2-base (CPU)...", flush=True)
     model, processor = _load_model()
 
     results, flagged = [], 0

@@ -3,7 +3,7 @@
 # Sits on the AUTONOMOUS branch, between twist_mux_auto and the final mux:
 #   twist_mux_auto (autonomous winner) -> /cmd_vel_auto -> collision_monitor
 #   -> /cmd_vel_safe -> final twist_mux (`auto`, prio 10) -> roboclaw
-# so it guards every AUTONOMOUS source (tricks, follow_me, skills, nav2),
+# so it guards every AUTONOMOUS source (skills, nav2),
 # unlike nav2's costmaps which only constrain nav goals. Human teleop
 # (joystick, webui) bypasses it and keeps full authority (operator decision
 # 2026-08-17) — the operator can see the robot; the estop lock still binds it.

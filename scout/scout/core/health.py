@@ -61,3 +61,44 @@ def tilt_level(alarm):
     if alarm:
         return ERROR, 'tilt: ABORT latched (chassis tipped)'
     return OK, 'tilt: level'
+
+
+def traction_level(m1_verdict, m2_verdict, derate_left, derate_right):
+    """traction_monitor's parsed /traction/status. A derated side is WARN
+    (performance, not safety — the CM and estop own safety); uncalibrated is
+    OK-with-a-note so a fresh install isn't permanently yellow."""
+    if min(derate_left, derate_right) < 1.0:
+        return WARN, ('traction: derated L=%.2f R=%.2f (m1 %s, m2 %s)'
+                      % (derate_left, derate_right, m1_verdict, m2_verdict))
+    if 'uncalibrated' in (m1_verdict, m2_verdict):
+        return OK, 'traction: uncalibrated (passthrough only)'
+    return OK, 'traction: full drive (m1 %s, m2 %s)' % (m1_verdict, m2_verdict)
+
+
+def bypass_level(bypassed, zone_mode):
+    """collision_polygon_manager's latched surfaces: a bypassed collision
+    monitor is deliberate but must stay loudly visible until auto-release."""
+    if bypassed:
+        return WARN, 'collision: STOP ZONES BYPASSED (auto-release pending)'
+    return OK, 'collision: guarded (%s zone)' % zone_mode
+
+
+def flipper_level(connected, rfid_enabled, last_error):
+    """flipper_node's latched /flipper/status. No Flipper attached is NORMAL
+    (tier-2 peripheral) — only a fault while one was in use is WARN."""
+    if connected:
+        return OK, ('flipper: scanning' if rfid_enabled else 'flipper: idle')
+    if last_error:
+        return WARN, 'flipper: disconnected (%s)' % last_error
+    return OK, 'flipper: not attached'
+
+
+def cliff_level(stop_points):
+    """cliff_detector's /cliff/stop_points width. Nonzero means a remembered
+    ledge sits in the forward stop corridor and the CM is holding the robot —
+    WARN so the operator sees WHY it stopped. The freshness gate above this is
+    the real safeguard: cliff_detector goes deliberately silent on camera/TF
+    loss, so STALE here means driving blind toward ledges (ADR-0024)."""
+    if stop_points:
+        return WARN, 'cliff: ledge in stop corridor (%d pts)' % stop_points
+    return OK, 'cliff: clear'

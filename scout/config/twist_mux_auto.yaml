@@ -5,22 +5,14 @@
 #
 # Human teleop (joystick, web) is deliberately NOT here — it bypasses the
 # collision monitor and enters the final mux directly (operator decision
-# 2026-08-17). Inter-autonomous priority is preserved here: trick > follow >
-# skills > nav, exactly as before the split.
+# 2026-08-17). Inter-autonomous priority: skills > nav. (trick/follow inputs
+# removed with those features, 2026-08-24.)
 #
 # No estop lock and no /cmd_vel_stop input on this stage — both live on the
 # final mux so the e-stop binds teleop AND autonomous in one place.
 twist_mux_auto:
   ros__parameters:
     topics:
-      trick:
-        topic: /cmd_vel_trick
-        timeout: 0.5
-        priority: 60
-      follow:
-        topic: /cmd_vel_follow
-        timeout: 0.5
-        priority: 50
       skills:
         topic: /cmd_vel_skills
         timeout: 0.5

@@ -17,6 +17,8 @@ let PUBLISH_HZ = 25;  // profile-exempt: baked fallback if the profile fetch fai
 let STOP_GRACE_MS = 300;
 let BATT_WARN_V = 17.5;  // profile-exempt: baked fallback if the profile fetch fails
 let BATT_CRIT_V = 16.5;  // profile-exempt: baked fallback if the profile fetch fails
+let CAM_TOPIC = '/camera/camera/color/image_raw/compressed';  // topic_camera_color fallback
+let OCC_THRESHOLD = 50;  // occupied_threshold fallback (nav2 lethal convention)
 const STICK_DEADZONE = 0.08;
 const TURN_EXPO = 0.6;
 const TRIGGER_DEADZONE = 0.03;
@@ -208,6 +210,17 @@ async function loadProfile() {
     if (prof.angular_floor) angSlider.min = prof.angular_floor;
     if (prof.battery_warn_v) BATT_WARN_V = prof.battery_warn_v;
     if (prof.battery_critical_v) BATT_CRIT_V = prof.battery_critical_v;
+    if (prof.topic_camera_color) CAM_TOPIC = prof.topic_camera_color;
+    if (prof.occupied_threshold) OCC_THRESHOLD = prof.occupied_threshold;
+    if (Array.isArray(prof.led_modes)) {
+      // The SSOT owns the mode list; the static index.html buttons are only
+      // the fetch-failed fallback (the exact drift the profile was made for).
+      const wrap = document.getElementById('led-modes');
+      wrap.innerHTML = prof.led_modes.map((m) =>
+        `<button data-mode="${m}">${m.charAt(0).toUpperCase() + m.slice(1)}</button>`
+      ).join('');
+      bindLedModeButtons();
+    }
     if (prof.topic_cmd_vel_web) {
       cmdVel = new ROSLIB.Topic({
         ros, name: prof.topic_cmd_vel_web, messageType: 'geometry_msgs/msg/Twist',
@@ -415,11 +428,12 @@ mapTopic.subscribe((msg) => {
   const img = gridCanvas.getContext('2d').createImageData(w, h);
   for (let i = 0; i < w * h; i++) {
     const v = msg.data[i];
-    // unknown: dark gray; free: light; occupied: near-black.
-    const c = v < 0 ? 26 : v < 50 ? 210 : 8;
+    // unknown: dark gray; free: light; occupied: near-black. The split is the
+    // profile's occupied_threshold (shared with render.py).
+    const c = v < 0 ? 26 : v < OCC_THRESHOLD ? 210 : 8;
     img.data[4 * i] = c;
     img.data[4 * i + 1] = c;
-    img.data[4 * i + 2] = c + (v >= 50 ? 8 : 0);
+    img.data[4 * i + 2] = c + (v >= OCC_THRESHOLD ? 8 : 0);
     img.data[4 * i + 3] = 255;
   }
   gridCanvas.getContext('2d').putImageData(img, 0, 0);
@@ -818,7 +832,7 @@ let camTopic = null;
 function camStart() {
   if (camTopic) return;
   camTopic = new ROSLIB.Topic({
-    ros, name: '/camera/camera/color/image_raw/compressed',
+    ros, name: CAM_TOPIC,
     messageType: 'sensor_msgs/msg/CompressedImage',
     throttle_rate: 250, queue_length: 1,   // 4 Hz on the wire, ~1-2 Mbps
   });
@@ -854,14 +868,17 @@ ledBright.oninput = () => document.getElementById('led-bright-out').value = ledB
 ledSpeed.oninput = () => document.getElementById('led-speed-out').value = ledSpeed.value;
 
 let ledMode = null;
-document.querySelectorAll('#led-modes button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    ledMode = btn.dataset.mode;
-    document.querySelectorAll('#led-modes button').forEach(
-      (b) => b.classList.toggle('selected', b === btn));
-    sendLed();
+function bindLedModeButtons() {
+  document.querySelectorAll('#led-modes button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      ledMode = btn.dataset.mode;
+      document.querySelectorAll('#led-modes button').forEach(
+        (b) => b.classList.toggle('selected', b === btn));
+      sendLed();
+    });
   });
-});
+}
+bindLedModeButtons();
 document.getElementById('led-color').addEventListener('change', sendLed);
 ledBright.addEventListener('change', sendLed);
 ledSpeed.addEventListener('change', sendLed);
@@ -1122,11 +1139,16 @@ const siteList = document.getElementById('site-list');
 const siteResult = document.getElementById('site-result');
 const siteMapName = document.getElementById('site-map-name');
 
-// Guards the switch: /nav_state 'active' = driving, rec-live = bag writing.
+// Guards the switch: a goal in flight = busy, rec-live = bag writing.
+// Literal copy of core.status NAV_BUSY_STATES (goal_status_names 1-3);
+// frozen against the Python tuple by scout/test/test_status.py.
+const NAV_BUSY_STATES = ['accepted', 'driving', 'canceling'];
 let siteNavBusy = false;
 new ROSLIB.Topic({
   ros, name: '/nav_state', messageType: 'std_msgs/msg/String',
-}).subscribe((msg) => { siteNavBusy = msg.data.split('|')[0] === 'active'; });
+}).subscribe((msg) => {
+  siteNavBusy = NAV_BUSY_STATES.includes(msg.data.split('|')[0]);
+});
 
 let activeSiteMeta = null;
 

@@ -18,7 +18,6 @@ Design (ADR-0025, led_node conventions):
     throttled warn and keeps retrying; the robot stays fully drivable.
 """
 
-import json
 import time
 import uuid
 from datetime import datetime, timezone
@@ -29,7 +28,8 @@ from scout_interfaces.srv import FlipperCli as FlipperCliSrv
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
-from scout.core.rfid import PROMPT, make_read_json, parse_read_output, strip_echo
+from scout.core.rfid import PROMPT, parse_read_output, strip_echo
+from scout.core.status import format_flipper_status, format_rfid_read
 from scout.flipper_cli import FlipperCli
 from scout.node_util import lookup_pose2, run_node
 from scout.qos import LATCHED_HISTORY_QOS, LATCHED_QOS
@@ -83,12 +83,9 @@ class FlipperNode(Node):
 
     # --- status ---------------------------------------------------------------
     def _publish_status(self):
-        self._status_pub.publish(String(data=json.dumps({
-            'state': self._state,
-            'connected': self._cli.connected,
-            'rfid_enabled': self._enabled,
-            'last_error': self._last_error,
-        })))
+        self._status_pub.publish(String(data=format_flipper_status(
+            self._state, self._cli.connected, self._enabled,
+            self._last_error)))
 
     def _set_state(self, state, error=None):
         if error is not None:
@@ -227,8 +224,8 @@ class FlipperNode(Node):
                                    'pose recorded as null',
                                    throttle_duration_sec=10.0)
         stamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds')
-        payload = make_read_json(hit['protocol'], hit['data_hex'], pose,
-                                 stamp, str(uuid.uuid4()))
+        payload = format_rfid_read(hit['protocol'], hit['data_hex'], pose,
+                                   stamp, str(uuid.uuid4()))
         self._reads_pub.publish(String(data=payload))
         self.get_logger().info('RFID read: %s %s pose=%s'
                                % (hit['protocol'], hit['data_hex'],

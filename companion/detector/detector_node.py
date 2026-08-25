@@ -29,32 +29,29 @@ Reuses scout-skills' verified deprojection math: optical-frame ray through the
 box centre at median box depth, then TF cam->map at the IMAGE stamp.
 """
 import json
-import math
 from collections import deque
 from io import BytesIO
 
 import numpy as np
-from PIL import Image as PILImage
-
 import rclpy
-from rclpy.node import Node
-from rclpy.duration import Duration
-from rclpy.time import Time
+import tf2_ros
+from detect import detect  # verbatim reuse from scout-skills
+from PIL import Image as PILImage
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.node import Node
 from rclpy.qos import (
-    QoSProfile,
     QoSDurabilityPolicy,
+    QoSProfile,
     QoSReliabilityPolicy,
     qos_profile_sensor_data,
 )
-from sensor_msgs.msg import CompressedImage, CameraInfo
+from rclpy.time import Time
+from sensor_msgs.msg import CameraInfo, CompressedImage
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
-import tf2_ros
 from tf2_ros import TransformException
-
-from detect import detect  # verbatim reuse from scout-skills
 
 
 def _decode_color(msg: CompressedImage) -> np.ndarray:
@@ -135,7 +132,8 @@ class Detector(Node):
         self.declare_parameter("min_hits_confirm", 2)
         self.declare_parameter("prune_unconfirmed_after_s", 120.0)
 
-        g = lambda n: self.get_parameter(n).value
+        def g(n):
+            return self.get_parameter(n).value
         self.map_frame = g("map_frame")
         self.min_conf = g("min_confidence")
         self.match_gate = g("match_gate_m")

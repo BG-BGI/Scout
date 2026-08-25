@@ -1,41 +1,26 @@
-"""The frozen `|`-delimited status wire formats (CONTEXT.md, ADR-0012/0013).
+"""The frozen status wire formats (CONTEXT.md, ADR-0012/0013) — pipe AND JSON.
 
-/trick_status, /follow_status and /patrol_status are stringly-typed
-std_msgs/String contracts consumed across process and container boundaries
-(led_status, webui/app.js, scout-skills server) — deliberately NOT .msg types.
-These formatters/parsers are the single source of the grammar; test_status.py
-freezes the exact strings. Change a format here and every consumer breaks
-loudly in one place instead of silently on the wire.
+Every status topic that crosses a process or container boundary is a
+stringly-typed std_msgs/String contract (deliberately NOT .msg — ADR-0012):
+
+  * `|`-delimited grammars: /nav_state (nav_manager), /patrol_status
+    (patrol_capture) — parsed by webui/app.js and companion/inspection.
+  * JSON payloads: /flipper/status, /rfid/reads (flipper_node),
+    /traction/status (traction_monitor) — parsed by webui/app.js,
+    scout-skills server.py and companion/rfid/recorder.py.
+  * /roboclaw_status (driver-owned JSON) — parse side only, three consumers.
+
+These formatters/parsers are the single source of every grammar; SC9
+(test_status.py) freezes the exact strings and the JSON schemas. A node may
+not json.dumps a status payload inline (test_conventions.py bans it) — change
+a format here and every consumer breaks loudly in one place instead of
+silently on the wire.
+
+(format/parse_trick_status and _follow_status left with trick_player and
+follow_me on 2026-08-24.)
 """
 
-
-def format_follow_status(status, range_m=None, bearing_deg=None):
-    """'locked|1.41|45' while tracking (range 2dp, bearing whole degrees);
-    bare state string ('seeking', 'idle', ...) otherwise."""
-    if status in ('locked', 'blocked') and range_m is not None:
-        return '%s|%.2f|%.0f' % (status, range_m, bearing_deg)
-    return status
-
-
-def parse_follow_status(data):
-    """(state, range_m or None, bearing_deg or None)."""
-    parts = data.split('|')
-    if len(parts) == 3:
-        return parts[0], float(parts[1]), float(parts[2])
-    return parts[0], None, None
-
-
-def format_trick_status(trick=None, color=None, mode=None):
-    """'idle', or 'name|#RRGGBB|mode' so led_status just renders it."""
-    if trick is None:
-        return 'idle'
-    return '%s|%s|%s' % (trick, color, mode)
-
-
-def parse_trick_status(data):
-    """(name, color, mode) — color/mode default '' / 'chase' as led_status does."""
-    name, color, mode = (data.split('|') + ['', 'chase'])[:3]
-    return name, color, mode
+import json
 
 
 def format_nav_state(status_name, distance_m=None, recoveries=0):
@@ -55,6 +40,13 @@ def parse_nav_state(data):
         return parts[0], None, None
     dist = float(parts[1]) if parts[1] else None
     return parts[0], dist, int(parts[2])
+
+
+# The /nav_state status names that mean "a goal is in flight" — the
+# profile's goal_status_names for GoalStatus 1 (accepted), 2 (executing) and
+# 3 (canceling). webui/app.js keeps a literal copy of this tuple (JS cannot
+# import it); test_status.py freezes both the tuple and the profile mapping.
+NAV_BUSY_STATES = ('accepted', 'driving', 'canceling')
 
 
 def format_patrol_plan(text):
@@ -79,3 +71,80 @@ def parse_patrol_status(data):
         return parts[0], int(parts[1]), None, None
     cur, total = parts[2].split('/')
     return parts[0], int(parts[1]), int(cur), int(total)
+
+
+# --- JSON wire formats -------------------------------------------------------
+# All formatters serialize with sort_keys=True so the wire bytes are
+# deterministic and SC9 can assert exact strings.
+
+
+def format_flipper_status(state, connected, rfid_enabled, last_error=''):
+    """/flipper/status (flipper_node, ADR-0025), latched. Consumers: the webui
+    RFID badge (connected/rfid_enabled) and scout-skills' wait_rfid_read gate
+    (rfid_enabled)."""
+    return json.dumps({
+        'state': state,
+        'connected': bool(connected),
+        'rfid_enabled': bool(rfid_enabled),
+        'last_error': last_error,
+    }, sort_keys=True)
+
+
+def parse_flipper_status(data):
+    """dict with keys state/connected/rfid_enabled/last_error."""
+    return json.loads(data)
+
+
+def format_rfid_read(protocol, data_hex, pose, stamp_utc, read_id):
+    """/rfid/reads (flipper_node -> zenoh -> companion rfid_recorder,
+    ADR-0025). `pose` is (x, y, yaw) or None (no map localization at read
+    time — degrade, don't break)."""
+    return json.dumps({
+        'read_id': read_id,
+        'protocol': protocol,
+        'data_hex': data_hex,
+        'pose': (None if pose is None
+                 else {'x': pose[0], 'y': pose[1], 'yaw': pose[2]}),
+        'stamp_utc': stamp_utc,
+    }, sort_keys=True)
+
+
+def parse_rfid_read(data):
+    """dict with keys read_id/protocol/data_hex/pose/stamp_utc."""
+    return json.loads(data)
+
+
+def format_traction_status(m1, m2, left_channel):
+    """/traction/status (traction_monitor). m1/m2 are per-channel dicts with
+    keys speed (counts/s), current (A), expected (A or None), verdict,
+    derate; the formatter owns the rounding. `left_channel` names which
+    channel drives the left side ('m1' or 'm2')."""
+    def _chan(c):
+        return {
+            'speed': round(c['speed'], 1),
+            'current': round(c['current'], 3),
+            'expected': None if c['expected'] is None else round(c['expected'], 3),
+            'verdict': c['verdict'],
+            'derate': round(c['derate'], 3),
+        }
+    return json.dumps({'m1': _chan(m1), 'm2': _chan(m2),
+                       'left': left_channel}, sort_keys=True)
+
+
+def parse_traction_status(data):
+    """dict with keys m1/m2 (per-channel dicts) and left ('m1'|'m2')."""
+    return json.loads(data)
+
+
+def parse_roboclaw_status(data):
+    """/roboclaw_status (roboclaw_driver's JSON String) -> dict. The one
+    answer to "is this a valid driver status"; raises ValueError otherwise.
+    Field extraction stays with the consumer (battery_monitor, health_monitor,
+    traction_monitor) — the driver owns the schema, this owns the envelope."""
+    try:
+        status = json.loads(data)
+    except (ValueError, TypeError) as exc:
+        raise ValueError('unparseable /roboclaw_status: %s' % exc) from exc
+    if not isinstance(status, dict):
+        raise ValueError('/roboclaw_status is not a JSON object')
+    return status

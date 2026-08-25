@@ -1,12 +1,12 @@
 # Scout robot profile — SINGLE SOURCE OF TRUTH for cross-surface constants.
 #
 # These values used to be copy-pasted across the ROS nodes (joystick_teleop,
-# trick_player, follow_me, led_node/led_status, link_watchdog), the webui
+# led_node/led_status, link_watchdog), the webui
 # (app.js / index.html), the scout-skills MCP server (motion.py, server.py,
 # render.py) and Foxglove.json — and had already DRIFTED apart (five different
 # angular floors, a stale pivot clamp, mismatched LED-mode lists). Anything a
 # reader must agree on with another surface belongs here; per-node UX tunables
-# (teleop slider steps, follow gains) stay in the node.
+# (teleop slider steps) stay in the node.
 #
 # ⚠ CONSTRAINTS (the webui parses this file with a deliberately tiny parser):
 #   * flat scalar keys only — NO nested maps
@@ -14,8 +14,9 @@
 #
 # Consumers:
 #   * scout nodes            -> scout/scout/robot_profile.py (load())
-#   * scout-skills MCP       -> docker/scout-skills/profile.py (mounted ro)
+#   * scout-skills MCP       -> docker/scout-skills/robot_profile.py (mounted ro)
 #   * webui                  -> app.js fetch('robot_profile.yaml') + mini-parser
+#                               (compose bind-mounts THIS file into /webui)
 #   * Foxglove.json          -> CANNOT consume (static JSON); its teleop rate and
 #                               button values are hand-mirrored — a known limit.
 #
@@ -39,7 +40,7 @@ robot_profile:
 
   # --- cmd_vel topics (two-stage mux — keep in step with twist_mux.yaml
   #     and twist_mux_auto.yaml) ---
-  # Autonomous:  trick/follow/skills/nav -> twist_mux_auto -> /cmd_vel_auto
+  # Autonomous:  skills/nav -> twist_mux_auto -> /cmd_vel_auto
   #              -> collision_monitor -> /cmd_vel_safe (guarded)
   # Human+final: joystick, web, /cmd_vel_safe, estop brake -> twist_mux
   #              -> /cmd_vel_out -> traction_monitor -> /cmd_vel_trac
@@ -49,8 +50,6 @@ robot_profile:
   topic_cmd_vel_safe: "/cmd_vel_safe"    # collision_monitor -> final mux `auto` (prio 10)
   topic_cmd_vel_joy: "/cmd_vel_joy"      # joystick_teleop  (prio 100, bypasses CM)
   topic_cmd_vel_web: "/cmd_vel_web"      # webui + Foxglove (prio 90, bypasses CM)
-  topic_cmd_vel_trick: "/cmd_vel_trick"  # trick_player     (auto prio 60)
-  topic_cmd_vel_follow: "/cmd_vel_follow"  # follow_me      (auto prio 50)
   topic_cmd_vel_skills: "/cmd_vel_skills"  # scout-skills motion (auto prio 40)
   topic_cmd_vel_stop: "/cmd_vel_stop"    # estop active-brake input (final prio 255)
   topic_estop: "/estop"                  # twist_mux lock (Bool)
@@ -71,7 +70,7 @@ robot_profile:
   # --- battery threshold ladder (see battery_monitor / led_status) ---
   battery_warn_v: 17.5
   battery_critical_v: 16.5
-  battery_activity_floor_v: 17.0   # tricks refuse / patrol aborts below this
+  battery_activity_floor_v: 17.0   # patrol aborts below this
 
   # --- map rendering ---
   occupied_threshold: 50   # nav2 lethal convention (render.py + webui split)

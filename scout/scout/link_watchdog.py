@@ -32,18 +32,23 @@ import subprocess
 import time
 
 from action_msgs.msg import GoalStatusArray
-from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseArray, PoseStamped
 from nav2_msgs.action import NavigateThroughPoses
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
-from scout.node_util import cancel_nav_goals, run_node
+from scout.node_util import (
+    NAV_ACTIONS,
+    cancel_nav_goals,
+    make_cancel_clients,
+    run_node,
+)
 from scout.qos import LATCHED_QOS
 
-NAV_ACTIONS = ('navigate_to_pose', 'navigate_through_poses')
-# action_msgs/GoalStatus: STATUS_ACCEPTED=1, STATUS_EXECUTING=2.
-ACTIVE_STATUSES = (1, 2)
+# Deliberately NARROWER than node_util.ACTIVE_STATUSES: a canceling(3) goal
+# must not be stashed and re-dispatched when the link returns — only
+# accepted(1)/executing(2) goals are worth resuming.
+RESUMABLE_STATUSES = (1, 2)
 
 # Action status topics are reliable + transient_local; a volatile subscriber
 # would never see the latched last message after a restart.
@@ -95,10 +100,7 @@ class LinkWatchdog(Node):
                 GoalStatusArray, '/%s/_action/status' % action,
                 lambda msg, a=action: self._on_status(a, msg), STATUS_QOS)
 
-        self._cancel_clients = {
-            a: self.create_client(CancelGoal, '/%s/_action/cancel_goal' % a)
-            for a in NAV_ACTIONS
-        }
+        self._cancel_clients = make_cancel_clients(self)
         self._goal_pub = self.create_publisher(PoseStamped, '/goal_pose', 10)
         self._through_client = ActionClient(
             self, NavigateThroughPoses, 'navigate_through_poses')
@@ -120,7 +122,7 @@ class LinkWatchdog(Node):
 
     def _on_status(self, action: str, msg):
         self._active[action] = bool(
-            msg.status_list and msg.status_list[-1].status in ACTIVE_STATUSES)
+            msg.status_list and msg.status_list[-1].status in RESUMABLE_STATUSES)
 
     # --- link probe ----------------------------------------------------------
 

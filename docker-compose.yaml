@@ -234,6 +234,9 @@ services:
     entrypoint: []
     volumes:
       - ./webui:/webui:ro
+      # The SSOT profile, shadowed into the served dir so app.js's
+      # fetch('robot_profile.yaml') reads the real file — no tracked copy.
+      - ./scout/config/robot_profile.yaml:/webui/robot_profile.yaml:ro
     deploy:
       resources:
         limits:

@@ -46,13 +46,14 @@ import csv
 import os
 import time
 
+from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu
-from geometry_msgs.msg import Twist
 
 from scout.node_util import run_node
+from scout.robot_profile import resolve_config_dir
 
 # Geometric track, matching roboclaw.yaml's wheel_separation. The instrument
 # reads it as a parameter so a recalibration there does not silently desync the
@@ -72,8 +73,13 @@ class SlipLogger(Node):
         wheel_topic = self.declare_parameter('wheel_odom_topic', '/wheel_odom').value
         odom_topic = self.declare_parameter('odom_topic', '/odom').value
         imu_topic = self.declare_parameter('imu_topic', '/imu/data').value
-        log_dir = self.declare_parameter(
-            'log_dir', '/ros_ws/src/scout/slip_logs').value
+        # Empty default -> slip_logs next to the resolved config dir (the
+        # bind-mounted repo copy, so CSVs reach the host — SC6: the bind path
+        # is owned by robot_profile, same policy as traction_monitor).
+        log_dir = self.declare_parameter('log_dir', '').value
+        if not log_dir:
+            log_dir = os.path.join(
+                os.path.dirname(resolve_config_dir()), 'slip_logs')
 
         # Latest-sample cache; the timer reads whatever is freshest. A slip run is
         # short and hand-driven, so last-value sampling is the right model (not a

@@ -1,5 +1,9 @@
 """Per-side traction derate from RoboClaw current-vs-speed (traction spec).
 
+The verdict ladder, derate walk, curve validation and Twist<->side split live
+in scout.core.traction (tested off-ROS); the wire format in
+scout.core.status. This node is I/O glue.
+
 Left/right are single paralleled channels with only the rear encoder wired per
 side, and the observed fault is consistently FRONT-wheel-only — so the rear
 encoder keeps tracking true wheel speed and measured speed stays trustworthy.
@@ -34,15 +38,15 @@ Do not guess the curves; the spec forbids shipping default margins.
 """
 
 import csv
-import json
 import os
 import time
 
-import numpy as np
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from std_msgs.msg import Float32, String
 
+from scout.core import traction
+from scout.core.status import format_traction_status, parse_roboclaw_status
 from scout.node_util import run_node
 from scout.robot_profile import resolve_config_dir
 
@@ -75,10 +79,12 @@ class TractionMonitor(Node):
         speeds = list(self.declare_parameter('curve_speeds', [0.0]).value)
         m1_amps = list(self.declare_parameter('m1_curve_amps', [0.0]).value)
         m2_amps = list(self.declare_parameter('m2_curve_amps', [0.0]).value)
-        self._curves = self._validate_curves(speeds, m1_amps, m2_amps)
+        self._curves, err = traction.validate_curves(speeds, m1_amps, m2_amps)
+        if err:
+            self.get_logger().error(err)
 
         self._derate = {'m1': 1.0, 'm2': 1.0}
-        self._verdict = {'m1': 'no_data', 'm2': 'no_data'}
+        self._verdict = {'m1': traction.NO_DATA, 'm2': traction.NO_DATA}
         self._status_stamp = None
 
         self._log_file = None
@@ -120,22 +126,6 @@ class TractionMonitor(Node):
                 'floor %.2f, m1=%s' % (self.gate_counts, 100.0 * self.margin,
                                        self.derate_floor, self.m1_side))
 
-    def _validate_curves(self, speeds, m1_amps, m2_amps):
-        # [0.0] is the un-set placeholder (rclpy needs a typed default).
-        if speeds == [0.0] or len(speeds) < 2:
-            return None
-        if not (len(speeds) == len(m1_amps) == len(m2_amps)):
-            self.get_logger().error(
-                'curve_speeds/m1_curve_amps/m2_curve_amps lengths differ — '
-                'treating as uncalibrated')
-            return None
-        if sorted(speeds) != speeds:
-            self.get_logger().error(
-                'curve_speeds must be ascending — treating as uncalibrated')
-            return None
-        return {'m1': (np.asarray(speeds), np.asarray(m1_amps)),
-                'm2': (np.asarray(speeds), np.asarray(m2_amps))}
-
     # --- actuation: per-side scaled passthrough -------------------------
 
     def _on_cmd(self, msg: Twist):
@@ -143,12 +133,11 @@ class TractionMonitor(Node):
         if dl >= 1.0 and dr >= 1.0:
             self._cmd_pub.publish(msg)
             return
-        b = self.track
-        v_left = (msg.linear.x - msg.angular.z * b / 2.0) * dl
-        v_right = (msg.linear.x + msg.angular.z * b / 2.0) * dr
+        v_left, v_right = traction.split_sides(
+            msg.linear.x, msg.angular.z, self.track)
         out = Twist()
-        out.linear.x = (v_left + v_right) / 2.0
-        out.angular.z = (v_right - v_left) / b
+        out.linear.x, out.angular.z = traction.merge_sides(
+            v_left * dl, v_right * dr, self.track)
         self._cmd_pub.publish(out)
 
     def _side_derates(self):
@@ -160,7 +149,7 @@ class TractionMonitor(Node):
 
     def _on_status(self, msg: String):
         try:
-            status = json.loads(msg.data)
+            status = parse_roboclaw_status(msg.data)
             sample = {ch: (abs(float(status['%s_speed' % ch])),
                            abs(float(status['%s_current' % ch])))
                       for ch in ('m1', 'm2')}
@@ -179,52 +168,37 @@ class TractionMonitor(Node):
                                     '%.1f' % sample['m2'][0],
                                     '%.3f' % sample['m2'][1]])
 
-        detail = {}
+        chans = {}
         for ch, (speed, current) in sample.items():
-            expected = None
-            if speed < self.gate_counts:
-                # No verdict below the telemetry noise floor. Decay toward
-                # 1.0 instead of snapping — a derated side can drop below the
-                # gate, and an instant reset there would oscillate.
-                self._verdict[ch] = 'below_gate'
-                self._step(ch, up=True)
-            elif self._curves is None:
-                self._verdict[ch] = 'uncalibrated'
-            else:
-                xs, ys = self._curves[ch]
-                expected = float(np.interp(speed, xs, ys))
-                if current < (1.0 - self.margin) * expected:
-                    self._verdict[ch] = 'unloaded'
-                    self._step(ch, up=False)
-                else:
-                    self._verdict[ch] = 'loaded'
-                    self._step(ch, up=True)
-            detail[ch] = {
-                'speed': round(speed, 1),
-                'current': round(current, 3),
-                'expected': None if expected is None else round(expected, 3),
+            verdict, expected = traction.channel_verdict(
+                speed, current,
+                None if self._curves is None else self._curves[ch],
+                self.gate_counts, self.margin)
+            self._verdict[ch] = verdict
+            if verdict != traction.UNCALIBRATED:
+                self._derate[ch] = traction.step_derate(
+                    self._derate[ch], verdict, self.step_up, self.step_down,
+                    self.derate_floor)
+            chans[ch] = {
+                'speed': speed,
+                'current': current,
+                'expected': expected,
                 'verdict': self._verdict[ch],
-                'derate': round(self._derate[ch], 3),
+                'derate': self._derate[ch],
             }
 
         dl, dr = self._side_derates()
         self._left_pub.publish(Float32(data=dl))
         self._right_pub.publish(Float32(data=dr))
-        detail['left'] = 'm1' if self.m1_side == 'left' else 'm2'
-        self._status_pub.publish(String(data=json.dumps(detail)))
+        self._status_pub.publish(String(data=format_traction_status(
+            chans['m1'], chans['m2'],
+            'm1' if self.m1_side == 'left' else 'm2')))
 
         if min(dl, dr) < 1.0:
             self.get_logger().warn(
                 'Traction derate L=%.2f R=%.2f (m1 %s, m2 %s)'
                 % (dl, dr, self._verdict['m1'], self._verdict['m2']),
                 throttle_duration_sec=2.0)
-
-    def _step(self, ch, *, up):
-        if up:
-            self._derate[ch] = min(1.0, self._derate[ch] + self.step_up)
-        else:
-            self._derate[ch] = max(
-                self.derate_floor, self._derate[ch] - self.step_down)
 
     def _check_stale(self):
         if self._status_stamp is None:
@@ -238,7 +212,7 @@ class TractionMonitor(Node):
             self.get_logger().warn(
                 'No /roboclaw_status for %.1f s — releasing derates' % age)
             self._derate = {'m1': 1.0, 'm2': 1.0}
-            self._verdict = {'m1': 'no_data', 'm2': 'no_data'}
+            self._verdict = {'m1': traction.NO_DATA, 'm2': traction.NO_DATA}
 
     def close(self):
         if self._log_file is not None:

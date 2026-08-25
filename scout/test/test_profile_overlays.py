@@ -64,8 +64,8 @@ def test_tight_tunnel_sentinels():
     fp = nav2['controller_server']['ros__parameters']['FollowPath']
     assert fp['max_vel_x'] == 0.35 and fp['min_vel_x'] == -0.15
     local = nav2['local_costmap']['local_costmap']['ros__parameters']
-    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']   # depth_layer dropped
-    assert 'depth_layer' in local        # ...but the block is still present (inert)
+    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']   # stvl_layer dropped
+    assert 'stvl_layer' in local         # ...but the block is still present (inert)
     assert local['inflation_layer']['inflation_radius'] == 0.17
 
     slam = deep_merge(_load(CONFIG / 'slam.yaml'), _load(OVERLAYS / 'slam.yaml'))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Arbitrate the LED strip between status events, tricks, and user requests.
+"""Arbitrate the LED strip between status events and user requests.
 
 led_node stays a dumb renderer; this node is its only caller in normal
 operation. Everything that wants the strip goes through a priority stack,
@@ -10,9 +10,11 @@ transient overlays):
   2. battery warning   -> orange breathe, persistent
   3. transient overlay -> timed flashes: ready at startup, client connect,
                           last client disconnect
-  4. trick active      -> per-trick chase color (from /trick_status)
-  5. user setting      -> whatever /set_user_led last asked for
-  6. idle              -> off
+  4. user setting      -> whatever /set_user_led last asked for
+  5. idle              -> off
+
+(Tiers for /trick_status and /follow_status left with those features on
+2026-08-24.)
 
 Battery thresholds latch on at the battery_monitor values and clear only
 `hysteresis_volts` above them — these are loaded readings that sag under
@@ -31,8 +33,9 @@ import time
 from rclpy.node import Node
 from scout_interfaces.srv import SetLedMode
 from sensor_msgs.msg import BatteryState
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool
 
+from scout.core.latch import Latch
 from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
 
@@ -77,13 +80,13 @@ class LedStatus(Node):
         self._connect_s = float(p('connect_seconds').value)
         self._disconnect_s = float(p('disconnect_seconds').value)
 
-        # Stack inputs.
+        # Stack inputs. The battery thresholds latch on at the monitor values
+        # and clear only hysteresis_volts above (core.latch) — loaded readings
+        # sag under drive current and would otherwise flap per acceleration.
         self._estop = False
-        self._warn_active = False
-        self._critical_active = False
+        self._warn = Latch()
+        self._critical = Latch()
         self._overlay = None            # (pattern, monotonic expiry)
-        self._trick = 'idle'
-        self._follow = 'idle'           # idle | searching | locked|dist|deg
         self._user_pattern = None       # set by /set_user_led
         self._seen_battery = False
         # NB: not `_clients` — that name is rclpy.Node's internal client list.
@@ -96,8 +99,6 @@ class LedStatus(Node):
         self._led_client = self.create_client(SetLedMode, 'set_led_mode')
 
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
-        self.create_subscription(String, 'trick_status', self._on_trick, 10)
-        self.create_subscription(String, 'follow_status', self._on_follow, 10)
         self.create_subscription(Bool, _PROFILE['topic_estop'], self._on_estop, 10)
         if ConnectedClients is not None:
             self.create_subscription(ConnectedClients, 'connected_clients',
@@ -123,15 +124,9 @@ class LedStatus(Node):
         v = msg.voltage
         if math.isnan(v) or not msg.present:
             return
-        # Latch on at the threshold, clear only hysteresis above it.
-        if v <= self._critical_v:
-            self._critical_active = True
-        elif v > self._critical_v + self._hyst:
-            self._critical_active = False
-        if v <= self._warn_v:
-            self._warn_active = True
-        elif v > self._warn_v + self._hyst:
-            self._warn_active = False
+        self._critical.update(v <= self._critical_v,
+                              v > self._critical_v + self._hyst)
+        self._warn.update(v <= self._warn_v, v > self._warn_v + self._hyst)
         self._resolve()
 
     def _on_clients(self, msg):
@@ -141,20 +136,6 @@ class LedStatus(Node):
         elif self._client_count > 0 and count == 0:
             self._set_overlay(PATTERN_DISCONNECT, self._disconnect_s)
         self._client_count = count
-
-    def _on_trick(self, msg: String):
-        # trick_player sends 'idle' or 'name|#RRGGBB|mode' (color may change
-        # per segment, e.g. countdown's red -> orange -> green).
-        if msg.data != self._trick:
-            self._trick = msg.data
-            self._resolve()
-
-    def _on_follow(self, msg: String):
-        # follow_me sends 'idle', 'searching', or 'locked|dist|deg'.
-        state = msg.data.split('|')[0]
-        if state != self._follow:
-            self._follow = state
-            self._resolve()
 
     def _on_estop(self, msg: Bool):
         if msg.data != self._estop:
@@ -187,21 +168,12 @@ class LedStatus(Node):
 
         if self._estop:
             pattern = PATTERN_ESTOP
-        elif self._critical_active:
+        elif self._critical.state:
             pattern = PATTERN_CRITICAL
-        elif self._warn_active:
+        elif self._warn.state:
             pattern = PATTERN_WARN
         elif self._overlay:
             pattern = self._overlay[0]
-        elif self._trick != 'idle' and '|' in self._trick:
-            _name, color, mode = (self._trick.split('|') + ['', 'chase'])[:3]
-            pattern = (mode if mode in VALID_MODES else 'chase', color, 50, 2.0)
-        elif self._follow == 'locked':
-            pattern = ('chase', '#00FF40', 50, 2.0)
-        elif self._follow == 'blocked':
-            pattern = ('blink', '#FF8000', 50, 2.0)
-        elif self._follow == 'searching':
-            pattern = ('breathe', '#4060FF', 50, 1.0)
         elif self._user_pattern:
             pattern = self._user_pattern
         else:

@@ -6,9 +6,11 @@ lives here, not in scout.core).
   rclpy.shutdown() at all).
 - lookup_pose2 / lookup_matrix: the TF-exception-wrapped lookups that were
   duplicated across the depth-consumer nodes (now just patrol_capture).
-- cancel_nav_goals: the zeroed-uuid cancel-all on the bt_navigator actions,
-  shared by link_watchdog and nav_manager (ADR-0018) so a third copy of the
-  CancelGoal plumbing never appears.
+- NAV_ACTIONS / ACTIVE_STATUSES / make_cancel_clients / cancel_nav_goals: the
+  one copy of the bt_navigator action bookkeeping (ADR-0018). Three nodes had
+  hand-rolled it and two had already diverged; tilt_monitor's own
+  cancel_all_goals_async covered only navigate_to_pose — a through-poses route
+  survived a tilt abort. SC11 bans cancel_all_goals_async for that reason.
 """
 
 import numpy as np
@@ -21,6 +23,23 @@ from scout.core.geometry import planar_yaw, quat_to_matrix
 
 _TF_EXC = (tf2_ros.LookupException, tf2_ros.ConnectivityException,
            tf2_ros.ExtrapolationException)
+
+# Both bt_navigator actions — anything canceling or watching nav goals must
+# cover BOTH or a through-poses route slips past it.
+NAV_ACTIONS = ('navigate_to_pose', 'navigate_through_poses')
+
+# action_msgs/GoalStatus codes for "a goal is in flight": accepted(1),
+# executing(2), canceling(3). Display and cancel logic want all three. A
+# canceling goal is deliberately NOT resumable — link_watchdog keeps its own
+# narrower (1, 2) for the stash decision.
+ACTIVE_STATUSES = (1, 2, 3)
+
+
+def make_cancel_clients(node):
+    """{action: CancelGoal client} over NAV_ACTIONS — pair with
+    cancel_nav_goals so every cancel path covers both actions."""
+    return {a: node.create_client(CancelGoal, '/%s/_action/cancel_goal' % a)
+            for a in NAV_ACTIONS}
 
 
 def run_node(node_cls, *, on_shutdown=None, args=None):

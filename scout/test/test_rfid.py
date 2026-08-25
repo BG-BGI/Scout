@@ -8,11 +8,8 @@ verbatim. The parser is deliberately tolerant of separators/prefixes so a
 format drift shows up as a test edit, not a field failure.
 """
 
-import json
-
 from scout.core.rfid import (
     has_prompt,
-    make_read_json,
     parse_read_output,
     strip_echo,
 )
@@ -94,19 +91,5 @@ def test_odd_nibble_count_rejected():
     assert parse_read_output('EM4100 1A 2B 3\r\n') is None
 
 
-# --- make_read_json ----------------------------------------------------------
-
-def test_make_read_json_with_pose():
-    s = make_read_json('EM4100', '1A2B3C4D5E', (1.5, -0.25, 0.79),
-                       '2026-08-24T15:04:05Z', 'abc-123')
-    d = json.loads(s)
-    assert d == {'read_id': 'abc-123', 'protocol': 'EM4100',
-                 'data_hex': '1A2B3C4D5E',
-                 'pose': {'x': 1.5, 'y': -0.25, 'yaw': 0.79},
-                 'stamp_utc': '2026-08-24T15:04:05Z'}
-
-
-def test_make_read_json_null_pose():
-    d = json.loads(make_read_json('EM4100', 'AA BB'.replace(' ', ''), None,
-                                  't', 'id'))
-    assert d['pose'] is None
+# The /rfid/reads wire format moved to scout.core.status (format_rfid_read);
+# its freeze lives in test_status.py with the other wire formats.

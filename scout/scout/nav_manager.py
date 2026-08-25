@@ -25,24 +25,26 @@ so the webui shows progress for taps, routes and patrols alike.
 """
 
 from action_msgs.msg import GoalStatusArray
-from action_msgs.srv import CancelGoal
 from nav2_msgs.action import NavigateThroughPoses, NavigateToPose
 from rclpy.node import Node
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 from scout.core.status import format_nav_state
-from scout.node_util import cancel_nav_goals, run_node
+from scout.node_util import (
+    ACTIVE_STATUSES,
+    NAV_ACTIONS,
+    cancel_nav_goals,
+    make_cancel_clients,
+    run_node,
+)
 from scout.qos import LATCHED_QOS
 from scout.robot_profile import load as _load_profile
 
-NAV_ACTIONS = ('navigate_to_pose', 'navigate_through_poses')
 FEEDBACK_TYPES = {
     'navigate_to_pose': NavigateToPose.Impl.FeedbackMessage,
     'navigate_through_poses': NavigateThroughPoses.Impl.FeedbackMessage,
 }
-# action_msgs/GoalStatus: accepted/executing/canceling are "live".
-ACTIVE_STATUSES = (1, 2, 3)
 
 
 class NavManager(Node):
@@ -70,10 +72,7 @@ class NavManager(Node):
                 FEEDBACK_TYPES[action], '/%s/_action/feedback' % action,
                 lambda msg, a=action: self._on_feedback(a, msg), 10)
 
-        self._cancel_clients = {
-            a: self.create_client(CancelGoal, '/%s/_action/cancel_goal' % a)
-            for a in NAV_ACTIONS
-        }
+        self._cancel_clients = make_cancel_clients(self)
         self._patrol_stop = self.create_client(Trigger, '/patrol/stop')
         # False = pause. tilt_monitor publishes here too (multiple publishers
         # on a Bool topic are fine); with no explore node up it's just dropped.

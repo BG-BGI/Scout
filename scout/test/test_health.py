@@ -46,3 +46,31 @@ def test_battery_message_omits_unknown_percentage():
 def test_tilt_latch():
     assert h.tilt_level(False)[0] == h.OK
     assert h.tilt_level(True)[0] == h.ERROR
+
+
+def test_traction_levels():
+    assert h.traction_level('loaded', 'loaded', 1.0, 1.0)[0] == h.OK
+    lvl, msg = h.traction_level('unloaded', 'loaded', 0.55, 1.0)
+    assert lvl == h.WARN and 'L=0.55' in msg
+    lvl, msg = h.traction_level('uncalibrated', 'uncalibrated', 1.0, 1.0)
+    assert lvl == h.OK and 'uncalibrated' in msg
+
+
+def test_bypass_levels():
+    assert h.bypass_level(False, 'forward')[0] == h.OK
+    lvl, msg = h.bypass_level(True, 'forward')
+    assert lvl == h.WARN and 'BYPASSED' in msg
+
+
+def test_flipper_levels():
+    assert h.flipper_level(True, True, '')[0] == h.OK
+    assert h.flipper_level(True, False, '')[0] == h.OK
+    assert h.flipper_level(False, False, '')[0] == h.OK      # absent = normal
+    lvl, msg = h.flipper_level(False, False, 'cli: unplugged')
+    assert lvl == h.WARN and 'unplugged' in msg
+
+
+def test_cliff_levels():
+    assert h.cliff_level(0)[0] == h.OK
+    lvl, msg = h.cliff_level(5)
+    assert lvl == h.WARN and 'ledge' in msg

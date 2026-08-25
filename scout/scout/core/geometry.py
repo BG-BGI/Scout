@@ -1,6 +1,6 @@
 """Planar geometry helpers shared by the motion/perception nodes.
 
-These were copy-pasted across follow_me, clutter_mapper, patrol_capture (and
+These were copy-pasted across the motion/perception nodes (and
 the scout-skills server): the yaw-from-quaternion shortcut, the quaternion ->
 rotation-matrix block, angle wrapping, and the base<->anchor-frame transforms.
 Pure math (stdlib + numpy) so the tests need no ROS.

@@ -6,9 +6,11 @@ declared the SSOT. The banned table is DERIVED from the yaml so it cannot
 drift. Escape hatch, reviewed like code: a line containing
 `profile-exempt: <reason>` is skipped.
 
-SC10 freezes the two deliberate copies: webui/robot_profile.yaml must stay
-byte-identical to the SSOT, and the vendored docker/scout-skills/geometry.py
-functions must stay textually identical to scout.core.geometry's.
+SC10 freezes the deliberate cross-container copies (files a container cannot
+import): the vendored docker/scout-skills/geometry.py functions must stay
+textually identical to scout.core.geometry's. (webui/robot_profile.yaml was a
+frozen copy until 2026-08-24; compose now bind-mounts the SSOT into the served
+dir instead, so the copy — and its byte-identity test — are gone.)
 """
 
 import ast
@@ -34,8 +36,10 @@ BANNED_KEYS = (
     # the profile.
 )
 
+# Directories are scanned RECURSIVELY (a non-recursive glob silently skipped
+# scout/scout/core and all of companion/ until 2026-08-24).
 SCANNED = (
-    'scout/scout', 'docker/scout-skills', 'scripts',
+    'scout/scout', 'docker/scout-skills', 'scripts', 'companion',
     'webui/app.js', 'webui/index.html',
 )
 
@@ -51,7 +55,7 @@ def _scan_files():
         if p.is_file():
             yield p
         else:
-            yield from sorted(p.glob('*.py'))
+            yield from sorted(p.rglob('*.py'))
 
 
 def test_sc8_profile_values_not_hardcoded():
@@ -83,12 +87,12 @@ def test_sc8_profile_values_not_hardcoded():
         + '\n'.join(offenders))
 
 
-def test_sc10_webui_profile_copy_is_identical():
-    webui = REPO / 'webui' / 'robot_profile.yaml'
-    assert webui.read_bytes() == PROFILE.read_bytes(), (
-        'webui/robot_profile.yaml has drifted from scout/config/'
-        'robot_profile.yaml — copy the SSOT over it (it exists only because '
-        'the webui container cannot reach scout/config)')
+def test_sc10_webui_profile_copy_is_gone():
+    # The webui reads the SSOT via a compose bind mount; a reappearing copy
+    # means someone re-forked the profile.
+    assert not (REPO / 'webui' / 'robot_profile.yaml').exists(), (
+        'webui/robot_profile.yaml is back — the webui must read the SSOT via '
+        'the compose mount (docker-compose.yaml webui service), not a copy')
 
 
 def _function_sources(path, names):
@@ -113,3 +117,52 @@ def test_sc10_vendored_geometry_matches_core():
         assert vend[name] == core[name], (
             'docker/scout-skills/geometry.py %s() drifted from '
             'scout.core.geometry — sync the vendored copy (ADR-0013)' % name)
+
+
+def test_sc10_detect_copy_byte_identical():
+    # The companion detector imports detect.py "verbatim reuse from
+    # scout-skills" — verbatim is now a test, not a comment.
+    skills = (REPO / 'docker' / 'scout-skills' / 'detect.py').read_bytes()
+    companion = (REPO / 'companion' / 'detector' / 'detect.py').read_bytes()
+    assert skills == companion, (
+        'companion/detector/detect.py drifted from docker/scout-skills/'
+        'detect.py — sync the copy (deliberate byte-identical reuse)')
+
+
+def _function_body_dump(path, name):
+    """ast dump of a module-level function's body, docstring stripped —
+    compares logic while allowing docstring/annotation wording to differ."""
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            body = node.body
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)):
+                body = body[1:]
+            return '\n'.join(ast.dump(n) for n in body)
+    raise AssertionError('%s lost %s()' % (path.name, name))
+
+
+def test_sc10_median_depth_bodies_match():
+    skills = _function_body_dump(
+        REPO / 'docker' / 'scout-skills' / 'server.py', '_median_depth_m')
+    companion = _function_body_dump(
+        REPO / 'companion' / 'detector' / 'detector_node.py', '_median_depth_m')
+    assert skills == companion, (
+        '_median_depth_m drifted between docker/scout-skills/server.py and '
+        'companion/detector/detector_node.py — sync the copies (same depth '
+        'sampling must feed both world models)')
+
+
+def test_sc10_waypoint_store_version_matches_core():
+    # server.py vendors the ADR-0011 store SCHEMA (not the code). The version
+    # constant is the compatibility gate both sides branch on.
+    from scout.core import waypoints
+    for node in ast.parse(
+            (REPO / 'docker' / 'scout-skills' / 'server.py').read_text()).body:
+        if (isinstance(node, ast.Assign)
+                and getattr(node.targets[0], 'id', '') == 'WAYPOINTS_VERSION'):
+            assert node.value.value == waypoints.VERSION, (
+                'skills WAYPOINTS_VERSION != scout.core.waypoints.VERSION — '
+                'the shared store would be migrated two different ways')
+            return
+    raise AssertionError('server.py lost WAYPOINTS_VERSION')

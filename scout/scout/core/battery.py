@@ -15,7 +15,8 @@ import statistics
 # Resting pack voltage -> fraction of charge. 4.20 V/cell full, 3.20 V/cell at
 # the RoboClaw's 16.0 V Min Main cutoff. The middle rows are soft because a
 # li-ion curve is genuinely flat there.
-DEFAULT_CURVE_VOLTS = [16.0, 17.0, 18.0, 18.5, 19.0, 20.0, 21.0]
+DEFAULT_CURVE_VOLTS = [16.0, 17.0, 18.0, 18.5,  # profile-exempt: curve point
+                       19.0, 20.0, 21.0]
 DEFAULT_CURVE_FRACTION = [0.0, 0.12, 0.30, 0.45, 0.60, 0.85, 1.00]
 
 

@@ -44,7 +44,8 @@ def _checksum(data: bytes) -> int:
 def ping_once(sock: socket.socket, addr: str, ident: int, seq: int, timeout: float):
     payload = struct.pack("!d", time.monotonic()) + b"scoutlink"
     header = struct.pack("!BBHHH", ICMP_ECHO, 0, 0, ident, seq & 0xFFFF)
-    pkt = struct.pack("!BBHHH", ICMP_ECHO, 0, _checksum(header + payload), ident, seq & 0xFFFF) + payload
+    pkt = struct.pack("!BBHHH", ICMP_ECHO, 0, _checksum(header + payload),
+                      ident, seq & 0xFFFF) + payload
     t0 = time.monotonic()
     sock.sendto(pkt, (addr, 0))
     deadline = t0 + timeout
@@ -131,13 +132,16 @@ class TopicLoad(threading.Thread):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("peer", help="IP to ping (the other end of the Pi<->companion link)")
     ap.add_argument("--rate", type=float, default=10.0, help="pings per second (default 10)")
     ap.add_argument("--minutes", type=float, default=30.0, help="duration (default 30)")
-    ap.add_argument("--timeout", type=float, default=1.0, help="per-ping timeout s (counts as miss)")
+    ap.add_argument("--timeout", type=float, default=1.0,
+                    help="per-ping timeout s (counts as miss)")
     ap.add_argument("--out", default="captures/net", help="CSV output dir")
-    ap.add_argument("--load", metavar="TOPIC", help="also subscribe TOPIC via rclpy and report its Hz")
+    ap.add_argument("--load", metavar="TOPIC",
+                    help="also subscribe TOPIC via rclpy and report its Hz")
     args = ap.parse_args()
 
     sock, kind = make_socket()
@@ -158,7 +162,8 @@ def main():
     rtts, misses = [], 0
     dropouts = []  # (start_t, duration_s, n_missed)
     run_miss_start, run_miss_n = None, 0
-    print(f"pinging {args.peer} at {args.rate} Hz for {args.minutes} min ({kind} socket) -> {csv_path}")
+    print(f"pinging {args.peer} at {args.rate} Hz for {args.minutes} min "
+          f"({kind} socket) -> {csv_path}")
 
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
@@ -193,7 +198,9 @@ def main():
     rtts.sort()
     hours = args.minutes / 60.0
     print(f"\nsamples {total}  miss {misses} ({100.0*misses/max(total,1):.2f}%)")
-    print(f"RTT ms  p50 {percentile(rtts,50):.1f}  p95 {percentile(rtts,95):.1f}  p99 {percentile(rtts,99):.1f}  max {rtts[-1] if rtts else float('nan'):.1f}")
+    rtt_max = rtts[-1] if rtts else float("nan")
+    print(f"RTT ms  p50 {percentile(rtts,50):.1f}  p95 {percentile(rtts,95):.1f}  "
+          f"p99 {percentile(rtts,99):.1f}  max {rtt_max:.1f}")
     print(f"dropouts (>=3 misses): {len(dropouts)}  ({len(dropouts)/hours:.1f}/hr)")
     for _, dur, n in dropouts:
         print(f"  {dur:.1f}s ({n} misses)")

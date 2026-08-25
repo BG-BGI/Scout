@@ -110,7 +110,7 @@ def _launch_setup(context, *args, **kwargs):
             site = sites.load_site(os.path.join(SITES_ROOT, active))
             mode, map_name, start_pose = sites.resolve_slam(site, MAPS_DIR)
         except (OSError, ValueError) as e:
-            raise RuntimeError(f"Bad site '{active}': {e}")
+            raise RuntimeError(f"Bad site '{active}': {e}") from e
     else:
         pose = LaunchConfiguration('map_start_pose').perform(context)
         try:

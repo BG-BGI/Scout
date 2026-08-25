@@ -4,6 +4,10 @@ The Flipper's USB CDC shell is a human-facing terminal: it echoes what was
 typed, prompts with `>:`, and `rfid read` prints free-text progress until a
 card is found. These helpers turn that stream into events for flipper_node.
 
+This module is FIRMWARE-coupled only; the /rfid/reads wire format lives with
+the other wire formats in scout.core.status (format_rfid_read) — different
+change triggers (a firmware update vs a protocol change), different modules.
+
 ⚠ The success-line format is FIRMWARE-DEPENDENT. parse_read_output matches
 "<known protocol> <hex bytes>" tolerantly (optional separators, optional
 data:/Hex: prefixes) against the protocol names the official CLI documents;
@@ -12,7 +16,6 @@ transcripts on the bench (miniterm /dev/ttyACM0 230400) and extend the
 fixtures before trusting the parser — do not guess.
 """
 
-import json
 import re
 
 PROMPT = '>:'
@@ -59,16 +62,3 @@ def parse_read_output(buf):
                 if len(data) >= 4 and len(data) % 2 == 0:
                     return {'protocol': proto, 'data_hex': data}
     return None
-
-
-def make_read_json(protocol, data_hex, pose, stamp_utc, read_id):
-    """The /rfid/reads wire dict, serialized. `pose` is (x, y, yaw) or None
-    (no map localization at read time — degrade, don't break)."""
-    return json.dumps({
-        'read_id': read_id,
-        'protocol': protocol,
-        'data_hex': data_hex,
-        'pose': (None if pose is None
-                 else {'x': pose[0], 'y': pose[1], 'yaw': pose[2]}),
-        'stamp_utc': stamp_utc,
-    })

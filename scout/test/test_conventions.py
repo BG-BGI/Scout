@@ -251,6 +251,33 @@ def test_sc4_twist_publishers_are_allowlisted():
         'zero-burst stop (ADR-0001/0013):\n' + '\n'.join(offenders))
 
 
+# --- SC9 (structural half): status payloads come from core.status ---------------
+# test_status.py freezes the wire strings; this bans the escape hatch that let
+# /flipper/status and /traction/status ship as inline json.dumps dicts with no
+# owner and no freeze (the ADR-0012 drift, reintroduced in JSON). A node never
+# serializes a wire payload itself — it calls a scout.core.status formatter.
+
+SC9_ALLOW = {}
+
+
+def test_sc9_no_inline_json_wire_payloads():
+    _check_allow(SC9_ALLOW)
+    offenders = []
+    for path in _py_files(PKG):
+        if _rel(path) in SC9_ALLOW:
+            continue
+        for node in ast.walk(_tree(path)):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'dumps'
+                    and getattr(node.func.value, 'id', '') == 'json'):
+                offenders.append('%s:%d' % (_rel(path), node.lineno))
+    assert not offenders, (
+        'Inline json.dumps in a node — wire formats live in scout.core.status '
+        '(format_* + a test_status.py freeze), never ad hoc in the publisher '
+        '(ADR-0012/0013 SC9):\n' + '\n'.join(offenders))
+
+
 # --- SC6: one owner for the bind-mount config path ------------------------------
 # The bind-mount-wins policy was implemented four times in four shapes; it now
 # lives in scout.robot_profile (resolve_config / resolve_config_dir) only.
@@ -262,8 +289,15 @@ def test_sc4_twist_publishers_are_allowlisted():
 # stack-trace evidence. Every node spins single-threaded via run_node, so the
 # sync forms are banned: call_async / send_goal_async + done-callback
 # (link_watchdog's CancelGoal pattern is the house reference).
+#
+# cancel_all_goals_async is banned too, for a different reason: it belongs to
+# a per-action ActionClient, so a node holding its own client cancels ONE
+# action and silently misses the other (tilt_monitor covered navigate_to_pose
+# but not navigate_through_poses — on the safety path). node_util's
+# cancel_nav_goals covers every NAV_ACTIONS entry.
 
-SC11_BANNED = {'call': 'call_async', 'send_goal': 'send_goal_async'}
+SC11_BANNED = {'call': 'call_async', 'send_goal': 'send_goal_async',
+               'cancel_all_goals_async': 'node_util.cancel_nav_goals'}
 SC11_ALLOW = {}
 
 

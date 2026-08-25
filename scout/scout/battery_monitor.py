@@ -36,7 +36,6 @@ chatters (motors cut, voltage recovers, motors restart) rather than stopping
 cleanly. Warning well before that is the point of the low/critical thresholds.
 """
 
-import json
 import math
 
 from rclpy.node import Node
@@ -49,6 +48,7 @@ from scout.core.battery import (
     RestingSocEstimator,
     validate_curve,
 )
+from scout.core.status import parse_roboclaw_status
 from scout.node_util import run_node
 from scout.robot_profile import load as _load_profile
 
@@ -140,7 +140,7 @@ class BatteryMonitor(Node):
 
     def _on_status(self, msg: String):
         try:
-            status = json.loads(msg.data)
+            status = parse_roboclaw_status(msg.data)
             raw = float(status['main_battery'])
             speed = max(abs(float(status['m1_speed'])), abs(float(status['m2_speed'])))
         except (ValueError, KeyError, TypeError) as exc:
