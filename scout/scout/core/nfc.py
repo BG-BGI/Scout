@@ -43,8 +43,7 @@ NFC_TECHS = sorted((
     'MIFARE Classic', 'MIFARE Ultralight C', 'MIFARE Ultralight',
     'MIFARE Plus', 'MIFARE DESFire', 'MIFARE',
     'NTAG213', 'NTAG215', 'NTAG216', 'NTAG',
-    # profile-exempt: ST25TB is an NFC protocol name, the '25' is not publish_hz
-    'FeliCa', 'ST25TB', 'SLIX2', 'SLIX-L', 'SLIX-S', 'SLIX',
+    'FeliCa', 'ST25TB', 'SLIX2', 'SLIX-L', 'SLIX-S', 'SLIX',  # profile-exempt: protocol names
     'ISO14443-4A', 'ISO14443-4B', 'ISO14443-3A', 'ISO14443-3B',
     'ISO14443A', 'ISO14443B', 'ISO15693-3', 'ISO15693',
 ), key=len, reverse=True)
