@@ -64,9 +64,11 @@ main() {
   if [ -n "$VOL" ]; then
     VOL_ID=$(docker run --rm -v "$VOL":/stamp --entrypoint cat "ghcr.io/bg-bgi/scout:$SHA" /stamp/.image_build_id 2>/dev/null || echo none)
   fi
+  WIPED=0
   if [ "$PREV_BRANCH" != "$BRANCH" ] || [ "$IMG_ID" != "$VOL_ID" ]; then
     echo "== wiping build+install volumes (branch $PREV_BRANCH -> $BRANCH, stamp $VOL_ID -> $IMG_ID)"
     docker compose $ALL down -v --remove-orphans
+    WIPED=1
   fi
 
   # Location sites (ADR-0023), one-time on a pre-sites data layout.
@@ -88,6 +90,15 @@ main() {
   # branch's compose defines, no hardcoded service list to drift. explore and
   # observability stay down (start observability via the ops workflow).
   docker compose --profile full up -d --remove-orphans
+
+  # No wipe = up -d recreated nothing, but build_package symlink-installs the
+  # scout packages, and a running process only loads new Python at start —
+  # restart so the deploy actually takes effect (the wipe path already
+  # recreated everything).
+  if [ "$WIPED" -eq 0 ]; then
+    echo "== no volume wipe — restarting services to load the new install"
+    docker compose --profile full restart
+  fi
 
   # Pre-create (NOT start) the profile-gated explore container so
   # scout_skills' explore_start can lazily start it via fleet_status. Created
