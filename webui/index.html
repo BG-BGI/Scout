@@ -104,6 +104,15 @@
     </details>
 
     <details class="panel">
+      <summary><h2>RoboClaw <span id="rc-state" class="badge stale">no data</span></h2></summary>
+      <div id="rc-vitals" class="dim">waiting for /roboclaw_status…</div>
+      <div class="dim">Currents are unreliable below ~20% duty and during
+        pivots (frozen/phantom readings) — judge health by speed tracking,
+        temperature and battery sag. NO LINK means the driver cannot reach
+        the board over serial: check motor battery power first.</div>
+    </details>
+
+    <details class="panel">
       <summary><h2>Recording <span id="rec-state" class="dim">—</span></h2></summary>
       <div class="grid">
         <button id="rec-start" class="primary">Start REC</button>

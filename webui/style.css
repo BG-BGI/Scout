@@ -345,9 +345,10 @@ input[type=text]:focus, input[type=password]:focus { outline: none; border-color
 .rec-live { color: var(--bad); font-weight: 700; }
 
 /* --- system panel: host vitals + per-container controls ------------------------- */
-#sys-vitals { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
-#sys-vitals span.bad { color: var(--bad); }
-#sys-vitals span.warn { color: var(--warn); }
+/* #rc-vitals (RoboClaw panel) shares the vitals row look. */
+#sys-vitals, #rc-vitals { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
+#sys-vitals span.bad, #rc-vitals span.bad { color: var(--bad); }
+#sys-vitals span.warn, #rc-vitals span.warn { color: var(--warn); }
 
 #sys-containers { display: flex; flex-direction: column; gap: var(--s2); }
 .svc-row {

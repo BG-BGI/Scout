@@ -313,6 +313,68 @@ setInterval(() => {
   }
 }, 1000);
 
+// --- RoboClaw panel: /roboclaw_status ---------------------------------------------
+// The driver's JSON String (schema driver-owned; core/status.py owns only the
+// envelope). The driver polls the board over serial regardless of cmd_vel, so a
+// stale/absent status means the SERIAL LINK is dead (board unpowered, UART fault)
+// — the exact failure that otherwise only shows up as "joystick does nothing".
+const rcState = document.getElementById('rc-state');
+const rcVitals = document.getElementById('rc-vitals');
+let rcLastMs = 0;
+let rcLastStatus = null;
+
+function rcRow(label, value, cls) {
+  return `<span class="${cls || ''}">${label} ${value}</span>`;
+}
+
+function renderRoboclaw() {
+  const s = rcLastStatus;
+  const mainV = Number(s.main_battery);
+  // Ladder anchored on the RoboClaw's own 16.0 V Min Main cutoff.
+  const vCls = mainV <= 16.5 ? 'bad' : mainV <= 17.5 ? 'warn' : '';
+  const t1 = Number(s.temperature1), t2 = Number(s.temperature2);
+  const tCls = Math.max(t1, t2) >= 75 ? 'bad' : Math.max(t1, t2) >= 60 ? 'warn' : '';
+  const errNum = Number(s.error_status);
+  const errCls = errNum ? 'bad' : '';
+  rcState.textContent = `${mainV.toFixed(1)} V`;
+  rcState.className = 'badge' + (errNum || vCls === 'bad' ? ' batt-bad'
+    : vCls === 'warn' ? ' batt-warn' : ' connected');
+  rcVitals.innerHTML = [
+    rcRow('Main', mainV.toFixed(2) + ' V', vCls),
+    rcRow('Logic', Number(s.logic_battery).toFixed(2) + ' V'),
+    rcRow('M1', Number(s.m1_current).toFixed(2) + ' A'),
+    rcRow('M2', Number(s.m2_current).toFixed(2) + ' A'),
+    rcRow('Temp', `${t1.toFixed(0)}/${t2.toFixed(0)} °C`, tCls),
+    rcRow('Speed', `${s.m1_speed}/${s.m2_speed} c/s`),
+    rcRow('Enc', `${s.m1_enc_value}/${s.m2_enc_value}`),
+    rcRow('Err', errNum ? (s.decoded_error_status || '0x' + errNum.toString(16)) : 'none', errCls),
+  ].join(' ');
+}
+
+new ROSLIB.Topic({
+  ros, name: '/roboclaw_status', messageType: 'std_msgs/msg/String',
+  throttle_rate: 1000, queue_length: 1,
+}).subscribe((msg) => {
+  let s;
+  try { s = JSON.parse(msg.data); } catch (e) { return; }
+  if (!s || typeof s !== 'object') return;
+  rcLastMs = performance.now();
+  rcLastStatus = s;
+  renderRoboclaw();
+});
+
+// Driver publishes ~30 Hz (throttled to 1 Hz here); >3 s silent = serial link
+// down or driver dead. Distinguish "never heard" (boot/board dark) from "went
+// quiet" so today's dead-board case reads NO LINK at a glance.
+setInterval(() => {
+  if (!rcLastMs) return; // initial "no data" badge stands until first message
+  const age = performance.now() - rcLastMs;
+  if (age > 3000) {
+    rcState.textContent = `NO LINK ${Math.round(age / 1000)}s`;
+    rcState.className = 'badge disconnected';
+  }
+}, 1000);
+
 document.getElementById('stop').addEventListener('click', () => {
   cancelNav();   // a live nav goal would keep driving through the zero burst
   patrolStop();  // a patrol would send the NEXT waypoint after the cancel
