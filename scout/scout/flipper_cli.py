@@ -33,16 +33,23 @@ class FlipperCli:
         return self._ser is not None
 
     def open(self, settle_s=2.0):
-        """Open the port and return it to the top-level idle prompt: Ctrl+C
-        aborts a `rfid read`/`scanner` a node crash left running, then `exit`
-        leaves the `nfc` sub-shell if the crash was mid-NFC (harmless at the
-        top level — an unknown command that still returns to `>:`), and the
-        output is drained until the prompt appears (bounded by settle_s).
-        Returns True when the prompt was seen — False means something answered
-        the port but not like a Flipper shell.
-        ⚠ Bench-verify the `exit`-from-sub-shell recovery on real firmware."""
+        """Open the port and return it to the top-level idle prompt.
+
+        Opening the CDC port starts a FRESH Flipper CLI session at the top-level
+        `>:` regardless of any sub-shell a prior session (a crashed node) left
+        open — the CDC disconnect on the previous close resets it (verified on
+        firmware 1.4.3: fd reopen from inside the `nfc` sub-shell prints the
+        top-level banner). So no `exit` is sent — at the top level `exit` CLOSES
+        the session (Flipper "Exits the CLI shell"), and drain_to_prompt would
+        still match the connect banner's `>:` and falsely report success while
+        leaving a DEAD handle: every later command reads nothing and times out.
+        Ctrl+C is belt-and-suspenders (abort anything mid-command) and harmless.
+
+        Drains until the prompt appears (bounded by settle_s). Returns True when
+        the prompt was seen — False means something answered the port but not
+        like a Flipper shell."""
         self._ser = serial.Serial(self._port, self._baud, timeout=0)
-        self._ser.write(CTRL_C + b'exit\r')
+        self._ser.write(CTRL_C)
         return self.drain_to_prompt(settle_s)
 
     def drain_to_prompt(self, timeout_s):
