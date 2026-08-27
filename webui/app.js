@@ -1276,16 +1276,23 @@ document.getElementById('site-add-form').addEventListener('submit', async (ev) =
 });
 
 // Save the live slam graph into the active site + make it the site's default
-// map. serialize_map appends .posegraph/.data itself. ⚠ In localization mode
-// slam_toolbox silently no-ops AND reports success (CLAUDE.md trap) — mode:=site
-// auto policy never runs localization, so this only guards a hand-set mode.
+// map. Writes BOTH map formats (ADR-0028): serialize_map for the .posegraph/.data
+// pair that continue mode loads, then save_map for the .yaml/.pgm grid that
+// localization mode's amcl + map_server load. Both services append their own
+// extensions. ⚠ In localization mode slam_toolbox is not running at all (amcl
+// stack instead) — mode:=site auto policy never runs localization, so this only
+// guards a hand-set mode.
 const serializeSrv = new ROSLIB.Service({
   ros, name: '/slam_toolbox/serialize_map',
   serviceType: 'slam_toolbox/srv/SerializePoseGraph',
 });
+const saveGridSrv = new ROSLIB.Service({
+  ros, name: '/slam_toolbox/save_map',
+  serviceType: 'slam_toolbox/srv/SaveMap',
+});
 document.getElementById('site-save-map').addEventListener('click', () => {
   if (activeSiteMeta && activeSiteMeta.slam_mode === 'localization') {
-    alert('This site is pinned to localization mode: serialize_map silently saves NOTHING there. Set slam_mode to auto/continue first.');
+    alert('This site is pinned to localization mode: slam_toolbox is not running (amcl localizes instead), so there is nothing to save. Set slam_mode to auto/continue first.');
     return;
   }
   const name = siteMapName.value.trim()
@@ -1294,22 +1301,33 @@ document.getElementById('site-save-map').addEventListener('click', () => {
   siteResult.textContent = 'serializing map…';
   serializeSrv.callService(
     new ROSLIB.ServiceRequest({ filename: '/ros_ws/src/sites/active/maps/' + name }),
-    async () => {
-      try {
-        await fetch(`${FLEET_API}/sites/active`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ default_map: name }),
-        });
-      } catch (e) { /* metadata update is best-effort; the files are saved */ }
-      siteResult.textContent = `map "${name}" saved.`;
-      if (confirm('Map saved. Restart slam + behaviors now to continue on it?')) {
+    () => {
+      siteResult.textContent = 'saving grid map…';
+      const finish = async (gridErr) => {
         try {
-          await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
-          await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
-        } catch (e) { /* ignore */ }
-      }
-      refreshSites();
+          await fetch(`${FLEET_API}/sites/active`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_map: name }),
+          });
+        } catch (e) { /* metadata update is best-effort; the files are saved */ }
+        siteResult.textContent = gridErr
+          ? `map "${name}" saved (posegraph only — grid save failed: ${gridErr}; localization mode needs the grid)`
+          : `map "${name}" saved (posegraph + grid).`;
+        if (confirm('Map saved. Restart slam + behaviors now to continue on it?')) {
+          try {
+            await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+            await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+          } catch (e) { /* ignore */ }
+        }
+        refreshSites();
+      };
+      saveGridSrv.callService(
+        new ROSLIB.ServiceRequest({ name: { data: '/ros_ws/src/sites/active/maps/' + name } }),
+        // SaveMap reports failure in-band: result 0 = success, 255 = no map yet.
+        (res) => finish(res.result === 0 ? null : `result ${res.result}`),
+        (err) => finish(err),
+      );
     },
     (err) => { siteResult.textContent = 'serialize failed: ' + err; },
   );

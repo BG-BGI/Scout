@@ -132,6 +132,8 @@ services:
   # map + mode from sites/active/site.json (ADR-0023) — switch sites from the
   # webui Site panel, not by editing this line. Hand-run other modes with
   # `ros2 launch scout slam.launch.py mode:=continue map:=x` for debugging.
+  # In localization mode this service runs amcl + map_server instead of
+  # slam_toolbox (ADR-0028); same /map + map->odom ownership either way.
   slam:
     <<: *base
     restart: unless-stopped
@@ -147,7 +149,8 @@ services:
   # Path planning and following. Needs `slam` up first for /map and map->odom.
   # Reuses upstream's navigation_launch.py because it owns the cmd_vel plumbing: it
   # remaps controller_server's output to /cmd_vel_nav and velocity_smoother's back to
-  # /cmd_vel. Deliberately omits map_server and amcl -- slam_toolbox fills both roles.
+  # /cmd_vel. Deliberately omits map_server and amcl here -- the `slam` service owns
+  # /map and map->odom (slam_toolbox when mapping, amcl + map_server when localizing).
   #
   # ⚠ Goals come from Foxglove on /goal_pose (frame_id: map), and THERE IS NO CANCEL
   # BUTTON. An accepted goal lives in bt_navigator, which replans at 1 Hz and keeps
@@ -203,6 +206,10 @@ services:
       - ROS_DOMAIN_ID=17
       - ROS_LOCALHOST_ONLY=1
     entrypoint: /ros_entrypoint.sh
+    volumes:
+      # no repo bind mount here (see above) — just the clock gate script,
+      # which the trimmed service otherwise can't see
+      - ./scripts/wait-clock-sane.sh:/ros_ws/src/scripts/wait-clock-sane.sh:ro
     deploy:
       resources:
         limits:

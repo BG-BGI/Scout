@@ -1,13 +1,15 @@
-"""Bring up slam_toolbox in one of four map modes.
+"""Bring up the mapping/localization stack in one of four map modes.
 
     mode:=site          (compose default) read sites/active/site.json and
                         resolve to one of the three modes below (ADR-0023)
-    mode:=new           start a fresh map
+    mode:=new           start a fresh map (slam_toolbox)
     mode:=localization  load a saved map and localize in it, adding nothing
+                        (amcl + map_server, ADR-0028 -- NOT slam_toolbox)
     mode:=continue      load a saved map and keep building on top of it
+                        (slam_toolbox)
 
-A launch file rather than a bare `ros2 run` because the mode is not a parameter --
-see the block comment on MODES below.
+A launch file rather than a bare `ros2 run` because the slam_toolbox mode is not
+a parameter -- see the block comment on MODES below.
 
 Examples:
     ros2 launch scout slam.launch.py mode:=site
@@ -50,18 +52,20 @@ MAPS_DIR = os.path.join(SITES_ROOT, 'active', 'maps')
 # silently takes the start-at-a-pose branch instead. That is why these live here, built
 # per mode, and not in slam.yaml where they would always exist.
 #
-# ⚠ map_start_at_dock is unusable in localization mode. LocalizationSlamToolbox
-# overrides loadPoseGraphByParams and warns "Starting localization at first node (dock)
-# is correctly not supported", then localizes at the pose anyway -- so localization must
-# be given a pose and continue is the only mode that can use the dock.
+# Localization mode no longer touches slam_toolbox at all (ADR-0028): it brings up
+# nav2's amcl + map_server + a lifecycle manager on the GRID map (<name>.yaml/.pgm
+# from /slam_toolbox/save_map -- the webui Save Map button writes both pairs). amcl
+# searches globally via its particle cloud, reports real confidence in /amcl_pose
+# covariance, takes /initialpose natively (tag_relocalizer's seed), and exposes
+# reinitialize_global_localization -- all the things the scan-matcher's silent
+# local-only lock could not do.
 MODES = ('site', 'new', 'localization', 'continue')
 
 
-def _saved_maps():
+def _saved_maps(suffix='.posegraph'):
     """Basenames of the maps that are actually loadable, for error messages."""
     if not os.path.isdir(MAPS_DIR):
         return []
-    suffix = '.posegraph'
     return sorted(f[:-len(suffix)] for f in os.listdir(MAPS_DIR)
                   if f.endswith(suffix))
 
@@ -83,6 +87,26 @@ def _map_params(map_name):
         )
     # No extension: serialization::write/read append .posegraph and .data themselves.
     return {'map_file_name': path}
+
+
+def _grid_map_yaml(map_name):
+    """Absolute path of the grid map YAML for amcl, failing loudly if missing.
+
+    Localization loads the .yaml/.pgm pair, not the posegraph -- a site mapped
+    before ADR-0028 has only the posegraph, and map_server would otherwise die
+    at activation with a much less helpful error."""
+    path = os.path.join(MAPS_DIR, map_name + '.yaml')
+    if not os.path.exists(path):
+        available = ', '.join(_saved_maps('.yaml')) or '(none)'
+        raise RuntimeError(
+            f"No grid map named '{map_name}': {path} does not exist. "
+            f'Grid maps available in {MAPS_DIR}: {available}. '
+            'Localization mode runs amcl on the .yaml/.pgm pair, not the '
+            'posegraph. Save one from a running mapping session with the webui '
+            'Save Map button (writes both pairs) or the /slam_toolbox/save_map '
+            'service.'
+        )
+    return path
 
 
 def _launch_setup(context, *args, **kwargs):
@@ -123,23 +147,14 @@ def _launch_setup(context, *args, **kwargs):
                 f"got '{pose}'."
             )
 
+    if mode == 'localization':
+        return _localization_nodes(map_name, start_pose, profile)
+
     if mode == 'new':
-        executable = 'async_slam_toolbox_node'
         mode_params = {}
-    elif mode == 'continue':
-        executable = 'async_slam_toolbox_node'
+    else:  # continue
         # Resume at the loaded graph's first node and keep adding to it.
         mode_params = {**_map_params(map_name), 'map_start_at_dock': True}
-    else:
-        executable = 'localization_slam_toolbox_node'
-        mode_params = {
-            **_map_params(map_name),
-            'map_start_pose': start_pose,
-            # Mirrors upstream's localization config: the buffer holds the rolling band
-            # of recent scans matched against the fixed graph, and does not need the
-            # depth that graph building does.
-            'scan_buffer_size': 3,
-        }
 
     # Base params + the profile's slam overlay (tight_tunnel = finer grid).
     config = merged_params(params_file, profile)
@@ -147,11 +162,49 @@ def _launch_setup(context, *args, **kwargs):
     return [
         Node(
             package='slam_toolbox',
-            executable=executable,
+            executable='async_slam_toolbox_node',
             # slam.yaml is keyed on this name, which every executable hardcodes anyway.
             name='slam_toolbox',
             output='screen',
             parameters=[config, mode_params],
+        ),
+    ]
+
+
+def _localization_nodes(map_name, start_pose, profile):
+    """amcl + map_server + lifecycle manager on the saved grid map (ADR-0028).
+
+    Together these own exactly what localization_slam_toolbox_node owned: /map
+    (map_server, latched) and map->odom (amcl). tag_relocalizer's /initialpose
+    seed is consumed by amcl natively; initial_pose.* below is only the
+    pre-seed guess from the site policy."""
+    config = merged_params('amcl.yaml', profile)
+    map_yaml = _grid_map_yaml(map_name)
+    return [
+        Node(
+            package='nav2_map_server',
+            executable='map_server',
+            name='map_server',
+            output='screen',
+            parameters=[config, {'yaml_filename': map_yaml}],
+        ),
+        Node(
+            package='nav2_amcl',
+            executable='amcl',
+            name='amcl',
+            output='screen',
+            parameters=[config, {
+                'initial_pose.x': start_pose[0],
+                'initial_pose.y': start_pose[1],
+                'initial_pose.yaw': start_pose[2],
+            }],
+        ),
+        Node(
+            package='nav2_lifecycle_manager',
+            executable='lifecycle_manager',
+            name='lifecycle_manager_localization',
+            output='screen',
+            parameters=[config],
         ),
     ]
 
@@ -168,21 +221,25 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'map',
             default_value='map',
-            description=f'Basename of the saved pose graph in {MAPS_DIR}, no '
-                        'extension. Ignored by mode:=new and mode:=site.',
+            description=f'Basename of the saved map in {MAPS_DIR}, no extension '
+                        '(continue loads <map>.posegraph, localization loads '
+                        '<map>.yaml). Ignored by mode:=new and mode:=site.',
         ),
         DeclareLaunchArgument(
             'map_start_pose',
             default_value='0.0,0.0,0.0',
             description='Where in the loaded map the robot is starting, as '
-                        '"x,y,theta". Used by mode:=localization; refine later by '
-                        'publishing /initialpose.',
+                        '"x,y,theta". Used by mode:=localization (amcl '
+                        'initial_pose); refined later by /initialpose — '
+                        'tag_relocalizer publishes it on the first registered-'
+                        'tag sighting.',
         ),
         DeclareLaunchArgument(
             'params_file',
             default_value='slam.yaml',
             description='Basename (or absolute path) of the slam_toolbox params '
-                        'YAML under scout/config (the profile overlay merges on top).',
+                        'YAML under scout/config (the profile overlay merges on '
+                        'top). Ignored by mode:=localization, which uses amcl.yaml.',
         ),
         DeclareLaunchArgument(
             'profile',

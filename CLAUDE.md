@@ -273,13 +273,13 @@ Sensitivity is the highest point rate, the lidar's own reported *typical* mode, 
 
 Mapping rides on the *fused* `/odom`, so the flat tire does not corrupt the map — expect commanded pivots to under-rotate, not the map to be wrong.
 
-**Three modes, selected by launch argument** (`mode:=new` default / `localization` / `continue`). Operating recipes are in NOTES.md.
+**Three modes, selected by launch argument** (`mode:=new` default / `localization` / `continue`). Operating recipes are in NOTES.md. **⚠ Since ADR-0028 (2026-08-27), `localization` no longer runs slam_toolbox at all — it brings up nav2_amcl + nav2_map_server + a lifecycle manager (`scout/config/amcl.yaml`) on the grid map `<name>.yaml`/`.pgm`.** The webui Save Map writes both formats (`serialize_map` + `save_map`); the launch guard demands the grid, so pre-ADR sites must re-save from a `continue` session. tag_relocalizer's `/initialpose` seed is amcl-native. The slam_toolbox localization traps below (silent `serialize_map` SUCCESS, local-only lock, `map_start_at_dock` warning) are kept as history of *why*.
 
 | Mode | Executable | Extra params | Behaviour |
 |---|---|---|---|
 | `new` | `async_slam_toolbox_node` | none | Fresh map |
 | `continue` | `async_slam_toolbox_node` | `map_file_name`, `map_start_at_dock: true` | Loads a graph, keeps extending it |
-| `localization` | `localization_slam_toolbox_node` | `map_file_name`, `map_start_pose`, `scan_buffer_size: 3` | Loads a graph, adds nothing |
+| `localization` | amcl + map_server (ADR-0028) | `yaml_filename`, `initial_pose.*` | Loads a grid, adds nothing |
 
 **⚠ THE `mode` PARAMETER IS DEAD — every upstream config and tutorial sets it and it does nothing.** There is no `declare_parameter("mode", ...)` anywhere in `slam_toolbox_common.cpp`, `slam_mapper.cpp` or karto's `Mapper.cpp`. It is a comment with a colon in it. **The real switch is which executable runs:** `async_slam_toolbox_node` leaves `processor_type_` at `PROCESS`, while `localization_slam_toolbox_node`'s constructor sets `PROCESS_LOCALIZATION` (and kills the map saver, and forces `enable_interactive_mode_ = false`). So `slam.yaml` carries no `mode` key at all — copying a tutorial's params file gives a node that silently keeps mapping while called "localization".
 
@@ -304,7 +304,7 @@ Mapping rides on the *fused* `/odom`, so the flat tire does not corrupt the map 
 
 ## Nav2 — path planning and following (built 2026-08-03)
 
-Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `robot.launch.py` reuses `rs_launch.py` for the camera). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section** — slam_toolbox fills both roles.
+Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `robot.launch.py` reuses `rs_launch.py` for the camera). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section in `nav2.yaml`** — the `slam` service owns `/map` and `map→odom` (slam_toolbox when mapping; amcl + map_server in localization mode, ADR-0028).
 
 **Topic and TF ownership:**
 - `navigation_launch.py` remaps controller_server's output to **`/cmd_vel_nav`** and velocity_smoother's `cmd_vel_smoothed` back to **`/cmd_vel`**, so `roboclaw_driver` needs no change and no launch file of our own is required

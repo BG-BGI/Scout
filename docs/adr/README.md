@@ -32,3 +32,6 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0023](0023-location-sites.md) | Location sites — per-location data bundles behind one symlink |
 | [0024](0024-negative-obstacle-detection.md) | Negative obstacles — cliff_detector odom latch, marking-only STVL source, CM hard stop |
 | [0025](0025-flipper-rfid-companion-store.md) | Flipper Zero RFID — webui-gated scan loop, reads over zenoh, companion sqlite DB |
+| [0026](0026-flipper-nfc.md) | Flipper Zero NFC read/store mirroring the RFID pipeline |
+| [0027](0027-cicd-github-actions-deploy.md) | CI/CD — GHCR sha-pinned images, dispatch-only deploy on self-hosted runners |
+| [0028](0028-amcl-localization.md) | amcl + map_server replace slam_toolbox's localization mode |

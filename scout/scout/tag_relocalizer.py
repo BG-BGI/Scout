@@ -7,8 +7,9 @@ anywhere else is silently mislocalized, planning through walls. This node
 closes that gap: on the first sighting of a *registered* tag (scout-skills'
 registry at tags.db, which stores each tag's last surveyed map pose), it
 solves the robot's map pose from the live TF of the detection and publishes
-/initialpose, which localization_slam_toolbox_node accepts as a new anchor.
-Scan matching polishes from there.
+/initialpose, which amcl (localization mode's map->odom owner, ADR-0028)
+consumes natively to re-centre its particle cloud. The filter polishes from
+there.
 
 One seed per boot, deliberately: after the first fix the node goes quiet so
 it never fights slam_toolbox's own tracking. /tag_relocalizer/reseed

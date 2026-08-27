@@ -66,7 +66,8 @@ def _launch_setup(context, *args, **kwargs):
         # Composed bring-up: all 8 nav2 nodes as components in one process --
         # one executor, intra-process comms, 1 DDS participant instead of 8.
         # navigation_launch.py only LOADS components; the container normally
-        # comes from bringup_launch.py (which we skip -- no amcl/map_server),
+        # comes from bringup_launch.py (which we skip -- amcl/map_server live
+        # in the slam service's localization mode, ADR-0028),
         # so create it here, mirroring bringup_launch.py's container node.
         actions.append(Node(
             name='nav2_container',

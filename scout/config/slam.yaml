@@ -1,4 +1,5 @@
-# slam_toolbox: occupancy grid mapping and localization from /scan.
+# slam_toolbox: occupancy grid mapping from /scan (modes new + continue only —
+# localization mode runs amcl + map_server from amcl.yaml instead, ADR-0028).
 #
 # Inputs are the lidar and the fused odometry: /scan for ranges, odom->base_link from
 # the EKF for motion, base_link->laser from robot_state_publisher for mounting. This

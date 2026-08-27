@@ -16,9 +16,10 @@ that open files per operation pick up a switch with no restart at all.
      "created": "2026-08-22T15:04:05Z"}
 
 `slam_mode: auto` resolves to `continue` when the default map's .posegraph
-exists, else `new` — deliberately never `localization`, because serialize_map
-silently no-ops there (reports SUCCESS, writes nothing) and a revisited site
-wants its graph extended anyway.
+exists, else `new` — deliberately never `localization`, because in that mode
+slam_toolbox is not running at all (amcl + map_server localize on the saved
+grid, ADR-0028) so nothing can be saved, and a revisited site wants its graph
+extended anyway.
 
 The name regex is a shared contract with fleet-status (which duplicates it —
 share the schema, not code, per ADR-0011).
