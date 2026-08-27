@@ -86,6 +86,23 @@ main() {
   echo "waiting for NTP time sync..."
   until [ "$(timedatectl show -p NTPSynchronized --value)" = "yes" ]; do sleep 1; done
 
+  # Stale-project sweep: containers running OUR services under a different
+  # compose project name (a pre-`name:`-pin checkout, a runner workdir) are
+  # invisible to this project's down/--remove-orphans, duplicate workload and
+  # squat on host-network ports (2026-08-27 companion incident: a retired
+  # project's foxglove_bridge held :8766 while the real one crash-looped).
+  # Removes exactly: same compose service name, different project. PROJECT
+  # must match the `name:` pinned in docker-compose.yaml.
+  PROJECT=scout
+  OURS=$(docker compose $ALL config --services)
+  docker ps -a --format '{{.ID}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}' \
+  | while IFS="$(printf '\t')" read -r id proj svc; do
+      { [ -n "$proj" ] && [ "$proj" != "$PROJECT" ]; } || continue
+      echo "$OURS" | grep -qx "$svc" || continue
+      echo "== removing stale container from retired project '$proj' (service $svc)"
+      docker rm -f "$id"
+    done
+
   # Start everything ungated plus the `full` profile — exactly what this
   # branch's compose defines, no hardcoded service list to drift. explore and
   # observability stay down (start observability via the ops workflow).

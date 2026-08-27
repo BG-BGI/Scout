@@ -2,6 +2,12 @@
 # fleet-status-image.yml on arm64 runners). SCOUT_TAG in .env pins the whole
 # stack to one commit — scripts/deploy-pi.sh writes it; :latest (main's head)
 # is only the fallback for a hand-run stack. `build:` keys stay for local dev.
+
+# Pinned so the project never inherits the checkout directory's name: containers
+# born under a drifted project name survive every later down/--remove-orphans
+# (compose only sees its own project), duplicate workload and squat on
+# host-network ports. deploy-pi.sh's stale-project sweep assumes this value.
+name: scout
 x-service: &base
   image: ghcr.io/bg-bgi/scout:${SCOUT_TAG:-latest}
   network_mode: host
