@@ -76,7 +76,30 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # :<sha> is immutable content (same sha = same build context), so if it is
+      # already in GHCR there is nothing to build — deploy.yml calls this on every
+      # deploy and most deploys touch only bind-mounted code. Skipping saves the
+      # cache-hit rebuild+push; the mutable tags are refreshed server-side instead
+      # (imagetools create copies the manifest, seconds, no pull).
+      - name: Skip if :<sha> already in GHCR
+        id: exists
+        env:
+          SHA: ${{ inputs.ref || github.sha }}
+          BRANCH: ${{ inputs.branch || github.ref_name }}
+        run: |
+          repo=ghcr.io/bg-bgi/${{ matrix.image }}
+          if docker buildx imagetools inspect "$repo:$SHA" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            docker buildx imagetools create -t "$repo:${BRANCH//\//-}" "$repo:$SHA"
+            if [ "$BRANCH" = "main" ]; then
+              docker buildx imagetools create -t "$repo:latest" "$repo:$SHA"
+            fi
+            echo "== $repo:$SHA exists — skipped rebuild, refreshed mutable tags"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/build-push-action@v6
+        if: ${{ steps.exists.outputs.found != 'true' }}
         with:
           context: ${{ matrix.context }}
           platforms: linux/arm64
