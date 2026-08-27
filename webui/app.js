@@ -1262,8 +1262,11 @@ new ROSLIB.Topic({
 let activeSiteMeta = null;
 
 function renderSites(data) {
-  siteState.textContent = data.active || 'none';
   activeSiteMeta = (data.sites || []).find((s) => s.name === data.active) || null;
+  siteState.textContent = data.active
+    ? `${data.active} · ${(activeSiteMeta && activeSiteMeta.slam_mode) || 'auto'}`
+    : 'none';
+  renderSlamMode();
   siteList.innerHTML = '';
   for (const s of data.sites || []) {
     const row = document.createElement('div');
@@ -1287,6 +1290,76 @@ function renderSites(data) {
     const failed = last.restarts.filter((r) => !r.ok).map((r) => r.service);
     siteResult.textContent = `last switch: ${failed.join(', ')} failed to restart — retry from the System panel.`;
   }
+}
+
+// --- slam mode selector -------------------------------------------------------------
+// Writes site.json's slam_mode (fleet_status validates it) and restarts
+// slam + behaviors so mode:=site re-resolves it — the mode is which
+// executable runs (ADR-0003/0028), so there is no live switch.
+// Vocabulary is the SITE-level one (auto, not the launch-only 'site').
+const SLAM_MODES = [
+  ['auto', 'Continue the default map if it has a saved graph, else start a new one. Never localization.'],
+  ['new', 'Fresh blank map. Save map to keep it and make it the site default.'],
+  ['continue', 'Load the saved graph and keep extending it — the map stays savable.'],
+  ['localization', 'amcl on the saved grid map: map is fixed, nothing savable. Best for repeatable nav on a finished map.'],
+];
+const siteModeEl = document.getElementById('site-mode');
+const siteModeDesc = document.getElementById('site-mode-desc');
+
+function renderSlamMode() {
+  siteModeEl.innerHTML = '';
+  if (!activeSiteMeta) { siteModeDesc.textContent = ''; return; }
+  const current = activeSiteMeta.slam_mode || 'auto';
+  for (const [mode, desc] of SLAM_MODES) {
+    const btn = document.createElement('button');
+    btn.textContent = mode;
+    btn.title = desc;
+    if (mode === current) btn.classList.add('selected');
+    btn.addEventListener('click', () => setSlamMode(mode));
+    siteModeEl.appendChild(btn);
+  }
+  siteModeDesc.textContent = `${current}: ${SLAM_MODES.find(([m]) => m === current)[1]}`;
+}
+
+async function setSlamMode(mode) {
+  if (!activeSiteMeta || mode === (activeSiteMeta.slam_mode || 'auto')) return;
+  if (siteNavBusy) { alert('Navigation goal active — cancel it before changing slam mode.'); return; }
+  if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before changing slam mode.'); return; }
+  const map = activeSiteMeta.default_map;
+  // Head off the two site.json states that make slam.launch.py refuse to
+  // start (crash-loop under restart: unless-stopped).
+  if ((mode === 'continue' || mode === 'localization') && !map) {
+    alert(`"${mode}" needs a default map — Save map first.`);
+    return;
+  }
+  if (mode === 'continue' && !(activeSiteMeta.maps || []).includes(map)) {
+    alert(`"${map}" has no saved graph (.posegraph) in this site — Save map first.`);
+    return;
+  }
+  if (mode === 'localization' && !(activeSiteMeta.grids || []).includes(map)) {
+    alert(`"${map}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session (Save map writes both formats).`);
+    return;
+  }
+  const desc = SLAM_MODES.find(([m]) => m === mode)[1];
+  if (!confirm(`Set slam mode to "${mode}"?\n\n${desc}\n\nslam + behaviors restart (~20 s); driving and camera stay up.`)) return;
+  siteResult.textContent = `setting mode "${mode}"…`;
+  try {
+    const res = await fetch(`${FLEET_API}/sites/active`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slam_mode: mode }),
+    });
+    const body = await res.json();
+    if (!res.ok) { siteResult.textContent = 'mode change failed: ' + (body.error || res.status); return; }
+    await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+    await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+    siteResult.textContent = `slam mode "${mode}" — restarting slam + behaviors…`;
+  } catch (e) {
+    siteResult.textContent = 'fleet_status unreachable';
+    return;
+  }
+  setTimeout(refreshSites, 5000);
+  setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
 }
 
 async function switchSite(name) {

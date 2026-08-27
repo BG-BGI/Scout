@@ -426,9 +426,14 @@ def _site_meta(name):
         pass
     maps_dir = os.path.join(site_dir, "maps")
     if os.path.isdir(maps_dir):
-        meta["maps"] = sorted(f[:-len(".posegraph")]
-                              for f in os.listdir(maps_dir)
+        entries = os.listdir(maps_dir)
+        meta["maps"] = sorted(f[:-len(".posegraph")] for f in entries
                               if f.endswith(".posegraph"))
+        # Grid (.yaml/.pgm) availability decides whether localization mode can
+        # start at all (slam.launch.py hard-refuses without it, ADR-0028);
+        # pre-ADR-0028 sites have the posegraph only.
+        meta["grids"] = sorted(f[:-len(".yaml")] for f in entries
+                               if f.endswith(".yaml"))
     return meta
 
 
@@ -489,6 +494,12 @@ def update_active_site(patch):
     changed = {k: patch[k] for k in allowed if k in patch}
     if not changed:
         return 400, {"error": f'nothing to update (allowed: {", ".join(allowed)})'}
+    # Schema duplicated from scout.core.sites.SLAM_MODES (ADR-0011: no scout
+    # import here). An unknown mode written to site.json makes slam.launch.py
+    # raise at startup -> the slam container crash-loops.
+    slam_modes = ("auto", "new", "localization", "continue")
+    if "slam_mode" in changed and changed["slam_mode"] not in slam_modes:
+        return 400, {"error": f'slam_mode must be one of {", ".join(slam_modes)}'}
     data.update(changed)
     _write_site_json(site_dir, data)
     return 200, {"ok": True, "site": _site_meta(active)}
