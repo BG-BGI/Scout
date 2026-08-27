@@ -21,7 +21,7 @@ on:
       action:
         description: compose action (diag = read-only host diagnostics — port listeners + all containers, for port-conflict hunts)
         type: choice
-        options: [ps, logs, restart, stop, start, up, down, diag]
+        options: [ps, logs, restart, stop, start, up, down, diag, rm]
         default: ps
       services:
         description: "space-separated services; blank = all (in the active profiles)"
@@ -78,5 +78,14 @@ jobs:
               ss -ltnp | grep -E ':(8765|8766|7447|9003|9090|80) ' || true
               echo "--- all containers (docker ps -a) ---"
               docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -40
+              ;;
+            # docker rm -f by CONTAINER NAME (services input) — for stale
+            # containers left by a retired compose project name, which
+            # down/--remove-orphans cannot reach (they only see their own
+            # project). Found via diag; e.g. companion-rtabmap-1 survived the
+            # companion -> scout-companion project rename and held port 8766.
+            rm)
+              [ -n "$SERVICES" ] || { echo "::error::rm needs container names in services"; exit 1; }
+              docker rm -f $SERVICES
               ;;
           esac
