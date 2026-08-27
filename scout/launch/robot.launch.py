@@ -436,6 +436,21 @@ def generate_launch_description():
             respawn_delay=2.0,
         ),
 
+        # Boot relocalization off the portable home base (2026-08-27): first
+        # sighting of a registered tag solves the robot's map pose from the
+        # tag's surveyed registry pose and seeds /initialpose (slam runs in
+        # localization mode via site policy, so a cold boot anywhere the tag
+        # is visible localizes without a human /initialpose click). One seed
+        # per boot; /tag_relocalizer/reseed re-arms. respawn: vision-only,
+        # same tier as apriltag (ADR-0015 tier 2).
+        Node(
+            package='scout',
+            executable='tag_relocalizer',
+            output='screen',
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+
         # Flipper Zero bridge (ADR-0025/0026): enable-gated RFID + NFC scan
         # loops (/flipper/rfid_enable, /flipper/nfc_enable from the webui
         # panels — mutually exclusive) + /flipper/cli passthrough. Flipper

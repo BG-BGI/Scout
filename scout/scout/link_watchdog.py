@@ -22,13 +22,12 @@ observable).
 Link probe: TCP connect to the default gateway (port 80). A RST/refused
 counts as UP — reachability is the question, not an open port. No ping
 binary needed (ros:humble-ros-core ships none). The gateway is re-read from
-`ip route` periodically so hotspot/corp handoffs keep working;
+/proc/net/route periodically so hotspot/corp handoffs keep working;
 `gateway_override` exists mainly so a test can fake a dead link:
   ros2 param set /link_watchdog gateway_override 10.255.255.1
 """
 
 import socket
-import subprocess
 import time
 
 from action_msgs.msg import GoalStatusArray
@@ -56,13 +55,19 @@ STATUS_QOS = LATCHED_QOS
 
 
 def _default_gateway() -> str | None:
+    # /proc/net/route, NOT `ip route`: the runtime image ships no iproute2, so
+    # the subprocess path read as "no gateway" forever and the watchdog paused
+    # nav 5 s after every boot without ever recovering (found 2026-08-27).
+    # Host networking means the container sees the host's routing table.
     try:
-        out = subprocess.run(
-            ['ip', 'route', 'show', 'default'],
-            capture_output=True, text=True, timeout=2.0,
-        ).stdout.split()
-        return out[out.index('via') + 1] if 'via' in out else None
-    except Exception:  # noqa: BLE001 — any failure (no ip, no route, timeout) = no gateway
+        with open('/proc/net/route') as f:
+            for line in f.readlines()[1:]:
+                dest, gw, flags = line.split()[1:4]
+                # default route (0.0.0.0/0) with RTF_GATEWAY; little-endian hex
+                if dest == '00000000' and int(flags, 16) & 0x2:
+                    return socket.inet_ntoa(bytes.fromhex(gw)[::-1])
+        return None
+    except Exception:  # noqa: BLE001 — any failure (no file, malformed row) = no gateway
         return None
 
 

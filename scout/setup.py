@@ -52,6 +52,7 @@ setup(
             'collision_polygon_manager = scout.collision_polygon_manager:main',
             'cliff_detector = scout.cliff_detector:main',
             'flipper_node = scout.flipper_node:main',
+            'tag_relocalizer = scout.tag_relocalizer:main',
         ],
     },
 )

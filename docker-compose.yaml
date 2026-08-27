@@ -109,7 +109,7 @@ services:
       resources:
         limits:
           cpus: "2.0"
-    command: ros2 launch scout robot.launch.py enable_joystick:=true profile:=${SCOUT_PROFILE:-default}
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && ros2 launch scout robot.launch.py enable_joystick:=true profile:=${SCOUT_PROFILE:-default}"
     # One knob switches nav2/slam/realsense together: set SCOUT_PROFILE=tight_tunnel
     # in .env (see .env.example) or pass profile:= on the command line (ADR-0010).
 
@@ -126,7 +126,7 @@ services:
       resources:
         limits:
           cpus: "0.5"
-    command: sh -c "sleep 3 && ros2 launch scout behaviors.launch.py"
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && sleep 3 && ros2 launch scout behaviors.launch.py"
 
   # Occupancy grid from /scan. Needs `robot` up first. mode:=site resolves the
   # map + mode from sites/active/site.json (ADR-0023) — switch sites from the
@@ -142,7 +142,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-    command: sh -c "sleep 5 && ros2 launch scout slam.launch.py mode:=site profile:=${SCOUT_PROFILE:-default}"
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && sleep 5 && ros2 launch scout slam.launch.py mode:=site profile:=${SCOUT_PROFILE:-default}"
 
   # Path planning and following. Needs `slam` up first for /map and map->odom.
   # Reuses upstream's navigation_launch.py because it owns the cmd_vel plumbing: it
@@ -167,7 +167,7 @@ services:
       resources:
         limits:
           cpus: "1.5"
-    command: sh -c "sleep 10 && ros2 launch scout nav2.launch.py profile:=${SCOUT_PROFILE:-default}"
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && sleep 10 && ros2 launch scout nav2.launch.py profile:=${SCOUT_PROFILE:-default}"
 
   # Frontier exploration (explore_lite). Profile-gated so plain `compose up` never
   # starts it. scout-switch pre-creates it in Created state (`compose --profile
@@ -187,7 +187,7 @@ services:
       resources:
         limits:
           cpus: "1.0"
-    command: ros2 launch scout explore.launch.py profile:=${SCOUT_PROFILE:-default}
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && ros2 launch scout explore.launch.py profile:=${SCOUT_PROFILE:-default}"
 
   # Trimmed off the &base anchor (ADR-0005): a DDS participant, so it keeps
   # host net + ipc + the discovery env + the ROS entrypoint, but it needs no
@@ -209,7 +209,7 @@ services:
           cpus: "0.3"
     # network_mode: bridge  # only in WSL
     # ports: ["8765:8765"]  # only in WSL
-    command: ros2 run foxglove_bridge foxglove_bridge
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && ros2 run foxglove_bridge foxglove_bridge"
 
   # Web UI transport: JSON<->DDS bridge on ws://:9090 (roslibjs speaks to this).
   # Publishes /connected_clients, which led_status uses for connect/disconnect flashes.
@@ -223,7 +223,7 @@ services:
       resources:
         limits:
           cpus: "0.3"
-    command: ros2 launch rosbridge_server rosbridge_websocket_launch.xml
+    command: sh -c "/ros_ws/src/scripts/wait-clock-sane.sh && ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
 
   # Static files for the web UI (http://scout.local). Serves the bind-mounted
   # ./webui directly, so UI edits are live without a rebuild. Host networking +
