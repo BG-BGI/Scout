@@ -219,7 +219,15 @@ services:
       # compares the live volume, so this service hard-fails alongside the
       # others on a stale overlay after an image bump (consistent, arguably
       # better than silently running mismatched).
+      #
+      # ⚠ All three mounts are needed: build_package uses --symlink-install,
+      # so the overlay's scout* entries are symlinks into /ros_ws/build and
+      # /ros_ws/src — with only the overlay volume they dangle and ament
+      # silently skips the package (verified: scout_interfaces stayed
+      # unresolvable until the build volume was added).
       - ros_overlay_install:/opt/overlay/install:ro
+      - ros_ws_build:/ros_ws/build:ro
+      - .:/ros_ws/src/:ro
     deploy:
       resources:
         limits:
