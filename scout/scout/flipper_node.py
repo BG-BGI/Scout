@@ -10,9 +10,11 @@ Design (ADR-0025/0026, led_node conventions):
     RFID and NFC panels). One serial line means the two modes are MUTUALLY
     EXCLUSIVE: enabling one while the other is on is rejected.
       - RFID: loop `rfid read` (flat command, blocks ASK/PSK until a card).
-      - NFC: the `nfc` command opens a sub-shell, so the loop is `nfc` (enter
-        once) then `scanner` (each cycle), and `exit` on disable to return to
-        the top-level `>:` (ADR-0026, core/nfc.py).
+      - NFC: no CLI verb prints a UID, so the loop DUMPS the card to a .nfc file
+        and reads it back — `nfc` (enter the sub-shell) then `dump` each cycle,
+        and on a successful dump `exit` to the top level to `storage read` /
+        `storage remove` the file (storage is unavailable inside the sub-shell).
+        `exit` also runs on disable to return to `>:` (ADR-0026, core/nfc.py).
     Each read is stamped with the robot's map pose (lookup_pose2 at detection
     time — null when unlocalized) and published as latched JSON on /rfid/reads
     or /nfc/reads, where the zenoh bridge carries it to the companion recorder
@@ -34,7 +36,16 @@ from scout_interfaces.srv import FlipperCli as FlipperCliSrv
 from std_msgs.msg import String
 from std_srvs.srv import SetBool
 
-from scout.core.nfc import NFC_ENTER, NFC_EXIT, NFC_SCAN, parse_scan_output
+from scout.core.nfc import (
+    NFC_ENTER,
+    NFC_EXIT,
+    nfc_dump_cmd,
+    nfc_mkdir_cmd,
+    nfc_read_file_cmd,
+    nfc_remove_cmd,
+    parse_dump_output,
+    parse_nfc_file,
+)
 from scout.core.rfid import PROMPT, parse_read_output, strip_echo
 from scout.core.status import (
     format_flipper_status,
@@ -51,6 +62,11 @@ SCANNING = 'scanning'
 
 RFID = 'rfid'
 NFC = 'nfc'
+
+# NFC read phases (see core/nfc.py header): DUMP = waiting on `dump` inside the
+# nfc sub-shell; READFILE = waiting on top-level `storage read` of the .nfc file.
+NFC_DUMP = 'dump'
+NFC_READFILE = 'readfile'
 
 
 class FlipperNode(Node):
@@ -76,6 +92,7 @@ class FlipperNode(Node):
         self._enabled = False
         self._scan_mode = RFID         # which radio the loop drives when enabled
         self._in_nfc_shell = False     # inside the Flipper `nfc` sub-shell
+        self._nfc_phase = None         # NFC_DUMP / NFC_READFILE while scanning
         self._last_error = ''
         self._buf = ''
         self._last_connect_attempt = 0.0
@@ -128,6 +145,7 @@ class FlipperNode(Node):
             pass
         self._enabled = False
         self._in_nfc_shell = False
+        self._nfc_phase = None
         self._buf = ''
         self._set_state(DISCONNECTED, error='%s: %s' % (where, exc))
 
@@ -237,37 +255,97 @@ class FlipperNode(Node):
         self._buf = ''
         if self._scan_mode == RFID:
             self._cli.send_line('rfid read')
-        else:                             # NFC: enter the sub-shell once, then
-            if not self._in_nfc_shell:    # run `scanner` each cycle within it
-                self._cli.send_line(NFC_ENTER)
-                self._in_nfc_shell = True
-            self._cli.send_line(NFC_SCAN)
+        else:
+            self._start_nfc_dump()
         self._set_state(SCANNING)
+
+    def _start_nfc_dump(self):
+        """Begin one NFC read cycle. First entry (top level) clears any stale
+        temp file and ensures /ext/nfc exists, then enters the `nfc` sub-shell;
+        every cycle issues `dump` and waits in the NFC_DUMP phase. There is no
+        UID on the CLI, so we dump the card to a .nfc file and read it back
+        (core/nfc.py)."""
+        if not self._in_nfc_shell:
+            for cmd in (nfc_mkdir_cmd(), nfc_remove_cmd()):   # top level
+                self._cli.send_line(cmd)
+                self._cli.drain_to_prompt(self._cli_timeout)
+            self._cli.send_line(NFC_ENTER)
+            self._in_nfc_shell = True
+        self._cli.send_line(nfc_dump_cmd())
+        self._nfc_phase = NFC_DUMP
 
     def _tick_scanning(self):
         if not self._enabled:
-            self._cli.send_ctrl_c()
-            self._cli.drain_to_prompt(self._cli_timeout)
-            if self._scan_mode == NFC and self._in_nfc_shell:
-                self._cli.send_line(NFC_EXIT)   # leave sub-shell -> top-level
-                self._cli.drain_to_prompt(self._cli_timeout)
-                self._in_nfc_shell = False
-            self._set_state(IDLE)
+            self._stop_scanning()
             return
         self._buf += self._cli.read_available()
+        # TEMPORARY bench capture at INFO (revert to debug once the real
+        # firmware shapes are confirmed on this unit): core/nfc.py's header says
+        # the dump->storage-read shell dance is from firmware SOURCE, not yet
+        # verified end to end on hardware.
+        if self._buf:
+            self.get_logger().info('%s raw buf: %r' % (self._scan_mode, self._buf),
+                                   throttle_duration_sec=2.0)
         if self._scan_mode == RFID:
-            hit = parse_read_output(self._buf)
+            self._tick_scanning_rfid()
         else:
-            hit = parse_scan_output(self._buf)
+            self._tick_scanning_nfc()
+
+    def _stop_scanning(self):
+        """Disable took effect mid-scan: Ctrl+C the in-flight command, leave the
+        nfc sub-shell if we are in it (so the port is back at the top-level
+        prompt), and idle."""
+        self._cli.send_ctrl_c()
+        self._cli.drain_to_prompt(self._cli_timeout)
+        if self._scan_mode == NFC and self._in_nfc_shell:
+            self._cli.send_line(NFC_EXIT)   # leave sub-shell -> top-level
+            self._cli.drain_to_prompt(self._cli_timeout)
+            self._in_nfc_shell = False
+        self._nfc_phase = None
+        self._buf = ''
+        self._set_state(IDLE)
+
+    def _tick_scanning_rfid(self):
+        hit = parse_read_output(self._buf)
         if hit is None:
             return
         self._publish_read(hit)
-        # Restart the read: Ctrl+C back to the prompt (top-level for RFID, the
-        # nfc> sub-shell prompt for NFC — we stay in the shell), then IDLE
-        # re-arms next tick (still enabled) so the loop keeps scanning.
+        # Restart: Ctrl+C back to the top-level prompt; IDLE re-arms next tick
+        # (still enabled) so the loop keeps reading.
         self._cli.send_ctrl_c()
         self._cli.drain_to_prompt(self._cli_timeout)
         self._buf = ''
+        self._set_state(IDLE)
+
+    def _tick_scanning_nfc(self):
+        if self._nfc_phase == NFC_DUMP:
+            result = parse_dump_output(self._buf)
+            if result is None:
+                return                     # dump still running (up to ~5 s)
+            if result == 'error':          # no card / read fail: re-dump in shell
+                self._buf = ''
+                self._cli.send_line(nfc_dump_cmd())
+                return
+            # 'saved': storage is not available inside the sub-shell, so leave it
+            # and stream the dumped .nfc file back at the top level.
+            self._cli.send_line(NFC_EXIT)
+            self._cli.drain_to_prompt(self._cli_timeout)
+            self._in_nfc_shell = False
+            self._buf = ''
+            self._cli.send_line(nfc_read_file_cmd())
+            self._nfc_phase = NFC_READFILE
+            return
+        # NFC_READFILE: the whole file streams before the prompt returns.
+        if PROMPT not in self._buf:
+            return
+        hit = parse_nfc_file(self._buf)
+        self._cli.send_line(nfc_remove_cmd())      # drop the temp file
+        self._cli.drain_to_prompt(self._cli_timeout)
+        self._buf = ''
+        self._nfc_phase = None
+        if hit is not None:
+            self._publish_read(hit)
+        # Back at the top level; next IDLE re-enters the sub-shell and dumps.
         self._set_state(IDLE)
 
     def _publish_read(self, hit):
