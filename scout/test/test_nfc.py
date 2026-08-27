@@ -1,73 +1,135 @@
-"""scout.core.nfc — Flipper NFC `scanner` output parsing (1:1 with core/nfc.py).
+"""scout.core.nfc — Flipper NFC dump->file read parsing (1:1 with core/nfc.py).
 
-⚠ FIXTURES ARE BEST-EFFORT until bench-captured (plan step F0): the transcript
-shapes below follow the official CLI docs (the `nfc` sub-shell `scanner` verb)
-and common firmware output, but the real success line must be recorded from the
-attached Flipper (miniterm /dev/ttyACM0 230400, `nfc` then `scanner`, present a
-card) and pasted here verbatim. The parser is deliberately tolerant of
-separators/prefixes so a format drift shows up as a test edit, not a field
-failure. Unlike RFID, MIFARE/NTAG/ISO14443 are VALID techs here.
+The output shapes below are from firmware SOURCE (applications/main/nfc/cli/…,
+dev branch): `dump` prints "Dumping as \"<name>\"" / "Dump saved to '<path>'"
+or an ANSI-red "Error: <reason>"; `storage read` prints "Size: N" then the
+dumped .nfc file verbatim, whose "Device type:" and "UID:" key lines carry the
+authoritative protocol string and UID. NOT yet bench-confirmed on this unit —
+recapture (miniterm /dev/ttyACM0 230400) and reconcile before trusting reads.
+Unlike RFID, MIFARE/NTAG/ISO14443 are VALID Device-type values here.
 """
 
-from scout.core.nfc import NFC_ENTER, NFC_EXIT, NFC_SCAN, parse_scan_output
+from scout.core.nfc import (
+    NFC_ENTER,
+    NFC_EXIT,
+    NFC_TMP_PATH,
+    nfc_dump_cmd,
+    nfc_mkdir_cmd,
+    nfc_read_file_cmd,
+    nfc_remove_cmd,
+    parse_dump_output,
+    parse_nfc_file,
+)
 
-SCAN_IN_PROGRESS = (
-    'scanner\r\n'
-    'Scanning for NFC tags...\r\n'
-    'Press Ctrl+C to abort\r\n'
+ANSI_RED = '\x1b[31m'
+ANSI_RESET = '\x1b[0m'
+
+# A real Flipper NFC file streamed by `storage read` (Size header + verbatim
+# file + trailing newline). Comment lines start with '# '.
+STORAGE_READ_MFC = (
+    'Size: 1163\r\n'
+    'Filetype: Flipper NFC device\r\n'
+    'Version: 4\r\n'
+    '# Device type can be ISO14443-3A, ISO14443-3B, ISO14443-4A, ISO14443-4B, '
+    'ISO15693-3, FeliCa, NTAG/Ultralight, Mifare Classic, Mifare Plus, '
+    'Mifare DESFire, SLIX, ST25TB\r\n'
+    'Device type: Mifare Classic\r\n'
+    '# UID is common for all formats\r\n'
+    'UID: 04 A2 2B 5C\r\n'
+    'ATQA: 00 04\r\n'
+    'SAK: 08\r\n'
+    '\r\n'
 )
 
 
-# --- command constants (the sub-shell sequence flipper_node drives) ----------
+# --- command constants / builders (the sequence flipper_node drives) ---------
 
 def test_subshell_command_constants():
-    assert (NFC_ENTER, NFC_SCAN, NFC_EXIT) == ('nfc', 'scanner', 'exit')
+    assert (NFC_ENTER, NFC_EXIT) == ('nfc', 'exit')
+    assert nfc_dump_cmd() == 'dump -f /ext/nfc/_scout_scan.nfc'
+    assert nfc_read_file_cmd() == 'storage read /ext/nfc/_scout_scan.nfc'
+    assert nfc_remove_cmd() == 'storage remove /ext/nfc/_scout_scan.nfc'
+    assert nfc_mkdir_cmd() == 'storage mkdir /ext/nfc'
+    assert nfc_dump_cmd('/ext/nfc/x.nfc') == 'dump -f /ext/nfc/x.nfc'
+    assert NFC_TMP_PATH == '/ext/nfc/_scout_scan.nfc'
 
 
-# --- parse_scan_output -------------------------------------------------------
+# --- parse_dump_output -------------------------------------------------------
 
-def test_no_tag_yet_returns_none():
-    assert parse_scan_output(SCAN_IN_PROGRESS) is None
-    assert parse_scan_output('') is None
-
-
-def test_tech_with_inline_uid():
-    buf = SCAN_IN_PROGRESS + 'MIFARE Classic 1K 04 A2 2B 5C\r\n'
-    assert parse_scan_output(buf) == {'protocol': 'MIFARE Classic 1K',
-                                      'data_hex': '04A22B5C'}
+def test_dump_in_progress_returns_none():
+    assert parse_dump_output('') is None
+    assert parse_dump_output('Press Ctrl+C to abort\r\n\n') is None
+    assert parse_dump_output(
+        'Protocols detected: Mifare Classic\r\n'
+        'Dumping as "Mifare Classic"\r\n') is None
 
 
-def test_uid_line_carries_preceding_tech():
-    buf = SCAN_IN_PROGRESS + 'ISO14443-3A\r\nUID: 04 A2 2B 5C 6D 7E 8F\r\n'
-    assert parse_scan_output(buf) == {'protocol': 'ISO14443-3A',
-                                      'data_hex': '04A22B5C6D7E8F'}
+def test_dump_saved_is_terminal_success():
+    buf = ('Protocols detected: Mifare Classic\r\n'
+           'Dumping as "Mifare Classic"\r\n'
+           "Dump saved to '/ext/nfc/_scout_scan.nfc'\r\n")
+    assert parse_dump_output(buf) == 'saved'
 
 
-def test_uid_before_any_tech_falls_back_to_nfc():
-    assert parse_scan_output('UID: AABBCCDD\r\n') == {'protocol': 'NFC',
-                                                      'data_hex': 'AABBCCDD'}
+def test_dump_error_is_terminal_even_with_ansi():
+    # No card within the timeout: ANSI-red "Error: timeout".
+    buf = 'Press Ctrl+C to abort\r\n\n' + ANSI_RED + 'Error: timeout\r\n' + ANSI_RESET
+    assert parse_dump_output(buf) == 'error'
+    assert parse_dump_output(ANSI_RED + 'Error: failed to read\r\n' + ANSI_RESET) == 'error'
 
 
-def test_subprotocol_wins_longest_match():
-    buf = 'MIFARE Classic 4K 11 22 33 44\r\n'
-    assert parse_scan_output(buf)['protocol'] == 'MIFARE Classic 4K'
-    assert parse_scan_output('NTAG215 01 02 03 04\r\n')['protocol'] == 'NTAG215'
+def test_dump_multi_protocol_still_saves():
+    buf = ('Protocols detected: Iso14443-3a, Mifare Classic\r\n'
+           'Dumping as "Iso14443-3a"\r\n'
+           "Use '-p' key to specify another protocol\r\n"
+           "Dump saved to '/ext/nfc/_scout_scan.nfc'\r\n")
+    assert parse_dump_output(buf) == 'saved'
 
 
-def test_mifare_is_valid_here_unlike_rfid():
-    # core/rfid.py rejects 'MIFARE' (LF-only list); NFC accepts it.
-    assert parse_scan_output('MIFARE 1A 2B 3C 4D\r\n') == {
-        'protocol': 'MIFARE', 'data_hex': '1A2B3C4D'}
+# --- parse_nfc_file ----------------------------------------------------------
+
+def test_file_read_yields_protocol_and_uid():
+    assert parse_nfc_file(STORAGE_READ_MFC) == {
+        'protocol': 'Mifare Classic', 'data_hex': '04A22B5C'}
 
 
-def test_prose_and_bare_tech_not_a_read():
-    assert parse_scan_output('Present a MIFARE card to the back\r\n') is None
-    assert parse_scan_output('NTAG215\r\n') is None
+def test_file_read_7byte_ntag_uid():
+    buf = ('Size: 900\r\n'
+           'Filetype: Flipper NFC device\r\n'
+           'Version: 4\r\n'
+           'Device type: NTAG215\r\n'
+           'UID: 04 A2 2B 5C 6D 7E 8F\r\n'
+           '\r\n')
+    assert parse_nfc_file(buf) == {
+        'protocol': 'NTAG215', 'data_hex': '04A22B5C6D7E8F'}
 
 
-def test_odd_nibble_count_rejected():
-    assert parse_scan_output('MIFARE Classic 1K 04 A2 2\r\n') is None
-    assert parse_scan_output('UID: 04 A2 2\r\n') is None
+def test_file_read_comment_lines_are_not_the_keys():
+    # The '# Device type can be …' / '# UID is common …' comments must not be
+    # mistaken for the real key lines.
+    buf = ('# Device type can be Mifare Classic, NTAG/Ultralight\r\n'
+           '# UID is common for all formats\r\n'
+           'Device type: FeliCa\r\n'
+           'UID: 01 02 03 04 05 06 07 08\r\n')
+    assert parse_nfc_file(buf) == {
+        'protocol': 'FeliCa', 'data_hex': '0102030405060708'}
+
+
+def test_file_read_incomplete_returns_none():
+    # Header only, UID not streamed yet.
+    assert parse_nfc_file('Size: 1163\r\n'
+                          'Filetype: Flipper NFC device\r\n'
+                          'Device type: Mifare Classic\r\n') is None
+    assert parse_nfc_file('') is None
+
+
+def test_file_read_uid_without_device_type_falls_back_to_nfc():
+    assert parse_nfc_file('UID: AA BB CC DD\r\n') == {
+        'protocol': 'NFC', 'data_hex': 'AABBCCDD'}
+
+
+def test_file_read_odd_nibble_uid_rejected():
+    assert parse_nfc_file('Device type: Mifare Classic\r\nUID: 04 A2 2\r\n') is None
 
 
 # The /nfc/reads wire format lives in scout.core.status (format_nfc_read); its

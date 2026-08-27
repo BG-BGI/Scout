@@ -120,7 +120,7 @@ def parse_rfid_read(data):
 def format_nfc_read(protocol, data_hex, pose, stamp_utc, read_id):
     """/nfc/reads (flipper_node -> zenoh -> companion nfc_recorder, ADR-0026).
     Structural mirror of format_rfid_read; `data_hex` carries the tag UID and
-    `protocol` the HF tech (e.g. 'MIFARE Classic 1K'). `pose` is (x, y, yaw) or
+    `protocol` the .nfc Device type (e.g. 'Mifare Classic'). `pose` is (x, y, yaw) or
     None (no map localization at read time — degrade, don't break)."""
     return json.dumps({
         'read_id': read_id,
