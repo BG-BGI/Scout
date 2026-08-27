@@ -19,9 +19,9 @@ on:
         options: [pi, companion]
         default: pi
       action:
-        description: compose action
+        description: compose action (diag = read-only host diagnostics — port listeners + all containers, for port-conflict hunts)
         type: choice
-        options: [ps, logs, restart, stop, start, up, down]
+        options: [ps, logs, restart, stop, start, up, down, diag]
         default: ps
       services:
         description: "space-separated services; blank = all (in the active profiles)"
@@ -69,4 +69,14 @@ jobs:
             start)   docker compose $P start $SERVICES ;;
             up)      docker compose $P up -d --remove-orphans $SERVICES ;;
             down)    docker compose $P down --remove-orphans ;;
+            # Read-only host diagnostics: who listens on the stack's ports, and
+            # every container on the box (compose ps hides other projects — the
+            # 2026-08-27 companion foxglove_bridge port-8766 crash-loop was
+            # invisible to it). SERVICES, if set, greps listeners for it too.
+            diag)
+              echo "--- listeners (ss -ltnp) ---"
+              ss -ltnp | grep -E ':(8765|8766|7447|9003|9090|80) ' || true
+              echo "--- all containers (docker ps -a) ---"
+              docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -40
+              ;;
           esac
