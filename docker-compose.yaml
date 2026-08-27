@@ -210,6 +210,16 @@ services:
       # no repo bind mount here (see above) — just the clock gate script,
       # which the trimmed service otherwise can't see
       - ./scripts/wait-clock-sane.sh:/ros_ws/src/scripts/wait-clock-sane.sh:ro
+      # Overlay volume (read-only) so the bridge can resolve scout_interfaces
+      # service types (/flipper/cli, /set_led_mode, /set_user_led). Without it
+      # the image-baked /opt/overlay/install has no scout packages and the
+      # bridge WARN-spams "package 'scout_interfaces' not found" on every
+      # discovery refresh — log noise that reads like a crash loop, and those
+      # services are un-callable from Foxglove. Cost: the stamp guard now
+      # compares the live volume, so this service hard-fails alongside the
+      # others on a stale overlay after an image bump (consistent, arguably
+      # better than silently running mismatched).
+      - ros_overlay_install:/opt/overlay/install:ro
     deploy:
       resources:
         limits:
