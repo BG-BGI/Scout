@@ -69,6 +69,24 @@ This file names the concepts and maps the running system.
   (test_status.py). Nodes may not `json.dumps` a status inline.
 - **overlay volume** — the `ros_overlay_install` named volume holding the built
   workspace; seeds once from the image. See ADR-0005.
+- **elevator call / callStatus** — one Schindler RBL trip: POST /calls →
+  `Enter` (door open, elevator waits on the robot) → confirm → ride → `Exit` →
+  confirm → `Done`. Door-open windows are elevator-timed; PORT aborts lapsed
+  calls. Cancel = DELETE (→ `Aborted`); a robot inside the car must POST a new
+  call. See ADR-0030.
+- **ride** — the orchestrated elevator trip run by `elevator_ride`
+  (schindler-rbl SDK state machine + scout-skills rosbridge adapter), phases
+  `nav_to_door → calling → wait_car → board → confirm_enter → riding →
+  exit_move → confirm_exit`. Board/exit are dead-reckoned `run_move` — the car
+  interior is unmapped.
+- **floorNumber vs floorLabel** — RBL floorNumber is the 1-based index among
+  SERVED stops, NOT the displayed label: sandbox floorNumber 2 = label "0"
+  (Lobby). The off-by-lobby bug. Map via `elevator_floors`; elevator.json
+  floor keys are floorNumbers.
+- **PORT Gateway / sandbox** — the on-site RBL endpoint (mTLS client cert,
+  private CA) and its shared cloud twin sandbox.schindler.com (full-chain PEM
+  required, `identity` required on calls, constant sim traffic = `Busy`
+  rejections are normal).
 
 ## System map (nodes → topics/services)
 
@@ -131,6 +149,11 @@ symlink (ADR-0023); switch sites from the webui Site panel. Per site:
 - `sites/<name>/rfid.db` — RFID read log + registry (companion, ADR-0025).
 - `sites/<name>/captures/<runstamp>/` — patrol photos + manifest.
 - `sites/<name>/captures/bags/<UTC>/` — rosbags from bag_recorder (ADR-0017).
+- `sites/<name>/elevator.json` — Schindler RBL building topology: equipment
+  numbers, floorNumber→door-waypoint mapping, sides, board/exit distances
+  (ADR-0030; hand-authored, schema in docker/scout-skills/elevator_config.py).
+  Deployment identity lives in `.env` + gitignored `secrets/schindler/`, not
+  here.
 
 All gitignored; migrate a pre-sites checkout once with
 `python3 scripts/migrate_sites.py`.

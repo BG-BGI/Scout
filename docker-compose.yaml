@@ -342,7 +342,12 @@ services:
   # ⚠ No auth — LAN-trust only. go_to never blocks on the drive, so the
   # latched-goal semantics still apply: poll nav_status, stop with nav_cancel.
   scout_skills:
-    build: docker/scout-skills
+    build:
+      context: docker/scout-skills
+      # Private schindler-rbl install (ADR-0030):
+      #   GH_TOKEN=$(gh auth token) docker compose build scout_skills
+      secrets:
+        - gh_token
     image: ghcr.io/bg-bgi/scout-skills:${SCOUT_TAG:-latest}
     network_mode: host
     restart: unless-stopped
@@ -358,10 +363,22 @@ services:
       # site switch applies live with no restart of this container.
       - WAYPOINTS_PATH=/sites/active/maps/waypoints.json
       - TAGS_DB=/sites/active/maps/tags.db
+      # Schindler RBL elevator API (ADR-0030). Empty base URL disables the
+      # elevator tools; identity + gateway are deployment facts (.env),
+      # building topology lives per-site in elevator.json.
+      - SCHINDLER_BASE_URL=${SCHINDLER_BASE_URL:-}
+      - SCHINDLER_CERT_PATH=/secrets/schindler/client.pem
+      - SCHINDLER_KEY_PATH=/secrets/schindler/client.key
+      - SCHINDLER_BEARER=${SCHINDLER_BEARER:-}
+      - SCHINDLER_TLS_VERIFY=${SCHINDLER_TLS_VERIFY:-true}
+      - SCHINDLER_IDENTITY=${SCHINDLER_IDENTITY:-}
+      - ELEVATOR_CONFIG_PATH=/sites/active/elevator.json
     volumes:
       # Parent dir, NEVER ./sites/active/... — mounting through the symlink
       # would freeze its target at container create (ADR-0023).
       - ./sites:/sites
+      # Elevator mTLS client cert/key (ADR-0030), gitignored on the host.
+      - ./secrets:/secrets:ro
       # Cross-surface SSOT (velocity caps, status names, thresholds, cmd_vel
       # topics). Read-only; robot_profile.py falls back to baked defaults if
       # this mount is ever missing.
@@ -461,3 +478,10 @@ volumes:
   ros_ws_build:
   ros_ws_log:
   ros_overlay_install:
+
+secrets:
+  # GitHub token for the private schindler-rbl install (ADR-0030). Build-time
+  # only — never mounted into a running container. Empty default keeps every
+  # non-elevator build working with no GH_TOKEN in the environment.
+  gh_token:
+    environment: GH_TOKEN

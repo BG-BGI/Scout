@@ -107,3 +107,10 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache
           cache-to: type=registry,ref=ghcr.io/bg-bgi/${{ matrix.image }}:buildcache,mode=max
+          # gh_token feeds the private BG-BGI/schindler-rbl install in the
+          # scout-skills Dockerfile (ADR-0030); the other Dockerfiles never
+          # mount it, so it is a no-op for them. SCHINDLER_RBL_TOKEN is an org
+          # PAT with repo read on BG-BGI/schindler-rbl — GITHUB_TOKEN cannot
+          # read sibling private repos.
+          secrets: |
+            gh_token=${{ secrets.SCHINDLER_RBL_TOKEN }}

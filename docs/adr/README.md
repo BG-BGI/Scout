@@ -36,3 +36,4 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0027](0027-cicd-github-actions-deploy.md) | CI/CD — GHCR sha-pinned images, dispatch-only deploy on self-hosted runners |
 | [0028](0028-amcl-localization.md) | amcl + map_server replace slam_toolbox's localization mode |
 | [0029](0029-multi-map-sites-floor-transit.md) | Multi-map sites (floors) + AprilTag floor transit |
+| [0030](0030-schindler-elevator-api.md) | Schindler RBL elevator rides — schindler-rbl SDK + scout-skills tools |

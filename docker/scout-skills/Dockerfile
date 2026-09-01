@@ -24,6 +24,15 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # apriltags was tried and dropped: multi-family silently detects nothing and
 # Detector destruction corrupts malloc.)
 RUN uv pip install --system --no-cache "fastmcp>=2.10,<3" "websockets>=13" numpy pillow onnxruntime pyyaml
+# Schindler RBL SDK (ADR-0030), pinned by SHA like the roboclaw fork. Private
+# BG-BGI repo, so the build takes a BuildKit secret `gh_token` (a GitHub token
+# with repo read). Local build: GH_TOKEN=$(gh auth token) docker compose build
+# scout_skills. Installs from the archive tarball — no git in the slim image;
+# the token is read at RUN time from /run/secrets, never recorded in a layer.
+ARG SCHINDLER_RBL_REF=ca6aa9b50c7ff99d0222af02504b3a4bc18bc8d5
+RUN --mount=type=secret,id=gh_token \
+    uv pip install --system --no-cache \
+    "schindler-rbl @ https://x-access-token:$(cat /run/secrets/gh_token)@github.com/BG-BGI/schindler-rbl/archive/${SCHINDLER_RBL_REF}.tar.gz"
 COPY --from=yolo-export /yolo11n.onnx /app/yolo11n.onnx
 COPY *.py /app/
 CMD ["python", "/app/server.py"]

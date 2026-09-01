@@ -1728,5 +1728,402 @@ async def explore_status() -> dict:
     }
 
 
+# --- elevator (Schindler RBL, ADR-0030) ----------------------------------------
+#
+# Scout rides Schindler PORT elevators through the RBL Robot API. The HTTP
+# client + ride state machine live in the schindler-rbl SDK (private
+# BG-BGI/schindler-rbl, SHA-pinned in this image's Dockerfile); this section
+# owns config, the rosbridge motion adapter, and the tool surface.
+# Deployment identity/gateway = env (SCHINDLER_*, read once per container
+# start); building topology = sites/active/elevator.json, opened per call so
+# a site switch applies live (ADR-0023). ⚠ floorNumber everywhere here is the
+# API's 1-based index among SERVED stops, NOT the displayed label — sandbox
+# floorNumber 2 is label "0" (Lobby). Map labels via elevator_floors.
+
+from elevator_config import load_elevator_config, resolve_elevator  # noqa: E402
+from schindler_rbl import (  # noqa: E402
+    ElevatorRide,
+    RobotAdapter,
+    SchindlerClient,
+    SchindlerError,
+    identity_from_env,
+)
+
+ELEVATOR_CONFIG_PATH = os.environ.get(
+    "ELEVATOR_CONFIG_PATH", "/sites/active/elevator.json"
+)
+ELEV_NAV_POLL_S = 2.0  # profile-exempt: API/nav poll cadence, not publish_hz
+ELEV_NAV_WAIT_S = 180.0  # profile-exempt: wait ceiling
+ELEV_ENTER_WAIT_S = 300.0  # profile-exempt: wait ceiling (POST → door open)
+ELEV_EXIT_WAIT_S = 600.0  # profile-exempt: wait ceiling (ride → door open)
+ELEV_BOARD_SPEED = 0.25  # profile-exempt: boarding creep, clamped by motion floors
+
+_schindler: SchindlerClient | None = None
+_ride_obj: ElevatorRide | None = None
+_ride_task: asyncio.Task | None = None
+_active_call: dict | None = None  # {"call_id", "equipment", "elevator"}
+
+
+def _schindler_client() -> SchindlerClient:
+    """Lazy singleton — the mTLS handshake is expensive, unlike the plain-HTTP
+    fleet_status calls. Env (the SDK's SCHINDLER_* contract) is read once;
+    changing it needs a container restart (matches every other env-configured
+    sidecar)."""
+    global _schindler
+    if _schindler is None:
+        try:
+            _schindler = SchindlerClient.from_env()
+        except ValueError as e:
+            raise ToolError(
+                f"elevator tools not configured: {e} — fill the Schindler "
+                "block in .env and check the ./secrets mount (ADR-0030)"
+            ) from e
+    return _schindler
+
+
+async def _elev(coro):
+    """Run one SDK call, mapping failures to actionable ToolErrors."""
+    global _active_call
+    try:
+        return await coro
+    except SchindlerError as e:
+        if e.status_code == 401:
+            raise ToolError(
+                f"RBL auth failed ({e}) — check the client cert/key in "
+                "secrets/schindler/ and SCHINDLER_BEARER"
+            ) from e
+        if e.status_code == 404 and _active_call:
+            stale, _active_call = _active_call, None
+            raise ToolError(
+                f"call {stale['call_id']} unknown to the gateway ({e}) — "
+                "stale state cleared, elevator_call to start fresh"
+            ) from e
+        raise ToolError(str(e)) from e
+    except httpx.HTTPError as e:
+        raise ToolError(
+            f"PORT gateway unreachable ({e!r}) — check SCHINDLER_BASE_URL, "
+            "the secrets mount, and the network path (env is read once per "
+            "container start)"
+        ) from e
+
+
+def _load_elevator_cfg() -> dict:
+    try:
+        with open(ELEVATOR_CONFIG_PATH) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise ToolError(
+            "no elevator.json for the active site — author "
+            "sites/<active>/elevator.json (schema in "
+            "docker/scout-skills/elevator_config.py, ADR-0030)"
+        ) from None
+    except json.JSONDecodeError as e:
+        raise ToolError(f"elevator.json is not valid JSON: {e}") from e
+    try:
+        return load_elevator_config(data)
+    except ValueError as e:
+        raise ToolError(f"elevator.json invalid: {e}") from e
+
+
+def _identity_for(entry: dict) -> dict | None:
+    """Per-elevator identity, else the deployment default (SCHINDLER_IDENTITY).
+    The sandbox (and PORT access management generally) REQUIRES identity on
+    POST /calls."""
+    return entry.get("identity") or identity_from_env()
+
+
+class _RosbridgeAdapter(RobotAdapter):
+    """Motion primitives over rosbridge. nav_to_door drives Nav2 to the
+    floor's door waypoint; board/exit are dead-reckoned run_move — the car
+    interior is unmapped, so Nav2 has no business in there."""
+
+    def __init__(self, floors_cfg: dict):
+        self._floors = floors_cfg
+
+    async def nav_to_door(self, floor_number: int) -> None:
+        wp_name = (self._floors.get(floor_number) or {}).get("door_waypoint")
+        if not wp_name:
+            raise RuntimeError(
+                f"floor {floor_number} has no door_waypoint in elevator.json"
+            )
+        pts = _load_waypoints()["waypoints"]
+        if wp_name not in pts:
+            raise RuntimeError(
+                f"door_waypoint {wp_name!r} not in waypoints — save_waypoint first"
+            )
+        target = pts[wp_name]
+        result = await _dispatch_goal(target["x"], target["y"], target["yaw"])
+        if not result["accepted"]:
+            raise RuntimeError(f"nav goal to {wp_name!r} not accepted: {result['nav']}")
+        while True:  # ceiling enforced by ElevatorRide's wait_for
+            await asyncio.sleep(ELEV_NAV_POLL_S)
+            async with RosBridge() as rb:
+                status = await _nav_status(rb)
+            if status is None:
+                continue
+            if status["status"] == "arrived":
+                return
+            if status["status"] in ("aborted", "canceled"):
+                raise RuntimeError(f"nav to {wp_name!r} ended {status['status']}")
+
+    async def board(self, depth_m: float) -> float:
+        await _require_motion_idle()
+        result = await run_move(depth_m, ELEV_BOARD_SPEED)
+        return abs(result["achieved_m"])
+
+    async def exit_move(self, distance_m: float) -> float:
+        await _require_motion_idle()
+        result = await run_move(distance_m, ELEV_BOARD_SPEED)
+        return result["achieved_m"]
+
+
+async def _refresh_active_call() -> dict | None:
+    """GET the active call if any; clears state on gateway 404. A running
+    ride's call counts as active even before _active_call is registered."""
+    global _active_call
+    call_id = (_active_call or {}).get("call_id")
+    if not call_id and _ride_obj and _ride_task and not _ride_task.done():
+        call_id = _ride_obj.call_id
+    if not call_id:
+        return None
+    try:
+        return await _schindler_client().get_call(call_id)
+    except SchindlerError as e:
+        if e.status_code == 404:
+            _active_call = None
+            return None
+        raise
+
+
+def _floor_report(cfg_floors: dict, api_floors: list[dict]) -> list[dict]:
+    """Merge GET /floors with elevator.json coverage."""
+    out = []
+    for fl in api_floors:
+        num = fl.get("floorNumber")
+        cfg = cfg_floors.get(num) or {}
+        out.append(
+            fl
+            | {
+                "door_waypoint": cfg.get("door_waypoint"),
+                "configured": num in cfg_floors,
+            }
+        )
+    return out
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def elevator_floors(elevator: str | None = None) -> dict:
+    """Served floors of an elevator (GET /floors) merged with this site's
+    elevator.json coverage — which floorNumbers have a door waypoint and can
+    be boarded from. ⚠ floorNumber is the 1-based index among served stops,
+    NOT the displayed label (floorLabel): boarding the lobby usually means
+    floorNumber 2, not 0."""
+    cfg = _load_elevator_cfg()
+    try:
+        name, entry = resolve_elevator(cfg, elevator)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    api_floors = await _elev(_schindler_client().floors(entry["equipment_number"]))
+    return {
+        "elevator": name,
+        "equipment_number": entry["equipment_number"],
+        "floors": _floor_report(entry["floors"], api_floors),
+    }
+
+
+@mcp.tool
+async def elevator_call(
+    entry_floor: int,
+    exit_floor: int,
+    elevator: str | None = None,
+    evaluate: bool = False,
+) -> dict:
+    """Call the elevator (POST /calls) WITHOUT moving the robot — the manual
+    counterpart of elevator_ride, for bench tests and recovery (e.g. robot
+    already inside after a cancel: call again, then elevator_confirm).
+    evaluate=True checks availability only (no call is entered). Floors are
+    API floorNumbers (see elevator_floors). One active call at a time; the
+    door opens only while the call is held, and PORT aborts it if the Enter
+    window lapses. 'Elevator is busy' rejections are normal traffic — retry."""
+    global _active_call
+    cfg = _load_elevator_cfg()
+    try:
+        name, entry = resolve_elevator(cfg, elevator)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    current = await _elev(_refresh_active_call())
+    if current and not evaluate:
+        raise ToolError(
+            f"call {_active_call['call_id']} is still {current.get('callStatus')} — "
+            "elevator_cancel first (one active call at a time)"
+        )
+    side_entry = (entry["floors"].get(entry_floor) or {}).get("entrance_side", "Front")
+    side_exit = (entry["floors"].get(exit_floor) or {}).get("entrance_side", "Front")
+    state = await _elev(
+        _schindler_client().create_call(
+            entry["equipment_number"],
+            entry_floor,
+            exit_floor,
+            side_entry,
+            side_exit,
+            "Evaluate" if evaluate else "Request",
+            _identity_for(entry),
+        )
+    )
+    if not evaluate and state.get("callId"):
+        _active_call = {
+            "call_id": state["callId"],
+            "equipment": entry["equipment_number"],
+            "elevator": name,
+        }
+        state["note"] = "call active — poll elevator_status; confirm with elevator_confirm"
+    return state
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def elevator_status() -> dict:
+    """Single polling surface for elevator work: the active call's CallState
+    (GET /calls) and the ride task's phase, if elevator_ride is running.
+    callStatus Enter/Exit = door open, the elevator is waiting on the robot's
+    confirm — those windows are elevator-timed, don't dawdle."""
+    call = await _elev(_refresh_active_call())
+    ride = _ride_obj.snapshot() if _ride_obj else None
+    if ride and _ride_task and not _ride_task.done():
+        ride["running"] = True
+    return {"call": call, "ride": ride}
+
+
+@mcp.tool
+async def elevator_confirm(state: str) -> dict:
+    """Manually confirm the active call's door transition (PATCH
+    callerState): 'Enter' = robot finished boarding (elevator departs),
+    'Exit' = robot finished exiting (call completes). Only for driving the
+    sequence by hand — elevator_ride confirms automatically."""
+    global _active_call
+    if state not in ("Enter", "Exit"):
+        raise ToolError("state must be 'Enter' or 'Exit'")
+    if not _active_call:
+        raise ToolError("no active call — elevator_call first")
+    result = await _elev(_schindler_client().confirm(_active_call["call_id"], state))
+    if state == "Exit":
+        _active_call = None
+    return result
+
+
+@mcp.tool
+async def elevator_cancel() -> dict:
+    """Cancel elevator work: stops a running elevator_ride task, DELETEs the
+    active call (→ Aborted), and reminds what it does NOT stop. ⚠ A nav goal
+    already dispatched keeps driving — nav_cancel stops the robot. ⚠ If the
+    robot is inside the car, per the RBL spec it must POST a NEW call
+    (elevator_call from the car's current floor) to finish the trip."""
+    global _active_call, _ride_task
+    notes = []
+    inside = False
+    if _ride_task and not _ride_task.done():
+        inside = _ride_obj is not None and _ride_obj.snapshot()["maybe_inside_car"]
+        _ride_task.cancel()
+        notes.append("ride task cancelled")
+    if _active_call:
+        await _elev(_schindler_client().cancel(_active_call["call_id"]))
+        notes.append(f"call {_active_call['call_id']} deleted (→ Aborted)")
+        _active_call = None
+    if not notes:
+        return {"cancelled": False, "note": "nothing active"}
+    notes.append("a dispatched nav goal keeps driving — nav_cancel to stop the robot")
+    if inside:
+        notes.append(
+            "robot may be INSIDE the car — elevator_call a new trip to complete travel"
+        )
+    return {"cancelled": True, "notes": notes}
+
+
+@mcp.tool
+async def elevator_ride(
+    entry_floor: int, exit_floor: int, elevator: str | None = None
+) -> dict:
+    """⚠ AUTONOMOUS MULTI-STEP MOTION: drives to the door waypoint, calls the
+    elevator, BOARDS when the door opens, rides, and drives out at the
+    destination — all unattended after this returns. Poll elevator_status
+    (phases: nav_to_door → calling → wait_car → board → confirm_enter →
+    riding → exit_move → confirm_exit → done). Abort with elevator_cancel
+    (+ nav_cancel if it was still driving to the door). ⚠ v1 has no
+    multi-floor maps: after exiting on another floor the robot is OFF-MAP and
+    localization is invalid until it returns to the mapped floor. If this
+    server dies mid-ride the PORT system times the call out server-side and
+    the motion loop zero-bursts to a stop."""
+    global _ride_obj, _ride_task
+    cfg = _load_elevator_cfg()
+    try:
+        name, entry = resolve_elevator(cfg, elevator)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    if _ride_task and not _ride_task.done():
+        raise ToolError(
+            f"a ride is already {_ride_obj.snapshot()['phase']} — elevator_cancel first"
+        )
+    if await _elev(_refresh_active_call()):
+        raise ToolError(
+            f"call {_active_call['call_id']} is still open — elevator_cancel first"
+        )
+    floor_entry = entry["floors"].get(entry_floor)
+    if not floor_entry:
+        raise ToolError(
+            f"entry floor {entry_floor} not configured for {name!r} — "
+            f"have: {sorted(entry['floors'])} (API floorNumbers, see elevator_floors)"
+        )
+    if not floor_entry.get("door_waypoint"):
+        raise ToolError(
+            f"entry floor {entry_floor} has no door_waypoint — save_waypoint at the "
+            "boarding position, then add it to elevator.json"
+        )
+    floor_exit = entry["floors"].get(exit_floor) or {}
+    await _require_motion_idle()
+
+    client = _schindler_client()
+    ride = ElevatorRide(
+        client,
+        _RosbridgeAdapter(entry["floors"]),
+        entry["equipment_number"],
+        entry_floor,
+        exit_floor,
+        entry_side=floor_entry["entrance_side"],
+        exit_side=floor_exit.get("entrance_side", "Front"),
+        identity=_identity_for(entry),
+        board_depth_m=floor_entry["board_depth_m"],
+        exit_move_m=floor_exit.get("exit_move_m", floor_entry["exit_move_m"]),
+        exit_direction=floor_exit.get("exit", floor_entry["exit"]),
+        poll_s=ELEV_NAV_POLL_S,
+        nav_wait_s=ELEV_NAV_WAIT_S,
+        enter_wait_s=ELEV_ENTER_WAIT_S,
+        exit_wait_s=ELEV_EXIT_WAIT_S,
+    )
+    _ride_obj = ride
+    _ride_task = asyncio.create_task(ride.run())
+
+    def _register_call(task: asyncio.Task) -> None:
+        global _active_call
+        if ride.call_id and ride.phase not in ("done", "aborted"):
+            _active_call = {
+                "call_id": ride.call_id,
+                "equipment": ride.equipment_number,
+                "elevator": name,
+            }
+
+    _ride_task.add_done_callback(_register_call)
+    return {
+        "accepted": True,
+        "plan": {
+            "elevator": name,
+            "equipment_number": entry["equipment_number"],
+            "entry_floor": entry_floor,
+            "exit_floor": exit_floor,
+            "door_waypoint": floor_entry["door_waypoint"],
+            "board_depth_m": floor_entry["board_depth_m"],
+        },
+        "note": "riding autonomously — poll elevator_status, abort with elevator_cancel",
+    }
+
+
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=9001, path="/mcp")
