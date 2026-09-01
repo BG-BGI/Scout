@@ -98,7 +98,7 @@ main() {
   docker ps -a --format '{{.ID}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}' \
   | while IFS="$(printf '\t')" read -r id proj svc; do
       { [ -n "$proj" ] && [ "$proj" != "$PROJECT" ]; } || continue
-      echo "$OURS" | grep -qx "$svc" || continue
+      grep -qx "$svc" <<< "$OURS" || continue
       echo "== removing stale container from retired project '$proj' (service $svc)"
       docker rm -f "$id"
     done
@@ -132,7 +132,9 @@ main() {
   FAIL=0
   for s in $EXPECTED; do
     [ "$s" = build_package ] && continue
-    echo "$RUNNING" | grep -qx "$s" || { echo "NOT RUNNING: $s" >&2; FAIL=1; }
+    # Herestring, not a pipe: grep -q exits on first match, and under
+    # pipefail echo's SIGPIPE made the pipeline "fail" → false NOT RUNNING.
+    grep -qx "$s" <<< "$RUNNING" || { echo "NOT RUNNING: $s" >&2; FAIL=1; }
   done
   echo "-- robot log errors (excluding the known startup serial burst):"
   docker compose logs --tail 100 robot 2>/dev/null | grep -iE "error|fatal" | grep -viE "RETRY COUNT EXCEEDED|crc" || echo "   none"
