@@ -468,7 +468,9 @@ new ROSLIB.Topic({
 // --- map + tap-to-navigate ------------------------------------------------------------
 // Grid drawn cell-per-pixel on an offscreen canvas, blitted flipped (row 0 of an
 // OccupancyGrid is the bottom row in world coords). Robot pose from slam_toolbox's
-// /pose, path overlay from /plan. A tap becomes a map-framed /goal_pose — always
+// /pose while mapping, amcl's /amcl_pose in localization mode (ADR-0028 — same msg
+// type; amcl republishes only after update_min_d/a of motion, so the arrow steps).
+// Path overlay from /plan. A tap becomes a map-framed /goal_pose — always
 // 'map', never the display frame, so the 10 s odom-frame TF trap can't happen.
 const mapCanvas = document.getElementById('map-canvas');
 const mapCtx = mapCanvas.getContext('2d');
@@ -502,17 +504,20 @@ mapTopic.subscribe((msg) => {
   drawMap();
 });
 
-const poseTopic = new ROSLIB.Topic({
-  ros, name: '/pose', messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
-  throttle_rate: 500,
-});
-poseTopic.subscribe((msg) => {
+function onPose(msg) {
   const p = msg.pose.pose;
   robotPose = {
     x: p.position.x, y: p.position.y,
     yaw: 2 * Math.atan2(p.orientation.z, p.orientation.w),
   };
   drawMap();
+}
+// Only one of these publishes per session (slam vs localization mode).
+['/pose', '/amcl_pose'].forEach((name) => {
+  new ROSLIB.Topic({
+    ros, name, messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+    throttle_rate: 500,
+  }).subscribe(onPose);
 });
 
 const planTopic = new ROSLIB.Topic({
@@ -520,6 +525,9 @@ const planTopic = new ROSLIB.Topic({
 });
 planTopic.subscribe((msg) => {
   plan = msg.poses.map((ps) => ({ x: ps.pose.position.x, y: ps.pose.position.y }));
+  // Redraw now: in localization mode /map is latched (no periodic republish) and
+  // /amcl_pose is sparse, so without this the plan waits for the next pose update.
+  drawMap();
 });
 
 function worldToCanvas(wx, wy) {
