@@ -411,29 +411,90 @@ def _active_site():
         return None
 
 
+# Schema duplicated from scout.core.sites (ADR-0011: no scout import here).
+# v2 (ADR-0029): a site holds multiple labeled maps; active_map is the one
+# slam/amcl runs on. v1 files (default_map + top-level map_start_pose) are
+# normalized on read and write-upgraded on the next write.
+_MAP_DEFAULTS = {"label": "", "floor": None, "map_start_pose": [0.0, 0.0, 0.0]}
+
+
+def _norm_map_entry(name, entry):
+    m = dict(_MAP_DEFAULTS)
+    if isinstance(entry, dict):
+        for key in m:
+            if key in entry and entry[key] is not None:
+                m[key] = entry[key]
+    if not m["label"]:
+        m["label"] = name
+    return m
+
+
+def _normalize_site(data):
+    """v1 or v2 site.json dict -> normalized v2 dict (mirror of
+    scout.core.sites.load_site, minus the raise-on-invalid strictness —
+    an HTTP status API shouldn't crash-loop on a bad file)."""
+    site = {"version": 2, "display_name": "", "active_map": None,
+            "slam_mode": "auto", "maps": {}}
+    if not isinstance(data, dict):
+        return site
+    for key in ("display_name", "slam_mode"):
+        if data.get(key) is not None:
+            site[key] = data[key]
+    if "created" in data:
+        site["created"] = data["created"]
+    if isinstance(data.get("maps"), dict):
+        site["maps"] = {n: _norm_map_entry(n, e)
+                        for n, e in data["maps"].items()}
+        if data.get("active_map") in site["maps"]:
+            site["active_map"] = data["active_map"]
+    elif data.get("default_map"):
+        name = data["default_map"]
+        site["maps"] = {name: _norm_map_entry(
+            name, {"map_start_pose": data.get("map_start_pose")})}
+        site["active_map"] = name
+    return site
+
+
+def _site_files(site_dir):
+    """{basename: {"posegraph": bool, "grid": bool}} from the maps dir."""
+    maps_dir = os.path.join(site_dir, "maps")
+    files = {}
+    if os.path.isdir(maps_dir):
+        for f in os.listdir(maps_dir):
+            if f.endswith(".posegraph"):
+                files.setdefault(f[:-len(".posegraph")], {})["posegraph"] = True
+            elif f.endswith(".yaml"):
+                # Grid (.yaml/.pgm) availability decides whether localization
+                # mode can start at all (slam.launch.py hard-refuses without
+                # it, ADR-0028); pre-ADR-0028 sites have the posegraph only.
+                files.setdefault(f[:-len(".yaml")], {})["grid"] = True
+    return files
+
+
 def _site_meta(name):
     """site.json contents (Pi scaffold) merged with what's on disk."""
     site_dir = os.path.join(SITES_DIR, name)
     meta = {"name": name}
     try:
         with open(os.path.join(site_dir, "site.json")) as f:
-            data = json.load(f)
-        for key in ("display_name", "default_map", "slam_mode",
-                    "map_start_pose", "created"):
-            if key in data:
-                meta[key] = data[key]
+            site = _normalize_site(json.load(f))
+        meta.update(site)
+        # Legacy mirror for stale webui builds / rollback.
+        meta["default_map"] = site["active_map"]
     except (OSError, json.JSONDecodeError):
-        pass
-    maps_dir = os.path.join(site_dir, "maps")
-    if os.path.isdir(maps_dir):
-        entries = os.listdir(maps_dir)
-        meta["maps"] = sorted(f[:-len(".posegraph")] for f in entries
-                              if f.endswith(".posegraph"))
-        # Grid (.yaml/.pgm) availability decides whether localization mode can
-        # start at all (slam.launch.py hard-refuses without it, ADR-0028);
-        # pre-ADR-0028 sites have the posegraph only.
-        meta["grids"] = sorted(f[:-len(".yaml")] for f in entries
-                               if f.endswith(".yaml"))
+        meta["maps"] = {}
+    files = _site_files(site_dir)
+    for map_name, entry in meta["maps"].items():
+        entry["posegraph"] = files.get(map_name, {}).get("posegraph", False)
+        entry["grid"] = files.get(map_name, {}).get("grid", False)
+    # Files on disk with no site.json entry (hand-copied, pre-v2 saves) still
+    # show up so nothing saved by hand disappears from the UI.
+    for map_name, present in sorted(files.items()):
+        if map_name not in meta["maps"]:
+            meta["maps"][map_name] = {
+                **_norm_map_entry(map_name, None), "unregistered": True,
+                "posegraph": present.get("posegraph", False),
+                "grid": present.get("grid", False)}
     return meta
 
 
@@ -459,11 +520,12 @@ def create_site(name, display_name=""):
         os.makedirs(os.path.join(site_dir, "maps"))
         os.makedirs(os.path.join(site_dir, "captures", "bags"))
         _write_site_json(site_dir, {
-            "version": 1,
+            "version": 2,
             "display_name": display_name or name,
-            "default_map": None,
+            "active_map": None,
+            "default_map": None,  # legacy mirror of active_map
             "slam_mode": "auto",
-            "map_start_pose": [0.0, 0.0, 0.0],
+            "maps": {},
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
     else:
@@ -487,21 +549,65 @@ def update_active_site(patch):
     site_dir = os.path.join(SITES_DIR, active)
     try:
         with open(os.path.join(site_dir, "site.json")) as f:
-            data = json.load(f)
+            site = _normalize_site(json.load(f))
     except (OSError, json.JSONDecodeError):
-        data = {"version": 1}
-    allowed = ("display_name", "default_map", "slam_mode", "map_start_pose")
-    changed = {k: patch[k] for k in allowed if k in patch}
-    if not changed:
+        site = _normalize_site({})
+    allowed = ("display_name", "slam_mode", "active_map", "maps",
+               "default_map", "map_start_pose")
+    if not any(k in patch for k in allowed):
         return 400, {"error": f'nothing to update (allowed: {", ".join(allowed)})'}
     # Schema duplicated from scout.core.sites.SLAM_MODES (ADR-0011: no scout
     # import here). An unknown mode written to site.json makes slam.launch.py
     # raise at startup -> the slam container crash-loops.
     slam_modes = ("auto", "new", "localization", "continue")
-    if "slam_mode" in changed and changed["slam_mode"] not in slam_modes:
+    if "slam_mode" in patch and patch["slam_mode"] not in slam_modes:
         return 400, {"error": f'slam_mode must be one of {", ".join(slam_modes)}'}
-    data.update(changed)
-    _write_site_json(site_dir, data)
+    if "display_name" in patch:
+        site["display_name"] = str(patch["display_name"])
+    if "slam_mode" in patch:
+        site["slam_mode"] = patch["slam_mode"]
+    # Per-map partial merge; null deletes an entry.
+    if isinstance(patch.get("maps"), dict):
+        for name, entry in patch["maps"].items():
+            if not SITE_NAME_RE.match(name or ""):
+                return 400, {"error": f"invalid map name '{name}'"}
+            if entry is None:
+                site["maps"].pop(name, None)
+                if site["active_map"] == name:
+                    site["active_map"] = None
+                continue
+            if not isinstance(entry, dict):
+                return 400, {"error": f"maps['{name}'] must be an object or null"}
+            if "floor" in entry and entry["floor"] is not None \
+                    and not isinstance(entry["floor"], int):
+                return 400, {"error": "floor must be an integer or null"}
+            if "map_start_pose" in entry and (
+                    not isinstance(entry["map_start_pose"], list)
+                    or len(entry["map_start_pose"]) != 3):
+                return 400, {"error": "map_start_pose must be [x, y, theta]"}
+            merged = {**site["maps"].get(name, _norm_map_entry(name, None))}
+            merged.update({k: entry[k] for k in _MAP_DEFAULTS if k in entry})
+            site["maps"][name] = _norm_map_entry(name, merged)
+    # `default_map`/`map_start_pose` are the v1 vocabulary — translated onto
+    # active_map / the active map's entry so an old webui build keeps working.
+    new_active = patch.get("active_map", patch.get("default_map"))
+    if new_active is not None:
+        if not SITE_NAME_RE.match(new_active or ""):
+            return 400, {"error": f"invalid map name '{new_active}'"}
+        # Save Map registers new names this way: a map already on disk (or
+        # just patched in) becomes an entry; anything else is a typo.
+        if new_active not in site["maps"] \
+                and new_active not in _site_files(site_dir):
+            return 400, {"error": f"no such map '{new_active}'"}
+        site["maps"].setdefault(new_active, _norm_map_entry(new_active, None))
+        site["active_map"] = new_active
+    if "map_start_pose" in patch and site["active_map"]:
+        pose = patch["map_start_pose"]
+        if not isinstance(pose, list) or len(pose) != 3:
+            return 400, {"error": "map_start_pose must be [x, y, theta]"}
+        site["maps"][site["active_map"]]["map_start_pose"] = pose
+    site["default_map"] = site["active_map"]  # legacy mirror
+    _write_site_json(site_dir, site)
     return 200, {"ok": True, "site": _site_meta(active)}
 
 

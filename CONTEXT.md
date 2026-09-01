@@ -118,9 +118,13 @@ rosbridge :9001), `fleet_status`. Companion (over zenoh, ADR-0022): `rtabmap`,
 All per-location state lives in `sites/<name>/` behind the `sites/active`
 symlink (ADR-0023); switch sites from the webui Site panel. Per site:
 
-- `sites/<name>/site.json` — display name, default_map, slam_mode policy.
-- `sites/<name>/maps/waypoints.json` — named waypoints + routes (ADR-0011).
-- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite).
+- `sites/<name>/site.json` — v2 (ADR-0029): display name, slam_mode policy,
+  `maps` dict of labeled maps (label/floor/map_start_pose) + `active_map`.
+  v1 (`default_map`) is normalized on read, upgraded on the next write.
+- `sites/<name>/maps/waypoints.json` — named waypoints + routes (ADR-0011);
+  waypoints carry the map they were saved on (ADR-0029).
+- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite); surveys are
+  stamped with their home map — the floor-transit anchor (ADR-0029).
 - `sites/<name>/maps/*.posegraph`,`*.data` — slam_toolbox serialized maps.
 - `sites/<name>/maps/zones.json` — keepout/speed zone polygons (ADR-0019;
   currently no manager node regenerates the derived masks).

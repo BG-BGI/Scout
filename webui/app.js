@@ -1272,7 +1272,7 @@ let activeSiteMeta = null;
 function renderSites(data) {
   activeSiteMeta = (data.sites || []).find((s) => s.name === data.active) || null;
   siteState.textContent = data.active
-    ? `${data.active} · ${(activeSiteMeta && activeSiteMeta.slam_mode) || 'auto'}`
+    ? `${data.active}${activeSiteMeta && activeSiteMeta.active_map ? ' · ' + activeSiteMeta.active_map : ''} · ${(activeSiteMeta && activeSiteMeta.slam_mode) || 'auto'}`
     : 'none';
   renderSlamMode();
   siteList.innerHTML = '';
@@ -1280,7 +1280,7 @@ function renderSites(data) {
     const row = document.createElement('div');
     row.className = 'svc-row';
     const isActive = s.name === data.active;
-    const mapLabel = s.default_map || 'no map yet';
+    const mapLabel = s.active_map || s.default_map || 'no map yet';
     row.innerHTML = `
       <span class="svc-dot ${isActive ? 'running' : 'exited'}"></span>
       <span class="svc-name">${s.display_name || s.name}</span>
@@ -1293,11 +1293,124 @@ function renderSites(data) {
     if (btn) btn.addEventListener('click', () => switchSite(s.name));
     siteList.appendChild(row);
   }
+  renderSiteMaps();
   const last = data.last_switch;
   if (last && last.restarts && last.restarts.some((r) => !r.ok)) {
     const failed = last.restarts.filter((r) => !r.ok).map((r) => r.service);
     siteResult.textContent = `last switch: ${failed.join(', ')} failed to restart — retry from the System panel.`;
   }
+}
+
+// --- per-site maps (ADR-0029) --------------------------------------------------
+// A site holds multiple labeled maps (one per floor); active_map is the one
+// slam/amcl runs on. Activating in localization mode swaps the grid live via
+// map_server LoadMap (~1 s); any other mode restarts slam (map bound at launch).
+const siteMapsEl = document.getElementById('site-maps');
+
+function renderSiteMaps() {
+  siteMapsEl.innerHTML = '';
+  const maps = (activeSiteMeta && activeSiteMeta.maps) || {};
+  const active = activeSiteMeta && activeSiteMeta.active_map;
+  for (const name of Object.keys(maps).sort()) {
+    const m = maps[name];
+    const row = document.createElement('div');
+    row.className = 'svc-row';
+    const isActive = name === active;
+    const floor = (m.floor !== null && m.floor !== undefined) ? ` · F${m.floor}` : '';
+    const badges = `${m.posegraph ? ' [graph]' : ''}${m.grid ? ' [grid]' : ''}${m.unregistered ? ' (unregistered)' : ''}`;
+    row.innerHTML = `
+      <span class="svc-dot ${isActive ? 'running' : 'exited'}"></span>
+      <span class="svc-name">${m.label && m.label !== name ? `${m.label} (${name})` : name}${floor}</span>
+      <span class="svc-stat">${badges.trim() || 'no files'}</span>
+      <span class="svc-actions">
+        <button data-map="${name}" ${isActive ? 'disabled' : ''}>Activate</button>
+      </span>
+    `;
+    const btn = row.querySelector('button');
+    if (btn) btn.addEventListener('click', () => activateMap(name));
+    siteMapsEl.appendChild(row);
+  }
+}
+
+const loadMapSrv = new ROSLIB.Service({
+  ros, name: '/map_server/load_map',
+  serviceType: 'nav2_msgs/srv/LoadMap',
+});
+const initialPosePub = new ROSLIB.Topic({
+  ros, name: '/initialpose',
+  messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+});
+const reseedSrv = new ROSLIB.Service({
+  ros, name: '/tag_relocalizer/reseed',
+  serviceType: 'std_srvs/srv/Trigger',
+});
+
+async function postActiveMap(name) {
+  const res = await fetch(`${FLEET_API}/sites/active`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active_map: name }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.status);
+}
+
+async function activateMap(name) {
+  if (!activeSiteMeta) return;
+  if (siteNavBusy) { alert('Navigation goal active — cancel it before switching maps.'); return; }
+  if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before switching maps.'); return; }
+  const entry = (activeSiteMeta.maps || {})[name] || {};
+  const mode = activeSiteMeta.slam_mode || 'auto';
+  if (mode === 'localization') {
+    if (!entry.grid) {
+      alert(`"${name}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session first.`);
+      return;
+    }
+    if (!confirm(`Switch to map "${name}" live? The grid swaps in ~1 s and the pose is seeded at the map's start pose — show the robot a registered tag to refine.`)) return;
+    siteResult.textContent = `loading map "${name}"…`;
+    loadMapSrv.callService(
+      new ROSLIB.ServiceRequest({ map_url: `/ros_ws/src/sites/active/maps/${name}.yaml` }),
+      async (res) => {
+        if (res.result !== 0) { siteResult.textContent = `map load failed (result ${res.result})`; return; }
+        try { await postActiveMap(name); } catch (e) {
+          siteResult.textContent = `map "${name}" loaded but not persisted (${e.message}) — the next slam restart reverts.`;
+          return;
+        }
+        // Seed amcl at the map's start pose; a registered-tag sighting refines.
+        const pose = entry.map_start_pose || [0, 0, 0];
+        const cov = new Array(36).fill(0);
+        cov[0] = 0.25; cov[7] = 0.25; cov[35] = 0.0685; // ~15 deg
+        initialPosePub.publish(new ROSLIB.Message({
+          header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+          pose: {
+            pose: {
+              position: { x: pose[0], y: pose[1], z: 0 },
+              orientation: { x: 0, y: 0, z: Math.sin(pose[2] / 2), w: Math.cos(pose[2] / 2) },
+            },
+            covariance: cov,
+          },
+        }));
+        reseedSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
+        siteResult.textContent = `now on map "${name}" (live swap) — pose seeded at its start pose.`;
+        refreshSites();
+      },
+      (err) => { siteResult.textContent = 'map load failed: ' + err; },
+    );
+    return;
+  }
+  if (!confirm(`Switch to map "${name}"? slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
+  siteResult.textContent = `switching to map "${name}"…`;
+  try {
+    await postActiveMap(name);
+    await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+    await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+    siteResult.textContent = `map "${name}" — restarting slam + behaviors…`;
+  } catch (e) {
+    siteResult.textContent = 'map switch failed: ' + e.message;
+    return;
+  }
+  setTimeout(refreshSites, 5000);
+  setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
 }
 
 // --- slam mode selector -------------------------------------------------------------
@@ -1333,18 +1446,19 @@ async function setSlamMode(mode) {
   if (!activeSiteMeta || mode === (activeSiteMeta.slam_mode || 'auto')) return;
   if (siteNavBusy) { alert('Navigation goal active — cancel it before changing slam mode.'); return; }
   if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before changing slam mode.'); return; }
-  const map = activeSiteMeta.default_map;
+  const map = activeSiteMeta.active_map || activeSiteMeta.default_map;
+  const entry = ((activeSiteMeta.maps || {})[map]) || {};
   // Head off the two site.json states that make slam.launch.py refuse to
   // start (crash-loop under restart: unless-stopped).
   if ((mode === 'continue' || mode === 'localization') && !map) {
-    alert(`"${mode}" needs a default map — Save map first.`);
+    alert(`"${mode}" needs an active map — Save map first.`);
     return;
   }
-  if (mode === 'continue' && !(activeSiteMeta.maps || []).includes(map)) {
+  if (mode === 'continue' && !entry.posegraph) {
     alert(`"${map}" has no saved graph (.posegraph) in this site — Save map first.`);
     return;
   }
-  if (mode === 'localization' && !(activeSiteMeta.grids || []).includes(map)) {
+  if (mode === 'localization' && !entry.grid) {
     alert(`"${map}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session (Save map writes both formats).`);
     return;
   }
@@ -1439,7 +1553,7 @@ document.getElementById('site-save-map').addEventListener('click', () => {
     return;
   }
   const name = siteMapName.value.trim()
-    || (activeSiteMeta && (activeSiteMeta.default_map || activeSiteMeta.name)) || 'map';
+    || (activeSiteMeta && (activeSiteMeta.active_map || activeSiteMeta.name)) || 'map';
   if (!confirm(`Save the current map as "${name}" in the active site?`)) return;
   siteResult.textContent = 'serializing map…';
   serializeSrv.callService(
@@ -1448,10 +1562,16 @@ document.getElementById('site-save-map').addEventListener('click', () => {
       siteResult.textContent = 'saving grid map…';
       const finish = async (gridErr) => {
         try {
+          // Register the map entry (label/floor, ADR-0029) + make it active.
+          const label = document.getElementById('site-map-label').value.trim();
+          const floorRaw = document.getElementById('site-map-floor').value.trim();
+          const entry = {};
+          if (label) entry.label = label;
+          if (floorRaw !== '') entry.floor = parseInt(floorRaw, 10);
           await fetch(`${FLEET_API}/sites/active`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ default_map: name }),
+            body: JSON.stringify({ active_map: name, maps: { [name]: entry } }),
           });
         } catch (e) { /* metadata update is best-effort; the files are saved */ }
         siteResult.textContent = gridErr

@@ -131,17 +131,23 @@
                pattern="[a-z0-9][a-z0-9_-]{0,31}" autocomplete="off" required>
         <button type="submit">Create site</button>
       </form>
+      <div id="site-maps"></div>
       <div class="grid">
         <input id="site-map-name" type="text" placeholder="map name"
                pattern="[a-z0-9][a-z0-9_-]{0,31}" autocomplete="off">
+        <input id="site-map-label" type="text" placeholder="label (optional)"
+               autocomplete="off">
+        <input id="site-map-floor" type="number" placeholder="floor"
+               step="1" autocomplete="off">
         <button id="site-save-map">Save map</button>
       </div>
       <div id="site-mode" class="grid tight"></div>
       <div id="site-mode-desc" class="dim"></div>
-      <div id="site-result" class="dim">Each site bundles its own maps,
-        waypoints, tags and captures. Switching restarts slam/nav2/behaviors
-        (~20 s) — driving and camera stay up, but the map and waypoints change
-        to that site's.</div>
+      <div id="site-result" class="dim">Each site bundles its own maps
+        (one per floor), waypoints, tags and captures. Switching sites
+        restarts slam/nav2/behaviors (~20 s) — driving and camera stay up, but
+        the map and waypoints change to that site's. Activating another map in
+        localization mode swaps the grid live (~1 s).</div>
     </details>
 
     <details class="panel">

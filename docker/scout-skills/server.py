@@ -456,6 +456,11 @@ async def save_waypoint(name: str) -> dict:
         "saved": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "source": "operator",
     }
+    # Stamp the map the pose belongs to (ADR-0029). Absent = legacy = assume
+    # the active map.
+    active = tagdb.active_map_name()
+    if active:
+        pts[name]["map"] = active
     _store_waypoints(store)
     return {"saved": {name: pts[name]}, "waypoint_count": len(pts)}
 
@@ -491,8 +496,131 @@ async def go_to_waypoint(name: str) -> dict:
     if name not in pts:
         raise ToolError(f"no waypoint {name!r} — have: {sorted(pts) or 'none'}")
     target = pts[name]
+    wp_map, active = target.get("map"), tagdb.active_map_name()
+    if wp_map and active and wp_map != active:
+        raise ToolError(
+            f"waypoint {name!r} belongs to map {wp_map!r} (active: {active!r})"
+            " — switch maps first (switch_map / webui Site panel)"
+        )
     result = await _dispatch_goal(target["x"], target["y"], target["yaw"])
     return {"waypoint": name} | result
+
+
+# --- site maps (ADR-0029) ------------------------------------------------------
+#
+# A site holds multiple labeled maps (one per floor); site.json's active_map
+# is the one slam/amcl runs on. In localization mode the grid can be swapped
+# live through map_server's LoadMap; mapping modes bind the map at slam launch,
+# so switching there restarts the slam container (~20 s, via fleet_status).
+
+# The slam container's view of the same maps dir — LoadMap runs THERE, so the
+# path must be its, not ours (same hardcode as the webui Save Map button).
+SLAM_MAPS_DIR = "/ros_ws/src/sites/active/maps"
+
+
+def _load_site() -> dict:
+    """site.json normalized to {slam_mode, active_map, maps:{name: entry}}.
+    Tolerates v1 (default_map + top-level map_start_pose) and v2 (ADR-0029)."""
+    try:
+        with open(tagdb.SITE_JSON) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    site = {
+        "slam_mode": data.get("slam_mode") or "auto",
+        "active_map": data.get("active_map") or data.get("default_map"),
+        "maps": data.get("maps") if isinstance(data.get("maps"), dict) else {},
+    }
+    if not site["maps"] and site["active_map"]:
+        site["maps"] = {site["active_map"]: {
+            "map_start_pose": data.get("map_start_pose") or [0.0, 0.0, 0.0]}}
+    return site
+
+
+@mcp.tool
+async def switch_map(name: str) -> dict:
+    """Switch the active site's map (e.g. to another floor). In localization
+    mode the grid swaps live (~1 s) and the pose is re-seeded at the map's
+    start pose — reseed via a registered AprilTag (or the webui) if the robot
+    isn't there. In mapping modes this RESTARTS the slam container (~20 s of
+    no /map and no map->odom). Refused mid-drive."""
+    site = _load_site()
+    if name not in site["maps"]:
+        raise ToolError(
+            f"no map {name!r} in the active site — have: "
+            f"{sorted(site['maps']) or 'none'}"
+        )
+    if name == site["active_map"]:
+        return {"active_map": name, "note": "already active"}
+    await _require_motion_idle()
+
+    mode = site["slam_mode"]
+    out: dict = {"active_map": name, "previous": site["active_map"],
+                 "slam_mode": mode}
+    if mode == "localization":
+        # Our view of the grid file; LoadMap gets the slam container's path.
+        local = os.path.join(os.path.dirname(tagdb.SITE_JSON), "maps",
+                             f"{name}.yaml")
+        if not os.path.exists(local):
+            raise ToolError(
+                f"map {name!r} has no grid (.yaml/.pgm) — re-save it from a "
+                "mapping session (webui Save Map) before localizing on it"
+            )
+        async with RosBridge() as rb:
+            values = await rb.call_service(
+                "/map_server/load_map",
+                "nav2_msgs/srv/LoadMap",
+                {"map_url": f"{SLAM_MAPS_DIR}/{name}.yaml"},
+            )
+            if values.get("result", 255) != 0:
+                raise ToolError(
+                    f"map_server LoadMap failed (result={values.get('result')})"
+                )
+            pose = (site["maps"][name].get("map_start_pose")
+                    or [0.0, 0.0, 0.0])
+            msg = _stamped_pose(float(pose[0]), float(pose[1]), float(pose[2]))
+            cov = [0.0] * 36
+            cov[0] = cov[7] = 0.25
+            cov[35] = math.radians(15.0) ** 2
+            await rb.publish(
+                "/initialpose",
+                "geometry_msgs/msg/PoseWithCovarianceStamped",
+                {"header": msg["header"],
+                 "pose": {"pose": msg["pose"], "covariance": cov}},
+            )
+            # Re-arm the tag relocalizer so the next registered-tag sighting
+            # refines the coarse start pose on the new map.
+            try:
+                await rb.call_service(
+                    "/tag_relocalizer/reseed", "std_srvs/srv/Trigger")
+            except RosBridgeError:
+                pass
+        out["switched"] = "live (map_server LoadMap)"
+        out["note"] = ("pose seeded at the map's start pose — show the robot "
+                       "a registered tag (or set /initialpose) to refine")
+    else:
+        out["switched"] = "slam restart pending (~20 s)"
+
+    # Persist active_map — fleet_status owns site.json writes.
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(
+                f"{FLEET_STATUS_URL}/api/sites/active",
+                json={"active_map": name},
+            )
+            resp.raise_for_status()
+            if mode != "localization":
+                for svc in ("slam", "behaviors"):
+                    await http.post(
+                        f"{FLEET_STATUS_URL}/api/containers/{svc}/restart")
+    except httpx.HTTPError as e:
+        raise ToolError(
+            f"map loaded but active_map not persisted ({e!r}) — the next slam "
+            "restart will revert; retry switch_map or set it in the webui"
+        ) from e
+    return out
 
 
 # --- relative motion (bypasses Nav2) -----------------------------------------
@@ -1104,11 +1232,13 @@ async def _scan_tags(update_waypoints: bool = True):
                 if entry["role"] == "home":
                     out["home"] = True
             pose = out.get("standoff")
+            active = tagdb.active_map_name()
             tagdb.record_sighting(
                 family, tag_id,
                 tuple(out["position_map"]) + (pose["yaw"],)
                 if pose and "position_map" in out
                 else None,
+                map_name=active,
             )
             if update_waypoints and pose:
                 store = _load_waypoints()
@@ -1118,6 +1248,8 @@ async def _scan_tags(update_waypoints: bool = True):
                     ),
                     "source": "tag",
                 }
+                if active:
+                    store["waypoints"][entry["name"]]["map"] = active
                 _store_waypoints(store)
                 out["waypoint_refreshed"] = entry["name"]
         out["_box"] = [
@@ -1193,7 +1325,9 @@ async def register_tag(
     ⚠ Detection coverage is separate: the apriltag_ros node detects the
     family/size configured in scout/config/apriltag.yaml (robot-service
     restart to change) — registering here names tags that node can already
-    see."""
+    see. A tag's surveyed pose is stamped with the map it was seen on
+    (ADR-0029) — one surveyed pose per tag ID, so use a DISTINCT physical tag
+    per floor/map."""
     if not (0.01 <= size_m <= 2.0):
         raise ToolError("size_m implausible — meters, black square edge only")
     return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}
@@ -1201,9 +1335,9 @@ async def register_tag(
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def list_tags() -> dict:
-    """Registered AprilTags with last-seen info, plus the passive watcher
-    state (scans every 2 s and refreshes tag waypoints when the camera is
-    up)."""
+    """Registered AprilTags with last-seen info (incl. map_name — the map each
+    tag's pose was surveyed on), plus the passive watcher state (scans every
+    2 s and refreshes tag waypoints when the camera is up)."""
     return {
         "tags": tagdb.all_tags(),
         "watcher": {"enabled": _tag_watch_enabled, "last_scan": _tag_watch_last},
@@ -1398,7 +1532,7 @@ async def recording_status() -> dict:
 # The container is profile-gated and pre-created (Created state, never
 # started) by scout-switch at deploy time; `explore_start` below brings a
 # Created/STOPPED container up through fleet_status's container API
-# (http://127.0.0.1:9002, docker socket lives THERE, scoped to this compose
+# (http://127.0.0.1:9003, docker socket lives THERE, scoped to this compose
 # project) — mounting the docker socket into this no-auth LAN MCP container
 # directly would let anyone on the LAN root the Pi, so lifecycle goes through
 # that narrower API instead. Pause/resume of a RUNNING explorer stays a ROS
@@ -1406,7 +1540,9 @@ async def recording_status() -> dict:
 # rosbridge_websocket) tells us whether the node is up at all.
 
 EXPLORE_RESUME_TOPIC = "/explore/resume"
-FLEET_STATUS_URL = os.environ.get("FLEET_STATUS_URL", "http://127.0.0.1:9002")
+# 9003 = fleet_status (9002 is observability_mcp — a former wrong default
+# here silently broke explore_start).
+FLEET_STATUS_URL = os.environ.get("FLEET_STATUS_URL", "http://127.0.0.1:9003")
 # explore_lite takes a few seconds to boot + subscribe /explore/resume.
 EXPLORE_NODE_WAIT_S = 25.0  # profile-exempt: a boot wait, not publish_hz
 

@@ -11,6 +11,7 @@ registering a tag here is instant but only names what the node can already
 see.
 """
 
+import json
 import math
 import os
 import sqlite3
@@ -19,7 +20,22 @@ import time
 import numpy as np
 
 DB_PATH = os.environ.get("TAGS_DB", "/maps/tags.db")
+SITE_JSON = os.environ.get("SITE_JSON", "/sites/active/site.json")
 STANDOFF_M = 0.5
+
+
+def active_map_name() -> str | None:
+    """Active map of the active site, or None. Read per call (same live-switch
+    story as the tags.db reopen): tolerates site.json v1 (default_map) and v2
+    (active_map, ADR-0029), and any read error."""
+    try:
+        with open(SITE_JSON) as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        return data.get("active_map") or data.get("default_map") or None
+    except (OSError, json.JSONDecodeError):
+        return None
 
 
 def norm_family(fam: str) -> str:
@@ -44,6 +60,12 @@ def _connect() -> sqlite3.Connection:
              last_seen TEXT,
              PRIMARY KEY(family, tag_id))"""
     )
+    # v2 migration (ADR-0029): the map a survey was made on. NULL = legacy row
+    # = assume the active map. One surveyed pose per tag ID (the PK), so each
+    # floor's transit tag must be a distinct physical tag.
+    cols = {r["name"] for r in db.execute("PRAGMA table_info(tags)")}
+    if "map_name" not in cols:
+        db.execute("ALTER TABLE tags ADD COLUMN map_name TEXT")
     return db
 
 
@@ -80,14 +102,19 @@ def delete(name: str) -> bool:
         return db.execute("DELETE FROM tags WHERE name=?", (name,)).rowcount > 0
 
 
-def record_sighting(family: str, tag_id: int, map_pose: tuple | None) -> None:
+def record_sighting(
+    family: str, tag_id: int, map_pose: tuple | None, map_name: str | None = None
+) -> None:
     stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
     with _connect() as db:
         if map_pose is not None:
+            # map_name is stamped only alongside a surveyed pose — a pose-less
+            # glimpse from the wrong floor must not re-home the tag.
             db.execute(
-                """UPDATE tags SET last_seen=?, map_x=?, map_y=?, map_yaw=?
+                """UPDATE tags SET last_seen=?, map_x=?, map_y=?, map_yaw=?,
+                       map_name=?
                    WHERE family=? AND tag_id=?""",
-                (stamp, *map_pose, family, tag_id),
+                (stamp, *map_pose, map_name, family, tag_id),
             )
         else:
             db.execute(

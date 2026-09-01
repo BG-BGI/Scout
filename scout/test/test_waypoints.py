@@ -29,6 +29,24 @@ def test_migrate_legacy_patrol_route_yaml_shape():
         {'x': 1.0, 'y': 0.0, 'yaw': 0.0}, {'x': 2.0, 'y': 0.0, 'yaw': 0.0}]
 
 
+def test_set_waypoint_map_stamp():
+    # ADR-0029: `map` stamps which site map the pose belongs to; absent =
+    # legacy = assume the active map.
+    store = w.blank()
+    w.set_waypoint(store, 'a', (1.0, 2.0, 0.5), 'operator', map='floor1')
+    w.set_waypoint(store, 'b', (0.0, 0.0, 0.0), 'operator')
+    assert store['waypoints']['a']['map'] == 'floor1'
+    assert 'map' not in store['waypoints']['b']
+
+
+def test_migrate_preserves_map_key():
+    store = {'version': 2,
+             'waypoints': {'a': {'x': 1.0, 'y': 2.0, 'yaw': 0.0,
+                                 'map': 'floor2'}},
+             'routes': {}}
+    assert w.migrate(store)['waypoints']['a']['map'] == 'floor2'
+
+
 def test_resolve_route_names_and_inline():
     store = w.blank()
     w.set_waypoint(store, 'a', (1.0, 2.0, 0.5), 'operator')

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot relocalization from a registered AprilTag (the portable home base).
+"""Boot relocalization + floor transit from registered AprilTags.
 
 The site policy loads a saved map in localization mode, which has to guess a
 start pose (map origin unless told otherwise) — and a robot powered on
@@ -11,9 +11,24 @@ solves the robot's map pose from the live TF of the detection and publishes
 consumes natively to re-centre its particle cloud. The filter polishes from
 there.
 
+Floor transit (ADR-0029): a site holds multiple maps and each surveyed tag is
+stamped with the map it lives on (tags.db map_name). Seeing a tag whose home
+map differs from site.json's active_map means the robot changed floors — the
+lidar can't tell, the tag can. After `min_transit_sightings` consistent
+sightings (and only in localization mode, with no nav goal in flight, outside
+the cooldown), this node live-swaps the grid via /map_server/load_map, seeds
+/initialpose with the tag-solved pose (already in the new map's frame — the
+tag was surveyed there), and best-effort POSTs the new active_map to
+fleet_status (the only site.json writer) so the switch survives restarts.
+LoadMap republishes the latched /map before responding; amcl and the global
+costmap's static layer both re-consume it, and a short delay orders amcl's
+map callback ahead of the /initialpose.
+
 One seed per boot, deliberately: after the first fix the node goes quiet so
 it never fights slam_toolbox's own tracking. /tag_relocalizer/reseed
-(std_srvs/Trigger) re-arms it for the next sighting.
+(std_srvs/Trigger) re-arms it (and the transit machinery) for the next
+sighting. A transit resets the flag itself — arriving on a new floor is a new
+boot as far as seeding is concerned.
 
 Portable-base contract: the registry pose is only as fresh as the last
 detect_tags/tag_watch sighting made while WELL-LOCALIZED. Move the base while
@@ -31,25 +46,40 @@ as scout-skills' map_geometry). Then
     p_robot = p_tag_map - R(theta) @ p_tag_base
 """
 
+import json
 import math
 import os
 import sqlite3
+import threading
+import time
+import urllib.request
 
 from apriltag_msgs.msg import AprilTagDetectionArray
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from nav2_msgs.srv import LoadMap
 from rclpy.node import Node
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 from scout.core.geometry import yaw_to_quat_zw
+from scout.core.status import NAV_BUSY_STATES, parse_nav_state
 from scout.node_util import lookup_matrix, run_node
+from scout.qos import LATCHED_QOS
 
 # Same bind mount the maps come through; scout-skills writes it as /maps.
 DEFAULT_TAGS_DB = '/ros_ws/src/sites/active/maps/tags.db'
+DEFAULT_SITE_JSON = '/ros_ws/src/sites/active/site.json'
+DEFAULT_MAPS_DIR = '/ros_ws/src/sites/active/maps'
+DEFAULT_FLEET_API = 'http://127.0.0.1:9003'
 
 # Below this floor-projection of the tag z-axis the face is lying flat and
 # has no usable heading (mirrors scout-skills map_geometry).
 MIN_NORMAL_PROJ = 0.2
+
+# Delay between LoadMap success and the /initialpose, so amcl's map callback
+# (from the republished latched /map) lands first.
+SEED_DELAY_S = 0.7
 
 
 def _norm_family(fam):
@@ -63,19 +93,34 @@ class TagRelocalizer(Node):
     def __init__(self):
         super().__init__('tag_relocalizer')
         self.declare_parameter('tags_db', DEFAULT_TAGS_DB)
+        self.declare_parameter('site_json', DEFAULT_SITE_JSON)
+        self.declare_parameter('maps_dir', DEFAULT_MAPS_DIR)
         # Beyond this the single-view tag pose (especially yaw) is too noisy
         # to seed from; wait for a closer look.
         self.declare_parameter('max_tag_dist_m', 3.0)
         self.declare_parameter('cov_xy', 0.05 ** 2)
         self.declare_parameter('cov_yaw', math.radians(5.0) ** 2)
+        # Floor transit: consecutive frames agreeing on the same foreign map
+        # before switching, and the refractory period after any attempt.
+        self.declare_parameter('min_transit_sightings', 3)
+        self.declare_parameter('transit_cooldown_s', 30.0)
+        self.declare_parameter('fleet_api', DEFAULT_FLEET_API)
 
         self._done = False
+        self._nav_busy = False
+        self._switching = False
+        self._last_switch_t = 0.0
+        # Transit candidate: consecutive-frame vote for one foreign map.
+        self._cand = {'map': None, 'count': 0, 'pose': None, 'name': None}
         self._tf = Buffer()
         self._tf_listener = TransformListener(self._tf, self)
         self._pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', 10)
+        self._load_map_cli = self.create_client(LoadMap, '/map_server/load_map')
         self.create_subscription(
             AprilTagDetectionArray, '/detections', self._on_detections, 10)
+        self.create_subscription(
+            String, '/nav_state', self._on_nav_state, LATCHED_QOS)
         self.create_service(
             Trigger, '/tag_relocalizer/reseed', self._on_reseed)
         self.get_logger().info('waiting for a registered tag to seed /initialpose')
@@ -104,35 +149,175 @@ class TagRelocalizer(Node):
                 return dict(r)
         return None
 
+    def _read_site(self):
+        """(active_map, slam_mode) from site.json, read fresh per frame (same
+        live-switch story as the tags.db reopen). Tolerates v1 (default_map)
+        and v2 (active_map); (None, None) on any problem = transit disabled,
+        seeding behaves as before."""
+        path = self.get_parameter('site_json').value
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None, None
+        if not isinstance(data, dict):
+            return None, None
+        active = data.get('active_map') or data.get('default_map') or None
+        return active, data.get('slam_mode')
+
     # --- seeding ----------------------------------------------------------------
+
+    def _on_nav_state(self, msg):
+        status, _, _ = parse_nav_state(msg.data)
+        self._nav_busy = status in NAV_BUSY_STATES
 
     def _on_reseed(self, _req, resp):
         self._done = False
+        self._cand = {'map': None, 'count': 0, 'pose': None, 'name': None}
+        self._last_switch_t = 0.0
         resp.success = True
-        resp.message = 're-armed: next registered-tag sighting seeds /initialpose'
+        resp.message = ('re-armed: next registered-tag sighting seeds '
+                        '/initialpose (same map) or switches maps (transit)')
         return resp
 
     def _on_detections(self, msg):
-        if self._done or not msg.detections:
+        if not msg.detections:
             return
-        # Nearest registered tag in this frame wins.
-        best = None
+        active_map, slam_mode = self._read_site()
+        # Nearest registered tag in this frame wins, per bucket.
+        best_same = None
+        best_foreign = None
+        saw_registered = False
         for det in msg.detections:
             entry = self._registered(det.family, det.id)
             if entry is None:
                 continue
+            saw_registered = True
             solved = self._solve(det, entry)
-            if solved and (best is None or solved[0] < best[0]):
-                best = solved
-        if best is None:
+            if not solved:
+                continue
+            home = entry.get('map_name') or active_map
+            if active_map is None or home == active_map:
+                if best_same is None or solved[0] < best_same[0]:
+                    best_same = solved
+            elif best_foreign is None or solved[0] < best_foreign[0]:
+                best_foreign = (home,) + solved
+        if best_foreign is not None:
+            self._track_transit(*best_foreign, slam_mode=slam_mode,
+                                active_map=active_map)
+        elif saw_registered and self._cand['count']:
+            # Same-map tags with no foreign vote decay a stale candidate.
+            self._cand['count'] -= 1
+        if best_same is None or self._done:
             return
-        dist, name, theta, pose = best
+        dist, name, theta, pose = best_same
         self._pub.publish(pose)
         self._done = True
         self.get_logger().info(
             'seeded /initialpose from tag %r %.2f m away: map (%.2f, %.2f) yaw %.1f deg'
             % (name, dist, pose.pose.pose.position.x,
                pose.pose.pose.position.y, math.degrees(theta)))
+
+    # --- floor transit (ADR-0029) --------------------------------------------
+
+    def _track_transit(self, home, dist, name, theta, pose, *,
+                       slam_mode, active_map):
+        if home == self._cand['map']:
+            self._cand['count'] += 1
+        else:
+            self._cand = {'map': home, 'count': 1, 'pose': None, 'name': name}
+        self._cand['pose'] = pose  # newest solve is the freshest geometry
+        self._cand['name'] = name
+        if self._cand['count'] < self.get_parameter(
+                'min_transit_sightings').value:
+            return
+        if self._switching:
+            return
+        if time.monotonic() - self._last_switch_t < self.get_parameter(
+                'transit_cooldown_s').value:
+            return
+        # map_server only exists in localization mode (ADR-0028) — the mode
+        # check and the service check are belt and braces for the same fact.
+        if slam_mode != 'localization' or not self._load_map_cli.service_is_ready():
+            self.get_logger().warn(
+                f"tag '{name}' lives on map '{home}' but slam_mode is "
+                f"'{slam_mode}' — not switching (localization mode only)",
+                throttle_duration_sec=30.0)
+            return
+        if self._nav_busy:
+            self.get_logger().warn(
+                f"tag '{name}' says floor transit to '{home}' but a nav goal "
+                'is in flight — not switching', throttle_duration_sec=30.0)
+            return
+        yaml_path = os.path.join(
+            self.get_parameter('maps_dir').value, home + '.yaml')
+        if not os.path.exists(yaml_path):
+            self.get_logger().warn(
+                f"tag '{name}' lives on map '{home}' but it has no grid "
+                '(.yaml) — re-save that map before localizing on it',
+                throttle_duration_sec=30.0)
+            return
+        self._switching = True
+        old = active_map
+        req = LoadMap.Request()
+        req.map_url = yaml_path
+        future = self._load_map_cli.call_async(req)
+        future.add_done_callback(
+            lambda fut: self._on_map_loaded(fut, old, home, name))
+
+    def _on_map_loaded(self, future, old, home, name):
+        try:
+            result = future.result().result
+        except Exception as e:  # noqa: BLE001 — service died mid-call; cooldown + retry on next sighting
+            self.get_logger().error(f'LoadMap for {home!r} failed: {e}')
+            result = None
+        if result != LoadMap.Response.RESULT_SUCCESS:
+            self.get_logger().error(
+                f'map_server refused {home!r} (result={result})')
+            self._last_switch_t = time.monotonic()  # cooldown a broken yaml too
+            self._switching = False
+            return
+        pose = self._cand['pose']
+        # Let amcl consume the republished latched /map before the seed.
+        self._seed_timer = self.create_timer(
+            SEED_DELAY_S, lambda: self._finish_transit(pose, old, home, name))
+
+    def _finish_transit(self, pose, old, home, name):
+        self._seed_timer.cancel()
+        pose.header.stamp = self.get_clock().now().to_msg()
+        self._pub.publish(pose)
+        self._done = True
+        self._cand = {'map': None, 'count': 0, 'pose': None, 'name': None}
+        self._last_switch_t = time.monotonic()
+        self._switching = False
+        self.get_logger().info(
+            'floor transit: %r -> %r via tag %r: map (%.2f, %.2f)'
+            % (old, home, name, pose.pose.pose.position.x,
+               pose.pose.pose.position.y))
+        threading.Thread(
+            target=self._persist_active_map, args=(home,), daemon=True).start()
+
+    def _persist_active_map(self, home):
+        """fleet_status owns site.json — POST the new active_map so the switch
+        survives restarts. Best effort: on failure the live map and site.json
+        disagree (visible in the webui) until the operator fixes it; the next
+        slam restart reverts to site.json's map and the tag re-transits."""
+        url = f"{self.get_parameter('fleet_api').value}/api/sites/active"
+        body = json.dumps({'active_map': home}).encode()
+        for attempt in range(3):
+            try:
+                req = urllib.request.Request(
+                    url, data=body, method='POST',
+                    headers={'Content-Type': 'application/json'})
+                with urllib.request.urlopen(req, timeout=5.0) as r:
+                    if r.status == 200:
+                        return
+            except OSError:
+                pass
+            time.sleep(2.0 * (attempt + 1))
+        self.get_logger().error(
+            f'could not persist active_map={home!r} to {url} — site.json now '
+            'disagrees with the live map; set it in the webui Site panel')
 
     def _solve(self, det, entry):
         """(distance, name, theta, PoseWithCovarianceStamped) or None."""

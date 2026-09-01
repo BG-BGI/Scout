@@ -257,7 +257,11 @@ def test_sc4_twist_publishers_are_allowlisted():
 # owner and no freeze (the ADR-0012 drift, reintroduced in JSON). A node never
 # serializes a wire payload itself — it calls a scout.core.status formatter.
 
-SC9_ALLOW = {}
+SC9_ALLOW = {
+    'scout/scout/tag_relocalizer.py':
+        'HTTP POST body to fleet_status (active_map persist, ADR-0029) — '
+        'an HTTP API payload, not a ROS wire format',
+}
 
 
 def test_sc9_no_inline_json_wire_payloads():
