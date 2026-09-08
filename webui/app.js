@@ -486,6 +486,9 @@ let bimScans = [];        // [{map_x, map_y, capture_id, timestamp}] from opensp
 let bimRoomsData = [];    // [{name, map_x, map_y}] from ACC rooms
 let bimShowScans = false;
 let bimShowRooms = false;
+let bimAlignMode = false;
+let bimAlignPts = [];        // [{map_x, map_y, sheet_x, sheet_y}]
+let bimAlignCapture = null;  // {x, y} map-frame point waiting for sheet coords
 
 function sheetToMap(sx, sy, alignment) {
     const {scale, theta, tx, ty} = alignment;
@@ -534,6 +537,56 @@ async function loadBimData() {
         if (bimShowScans) fetchBimScans(bim);
         if (bimShowRooms) fetchBimRooms(bim, mapName);
     } catch (_) {}
+}
+
+function solveBimAlignment(pts) {
+    const [p1, p2] = pts;
+    const dm = { x: p2.map_x - p1.map_x, y: p2.map_y - p1.map_y };
+    const ds = { x: p2.sheet_x - p1.sheet_x, y: p2.sheet_y - p1.sheet_y };
+    const den = dm.x ** 2 + dm.y ** 2;
+    const a = (ds.x * dm.x + ds.y * dm.y) / den;
+    const b = (ds.y * dm.x - ds.x * dm.y) / den;
+    const scale = Math.sqrt(a ** 2 + b ** 2);
+    const theta = Math.atan2(b, a);
+    const tx = p1.sheet_x - (a * p1.map_x - b * p1.map_y);
+    const ty = p1.sheet_y - (b * p1.map_x + a * p1.map_y);
+    return { tx, ty, theta, scale };
+}
+
+async function patchBimData(mapName, data) {
+    const res = await fetch(
+        `${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`,
+        { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }
+    );
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
+    return res.json();
+}
+
+async function loadBimSetup() {
+    if (!activeSiteMeta || !activeSiteMeta.active_map) return;
+    const mapName = activeSiteMeta.active_map;
+    const bimSetupEl = document.getElementById('bim-setup');
+    const bimCurrentEl = document.getElementById('bim-current');
+    const bimUrnInput = document.getElementById('bim-urn');
+    const bimLevelInput = document.getElementById('bim-level');
+    bimSetupEl.style.display = '';
+    try {
+        const bim = await fetch(`${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`).then((r) => r.json());
+        const hasUrn = bim && bim.acc_model_urn;
+        const hasAlign = bim && bim.alignment;
+        let status = hasUrn
+            ? `URN …${bim.acc_model_urn.slice(-16)} | Level: ${bim.acc_level_name || 'Level 1'}`
+            : 'no BIM linked';
+        if (hasAlign) {
+            const al = bim.alignment;
+            status += ` | aligned (scale ${al.scale.toFixed(3)}, θ ${(al.theta * 180 / Math.PI).toFixed(1)}°)`;
+        }
+        bimCurrentEl.textContent = status;
+        if (hasUrn) {
+            bimUrnInput.value = bim.acc_model_urn;
+            bimLevelInput.value = bim.acc_level_name || 'Level 1';
+        }
+    } catch (_) { bimCurrentEl.textContent = 'BIM: no data'; }
 }
 
 const mapTopic = new ROSLIB.Topic({
@@ -712,6 +765,38 @@ function drawMap() {
     });
   }
 
+  if (bimAlignMode) {
+    bimAlignPts.forEach((p, i) => {
+      const c = worldToCanvas(p.map_x, p.map_y);
+      mapCtx.save();
+      mapCtx.fillStyle = '#ff8800';
+      mapCtx.strokeStyle = '#fff';
+      mapCtx.lineWidth = 2;
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 8, 0, 2 * Math.PI);
+      mapCtx.fill();
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#000';
+      mapCtx.font = 'bold 10px monospace';
+      mapCtx.textAlign = 'center';
+      mapCtx.textBaseline = 'middle';
+      mapCtx.fillText(i + 1, c.x, c.y);
+      mapCtx.restore();
+    });
+    if (bimAlignCapture) {
+      const c = worldToCanvas(bimAlignCapture.x, bimAlignCapture.y);
+      mapCtx.save();
+      mapCtx.strokeStyle = '#ff8800';
+      mapCtx.lineWidth = 2;
+      mapCtx.setLineDash([4, 4]);
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 8, 0, 2 * Math.PI);
+      mapCtx.stroke();
+      mapCtx.setLineDash([]);
+      mapCtx.restore();
+    }
+  }
+
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
     mapCtx.fillStyle = '#40a0ff';
@@ -750,6 +835,12 @@ mapCanvas.addEventListener('click', (ev) => {
   if (areaMode) {
     areaPts.push(canvasToWorld(ev));
     areaBtn.textContent = 'Finish (' + areaPts.length + ')';
+    drawMap();
+    return;
+  }
+  if (bimAlignMode && !bimAlignCapture) {
+    bimAlignCapture = canvasToWorld(ev);
+    bimAlignUpdateStep();
     drawMap();
     return;
   }
@@ -1406,6 +1497,109 @@ bimRoomsToggle.addEventListener('click', () => {
   if (bimShowRooms) loadBimData(); else { bimRoomsData = []; drawMap(); }
 });
 
+// BIM Setup: link form + 2-point alignment wizard
+const bimLinkBtn = document.getElementById('bim-link-btn');
+const bimLinkResult = document.getElementById('bim-link-result');
+const bimAlignWizard = document.getElementById('bim-align-wizard');
+const bimAlignDescEl = document.getElementById('bim-align-desc');
+const bimAlignSheetRow = document.getElementById('bim-align-sheet-row');
+const bimSheetXInput = document.getElementById('bim-sheet-x');
+const bimSheetYInput = document.getElementById('bim-sheet-y');
+const bimAlignStartBtn = document.getElementById('bim-align-start');
+const bimAlignNextBtn = document.getElementById('bim-align-next');
+const bimAlignCancelBtn = document.getElementById('bim-align-cancel');
+
+function bimAlignReset(msg) {
+  bimAlignMode = false;
+  bimAlignPts = [];
+  bimAlignCapture = null;
+  bimAlignWizard.style.display = 'none';
+  bimAlignSheetRow.style.display = 'none';
+  bimAlignDescEl.textContent = '';
+  if (msg && bimLinkResult) bimLinkResult.textContent = msg;
+  drawMap();
+}
+
+function bimAlignUpdateStep() {
+  const step = bimAlignPts.length + 1;
+  if (!bimAlignCapture) {
+    bimAlignDescEl.textContent = `Click landmark ${step}/2 on the SLAM map.`;
+    bimAlignSheetRow.style.display = 'none';
+  } else {
+    const c = bimAlignCapture;
+    bimAlignDescEl.textContent =
+      `Point ${step}/2: map (${c.x.toFixed(3)}, ${c.y.toFixed(3)}). Enter sheet coords:`;
+    bimAlignSheetRow.style.display = '';
+    bimSheetXInput.value = '';
+    bimSheetYInput.value = '';
+    bimSheetXInput.focus();
+    bimAlignNextBtn.textContent = bimAlignPts.length === 1 ? 'Solve & Save' : 'Next point';
+  }
+}
+
+bimAlignStartBtn.addEventListener('click', () => {
+  bimAlignMode = true;
+  bimAlignPts = [];
+  bimAlignCapture = null;
+  bimAlignWizard.style.display = '';
+  bimAlignUpdateStep();
+});
+
+bimAlignCancelBtn.addEventListener('click', () => bimAlignReset('alignment cancelled'));
+
+bimAlignNextBtn.addEventListener('click', async () => {
+  if (!bimAlignCapture) return;
+  const sx = parseFloat(bimSheetXInput.value);
+  const sy = parseFloat(bimSheetYInput.value);
+  if (isNaN(sx) || isNaN(sy)) {
+    bimAlignDescEl.textContent = 'Enter valid sheet X and Y.';
+    return;
+  }
+  bimAlignPts.push({ map_x: bimAlignCapture.x, map_y: bimAlignCapture.y, sheet_x: sx, sheet_y: sy });
+  bimAlignCapture = null;
+  if (bimAlignPts.length < 2) { bimAlignUpdateStep(); return; }
+  const alignment = solveBimAlignment(bimAlignPts);
+  bimAlignDescEl.textContent =
+    `Solved: scale=${alignment.scale.toFixed(4)}, θ=${(alignment.theta * 180 / Math.PI).toFixed(1)}°. Saving…`;
+  bimAlignSheetRow.style.display = 'none';
+  try {
+    await patchBimData(activeSiteMeta.active_map, { alignment });
+    bimAlignReset(
+      `alignment saved ✓  scale ${alignment.scale.toFixed(3)}, θ ${(alignment.theta * 180 / Math.PI).toFixed(1)}°`
+    );
+    await refreshSites();
+    loadBimSetup();
+  } catch (e) {
+    bimAlignReset('alignment save failed: ' + e.message);
+  }
+});
+
+bimLinkBtn.addEventListener('click', async () => {
+  const bimUrnInput = document.getElementById('bim-urn');
+  const bimLevelInput = document.getElementById('bim-level');
+  if (!activeSiteMeta || !activeSiteMeta.active_map) {
+    bimLinkResult.textContent = 'no active map';
+    return;
+  }
+  const urn = bimUrnInput.value.trim();
+  const level = bimLevelInput.value.trim() || 'Level 1';
+  if (!urn) { bimLinkResult.textContent = 'URN required'; return; }
+  bimLinkBtn.disabled = true;
+  bimLinkResult.textContent = 'saving…';
+  try {
+    await patchBimData(activeSiteMeta.active_map, {
+      acc_model_urn: urn, acc_level_name: level,
+      openspace_site_id: '', openspace_sheet_id: '',
+    });
+    bimLinkResult.textContent = 'linked ✓ — set alignment next';
+    await refreshSites();
+    loadBimSetup();
+  } catch (e) {
+    bimLinkResult.textContent = 'failed: ' + e.message;
+  }
+  bimLinkBtn.disabled = false;
+});
+
 function renderSiteMaps() {
   siteMapsEl.innerHTML = '';
   const maps = (activeSiteMeta && activeSiteMeta.maps) || {};
@@ -1430,10 +1624,20 @@ function renderSiteMaps() {
     if (btn) btn.addEventListener('click', () => activateMap(name));
     siteMapsEl.appendChild(row);
   }
-  // Show BIM controls only when the active map has BIM configured
   const activeMap = active && maps[active];
   const activeHasBim = activeMap && activeMap.bim && activeMap.bim.alignment;
   bimControlsEl.style.display = activeHasBim ? '' : 'none';
+  const bimSetupEl = document.getElementById('bim-setup');
+  if (activeSiteMeta) {
+    if (active) {
+      loadBimSetup();
+    } else {
+      bimSetupEl.style.display = '';
+      document.getElementById('bim-current').textContent = 'activate a map first';
+    }
+  } else {
+    bimSetupEl.style.display = 'none';
+  }
 }
 
 const loadMapSrv = new ROSLIB.Service({

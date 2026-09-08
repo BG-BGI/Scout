@@ -136,6 +136,28 @@
         <button id="bim-scans-toggle">Show OS scans</button>
         <button id="bim-rooms-toggle">Show BIM rooms</button>
       </div>
+      <details id="bim-setup" style="display:none">
+        <summary>BIM / ACC</summary>
+        <div id="bim-current" class="dim"></div>
+        <div class="grid tight">
+          <input id="bim-urn" type="text" placeholder="urn:adsk.wipprod:..." autocomplete="off">
+          <input id="bim-level" type="text" placeholder="Level name" value="Level 1" autocomplete="off">
+          <button id="bim-link-btn">Link</button>
+        </div>
+        <div id="bim-link-result" class="dim"></div>
+        <div class="grid tight">
+          <button id="bim-align-start">Set Alignment</button>
+        </div>
+        <div id="bim-align-wizard" style="display:none">
+          <div id="bim-align-desc" class="dim"></div>
+          <div class="grid tight" id="bim-align-sheet-row" style="display:none">
+            <input id="bim-sheet-x" type="number" placeholder="Sheet X" step="any" autocomplete="off">
+            <input id="bim-sheet-y" type="number" placeholder="Sheet Y" step="any" autocomplete="off">
+            <button id="bim-align-next">Confirm</button>
+          </div>
+          <button id="bim-align-cancel">Cancel alignment</button>
+        </div>
+      </details>
       <div class="grid">
         <input id="site-map-name" type="text" placeholder="map name"
                pattern="[a-z0-9][a-z0-9_-]{0,31}" autocomplete="off">
