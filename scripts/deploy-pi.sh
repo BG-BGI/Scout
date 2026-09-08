@@ -48,7 +48,16 @@ main() {
   # Pin every scout image to this commit — compose reads SCOUT_TAG from .env.
   # Upsert only our line; .env may carry SCOUT_PROFILE / COMPANION_HOST.
   touch .env
-  { grep -v '^SCOUT_TAG=' .env || true; echo "SCOUT_TAG=$SHA"; } > .env.tmp
+  # Upsert pinned image tag + runtime secrets from CI env; preserve everything else.
+  # Vars absent from CI (empty) are left as-is in .env so local overrides survive.
+  cp .env .env.tmp
+  for _var in SCOUT_TAG OPENSPACE_API_KEY ACC_CLIENT_ID ACC_CLIENT_SECRET; do
+    _val="${!_var}"
+    [ -z "$_val" ] && [ "$_var" != "SCOUT_TAG" ] && continue
+    [ "$_var" = "SCOUT_TAG" ] && _val="$SHA"
+    { grep -v "^${_var}=" .env.tmp || true; echo "${_var}=${_val}"; } > .env.tmp2
+    mv .env.tmp2 .env.tmp
+  done
   mv .env.tmp .env
 
   docker compose $ALL pull

@@ -480,6 +480,62 @@ let grid = null;      // latest OccupancyGrid info
 let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
 
+const OPENSPACE_ACC_API = 'http://' + location.hostname + ':3100/api';
+
+let bimScans = [];        // [{map_x, map_y, capture_id, timestamp}] from openspace_acc
+let bimRoomsData = [];    // [{name, map_x, map_y}] from ACC rooms
+let bimShowScans = false;
+let bimShowRooms = false;
+
+function sheetToMap(sx, sy, alignment) {
+    const {scale, theta, tx, ty} = alignment;
+    const dx = (sx - tx) / scale;
+    const dy = (sy - ty) / scale;
+    const cos = Math.cos(-theta);
+    const sin = Math.sin(-theta);
+    return {x: dx * cos - dy * sin, y: dx * sin + dy * cos};
+}
+
+async function fetchBimScans(bim) {
+    const a = bim && bim.alignment;
+    if (!a || !bim.openspace_site_id || !bim.openspace_sheet_id) return;
+    try {
+        const url = `${OPENSPACE_ACC_API}/openspace/sites/${bim.openspace_site_id}/captures?sheet=${bim.openspace_sheet_id}`;
+        const caps = await fetch(url).then((r) => r.json());
+        bimScans = (Array.isArray(caps) ? caps : caps.content || []).map((c) => {
+            const pos = sheetToMap(c.x || 0, c.y || 0, a);
+            return {map_x: pos.x, map_y: pos.y, capture_id: c.id, timestamp: c.capturedAt || c.createdAt};
+        });
+    } catch (_) { bimScans = []; }
+    drawMap();
+}
+
+async function fetchBimRooms(bim, mapName) {
+    const a = bim && bim.alignment;
+    if (!a || !bim.acc_model_urn) return;
+    try {
+        const url = `${OPENSPACE_ACC_API}/acc/rooms?urn=${encodeURIComponent(bim.acc_model_urn)}&level=${encodeURIComponent(bim.acc_level_name || 'Level 1')}`;
+        const rooms = await fetch(url).then((r) => r.json());
+        bimRoomsData = (Array.isArray(rooms) ? rooms : rooms.rooms || []).map((r) => {
+            const cx = r.centroid_sheet ? r.centroid_sheet[0] : 0;
+            const cy = r.centroid_sheet ? r.centroid_sheet[1] : 0;
+            const pos = sheetToMap(cx, cy, a);
+            return {name: r.name, map_x: pos.x, map_y: pos.y};
+        });
+    } catch (_) { bimRoomsData = []; }
+    drawMap();
+}
+
+async function loadBimData() {
+    if (!activeSiteMeta || !activeSiteMeta.active_map) return;
+    const mapName = activeSiteMeta.active_map;
+    try {
+        const bim = await fetch(`${FLEET_API}/sites/active/maps/${mapName}/bim`).then((r) => r.json());
+        if (bimShowScans) fetchBimScans(bim);
+        if (bimShowRooms) fetchBimRooms(bim, mapName);
+    } catch (_) {}
+}
+
 const mapTopic = new ROSLIB.Topic({
   ros, name: '/map', messageType: 'nav_msgs/msg/OccupancyGrid',
   throttle_rate: 2000, queue_length: 1,
@@ -626,6 +682,35 @@ function drawMap() {
     mapCtx.restore();
   }
 
+
+  if (bimShowScans && bimScans.length && grid) {
+    bimScans.forEach((scan) => {
+      const c = worldToCanvas(scan.map_x, scan.map_y);
+      mapCtx.save();
+      mapCtx.fillStyle = 'rgba(255, 200, 0, 0.85)';
+      mapCtx.strokeStyle = '#a06000';
+      mapCtx.lineWidth = 1;
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
+      mapCtx.fill();
+      mapCtx.stroke();
+      mapCtx.restore();
+    });
+  }
+
+  if (bimShowRooms && bimRoomsData.length && grid) {
+    mapCtx.font = '10px monospace';
+    mapCtx.textAlign = 'center';
+    bimRoomsData.forEach((room) => {
+      const c = worldToCanvas(room.map_x, room.map_y);
+      mapCtx.fillStyle = 'rgba(80, 200, 120, 0.9)';
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 4, 0, 2 * Math.PI);
+      mapCtx.fill();
+      mapCtx.fillStyle = '#1a4a2a';
+      mapCtx.fillText(room.name, c.x, c.y - 8);
+    });
+  }
 
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
@@ -1306,6 +1391,20 @@ function renderSites(data) {
 // slam/amcl runs on. Activating in localization mode swaps the grid live via
 // map_server LoadMap (~1 s); any other mode restarts slam (map bound at launch).
 const siteMapsEl = document.getElementById('site-maps');
+const bimControlsEl = document.getElementById('bim-controls');
+const bimScansToggle = document.getElementById('bim-scans-toggle');
+const bimRoomsToggle = document.getElementById('bim-rooms-toggle');
+
+bimScansToggle.addEventListener('click', () => {
+  bimShowScans = !bimShowScans;
+  bimScansToggle.classList.toggle('selected', bimShowScans);
+  if (bimShowScans) loadBimData(); else { bimScans = []; drawMap(); }
+});
+bimRoomsToggle.addEventListener('click', () => {
+  bimShowRooms = !bimShowRooms;
+  bimRoomsToggle.classList.toggle('selected', bimShowRooms);
+  if (bimShowRooms) loadBimData(); else { bimRoomsData = []; drawMap(); }
+});
 
 function renderSiteMaps() {
   siteMapsEl.innerHTML = '';
@@ -1317,7 +1416,8 @@ function renderSiteMaps() {
     row.className = 'svc-row';
     const isActive = name === active;
     const floor = (m.floor !== null && m.floor !== undefined) ? ` · F${m.floor}` : '';
-    const badges = `${m.posegraph ? ' [graph]' : ''}${m.grid ? ' [grid]' : ''}${m.unregistered ? ' (unregistered)' : ''}`;
+    const hasBim = m.bim && m.bim.alignment;
+    const badges = `${m.posegraph ? ' [graph]' : ''}${m.grid ? ' [grid]' : ''}${hasBim ? ' [bim]' : ''}${m.unregistered ? ' (unregistered)' : ''}`;
     row.innerHTML = `
       <span class="svc-dot ${isActive ? 'running' : 'exited'}"></span>
       <span class="svc-name">${m.label && m.label !== name ? `${m.label} (${name})` : name}${floor}</span>
@@ -1330,6 +1430,10 @@ function renderSiteMaps() {
     if (btn) btn.addEventListener('click', () => activateMap(name));
     siteMapsEl.appendChild(row);
   }
+  // Show BIM controls only when the active map has BIM configured
+  const activeMap = active && maps[active];
+  const activeHasBim = activeMap && activeMap.bim && activeMap.bim.alignment;
+  bimControlsEl.style.display = activeHasBim ? '' : 'none';
 }
 
 const loadMapSrv = new ROSLIB.Service({

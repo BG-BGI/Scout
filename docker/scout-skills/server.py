@@ -2125,5 +2125,380 @@ async def elevator_ride(
     }
 
 
+# --- BIM + Open Space reconciliation (ADR-0031) ----------------------------------
+#
+# Reconciles Scout's SLAM/AMCL map frame with Autodesk Construction Cloud (ACC)
+# Revit models and Open Space 360° reality-capture.  The proxy service
+# `openspace_acc` (BG-BGI/openspace-acc-sdk, ADR-0031) handles all OAuth2/auth;
+# the Python client here calls http://localhost:3100/api with no credentials.
+# One solved SE2+scale `map→sheet` transform per map entry (stored in site.json's
+# per-map `bim.alignment` block) gates all spatial tools.  Non-spatial tools
+# (bim_link, bim_set_alignment, openspace_field_notes) work without alignment.
+#
+# Outputs: visual overlay, wall-deviation detection, room navigation, nearest
+# Open Space 360° imagery + timeline.
+
+import bim as _bim  # noqa: E402
+
+from openspace_acc import OpenspaceAccClient, OpenspaceAccError  # noqa: E402
+
+OPENSPACE_ACC_URL = os.environ.get("OPENSPACE_ACC_URL", "http://localhost:3100/api")
+
+_oa: OpenspaceAccClient | None = None
+
+
+def _oa_client() -> OpenspaceAccClient:
+    global _oa
+    if _oa is None:
+        try:
+            _oa = OpenspaceAccClient(OPENSPACE_ACC_URL)
+        except Exception as e:
+            raise ToolError(
+                f"BIM tools not reachable ({e!r}) — is the openspace_acc service running? "
+                "(ADR-0031; deploy with --profile full)"
+            ) from e
+    return _oa
+
+
+async def _get_bim(map_name: str) -> dict:
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.get(f"{FLEET_STATUS_URL}/api/sites/active/maps/{map_name}/bim")
+        if resp.status_code == 404:
+            raise ToolError(
+                f"no BIM config for map {map_name!r} — call bim_link first"
+            )
+        resp.raise_for_status()
+    return resp.json()
+
+
+async def _active_bim() -> tuple[str, dict]:
+    """(active_map_name, bim_block).  Raises ToolError if no active map."""
+    site = _load_site()
+    name = site.get("active_map")
+    if not name:
+        raise ToolError("no active map in this site")
+    bim = await _get_bim(name)
+    return name, bim
+
+
+def _require_alignment(bim: dict) -> dict:
+    a = bim.get("alignment")
+    if not a or not all(k in a for k in ("tx", "ty", "theta", "scale")):
+        raise ToolError("no alignment set for this map — call bim_set_alignment first")
+    return a
+
+
+@mcp.tool
+async def bim_link(
+    openspace_site_id: str = "",
+    openspace_sheet_id: str = "",
+    acc_model_urn: str = "",
+    acc_level_name: str = "Level 1",
+) -> dict:
+    """Set the Open Space and ACC identifiers for the active map's BIM block.
+    Run this once after creating a site to link it to the right OpenSpace sheet
+    and Revit level.  All parameters are optional — omit any you don't have yet."""
+    site = _load_site()
+    name = site.get("active_map")
+    if not name:
+        raise ToolError("no active map")
+    patch: dict = {}
+    if openspace_site_id:
+        patch["openspace_site_id"] = openspace_site_id
+    if openspace_sheet_id:
+        patch["openspace_sheet_id"] = openspace_sheet_id
+    if acc_model_urn:
+        patch["acc_model_urn"] = acc_model_urn
+    if acc_level_name:
+        patch["acc_level_name"] = acc_level_name
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.patch(
+            f"{FLEET_STATUS_URL}/api/sites/active/maps/{name}/bim",
+            json=patch,
+        )
+        resp.raise_for_status()
+    return resp.json()
+
+
+@mcp.tool
+async def bim_set_alignment(
+    p1_map_x: float,
+    p1_map_y: float,
+    p1_sheet_x: float,
+    p1_sheet_y: float,
+    p2_map_x: float,
+    p2_map_y: float,
+    p2_sheet_x: float,
+    p2_sheet_y: float,
+) -> dict:
+    """Solve and store the map→sheet SE2+scale alignment from two landmark pairs.
+
+    For each landmark: drive the robot to it (record map pose via nav_status),
+    then read its sheet coordinates from the OpenSpace floor-plan viewer.
+    The two landmarks must be well-separated (>1 m in the map frame).
+    """
+    site = _load_site()
+    name = site.get("active_map")
+    if not name:
+        raise ToolError("no active map")
+    alignment = _bim.solve_alignment(
+        (p1_map_x, p1_map_y), (p1_sheet_x, p1_sheet_y),
+        (p2_map_x, p2_map_y), (p2_sheet_x, p2_sheet_y),
+    )
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.patch(
+            f"{FLEET_STATUS_URL}/api/sites/active/maps/{name}/bim",
+            json={"alignment": alignment},
+        )
+        resp.raise_for_status()
+    return {"ok": True, "alignment": alignment}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def bim_overlay() -> Image:
+    """Return a PNG showing the SLAM occupancy grid composited over the
+    OpenSpace sheet floor plan, spatially registered via the stored alignment."""
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    site_id = bim.get("openspace_site_id") or ""
+    sheet_id = bim.get("openspace_sheet_id") or ""
+    if not site_id or not sheet_id:
+        raise ToolError("openspace_site_id / openspace_sheet_id not set — call bim_link first")
+    sheet_bytes = await _oa_client().get_sheet_image(site_id, sheet_id)
+    yaml_path = os.path.join(SLAM_MAPS_DIR, name + ".yaml")
+    if not os.path.exists(yaml_path):
+        raise ToolError(f"no grid map on disk for {name!r} — save the map first")
+    png = _bim.overlay(yaml_path, sheet_bytes, alignment)
+    return Image(data=png, media_type="image/png")
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def bim_deviations(threshold_m: float = 0.15) -> dict:
+    """Compare SLAM wall contours vs. Revit room boundaries.
+
+    Returns a list of BIM wall cells that have no corresponding SLAM wall within
+    threshold_m — these are construction deviations or areas not yet mapped.
+    Requires both alignment and ACC room data.
+    """
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    urn = bim.get("acc_model_urn") or ""
+    level = bim.get("acc_level_name") or "Level 1"
+    if not urn:
+        raise ToolError("acc_model_urn not set — call bim_link with the Revit model URN")
+    yaml_path = os.path.join(SLAM_MAPS_DIR, name + ".yaml")
+    if not os.path.exists(yaml_path):
+        raise ToolError(f"no grid map on disk for {name!r}")
+
+    rooms = await _oa_client().get_acc_rooms(urn, level)
+    slam_arr, origin, resolution = _bim.load_pgm(yaml_path)
+    polys_map = []
+    for room in rooms:
+        if isinstance(room.get("polygon_map"), list):
+            polys_map.append([(pt["x"], pt["y"]) for pt in room["polygon_map"]])
+    bim_arr = _bim.rasterize_rooms(polys_map, origin, resolution, slam_arr.shape)
+    deviations = _bim.compute_deviations(slam_arr, bim_arr, origin, resolution, threshold_m)
+    return {"count": len(deviations), "threshold_m": threshold_m, "deviations": deviations}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def bim_rooms() -> dict:
+    """List Revit rooms for the active map's ACC level, with map-frame centroids."""
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    urn = bim.get("acc_model_urn") or ""
+    level = bim.get("acc_level_name") or "Level 1"
+    if not urn:
+        raise ToolError("acc_model_urn not set — call bim_link with the Revit model URN")
+    rooms = await _oa_client().get_acc_rooms(urn, level)
+    result = []
+    for room in rooms:
+        cx, cy = room.get("centroid_sheet", (0.0, 0.0))
+        mx, my = _bim.sheet_to_map(cx, cy, alignment)
+        result.append({
+            "name": room.get("name", ""),
+            "map_x": round(mx, 3),
+            "map_y": round(my, 3),
+            "area_m2": room.get("area_m2"),
+        })
+    return {"rooms": result, "level": level}
+
+
+@mcp.tool
+async def go_to_room(room_name: str) -> dict:
+    """Navigate to a Revit room by name.  Resolves the room centroid via bim_rooms
+    and dispatches a Nav2 goal — same semantics as go_to."""
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    urn = bim.get("acc_model_urn") or ""
+    level = bim.get("acc_level_name") or "Level 1"
+    if not urn:
+        raise ToolError("acc_model_urn not set — call bim_link first")
+    rooms = await _oa_client().get_acc_rooms(urn, level)
+    matches = [r for r in rooms if room_name.lower() in r.get("name", "").lower()]
+    if not matches:
+        names = [r.get("name", "") for r in rooms[:20]]
+        raise ToolError(
+            f"room {room_name!r} not found in {level!r}. "
+            f"Available (first 20): {names}"
+        )
+    room = matches[0]
+    cx, cy = room.get("centroid_sheet", (0.0, 0.0))
+    mx, my = _bim.sheet_to_map(cx, cy, alignment)
+    async with RosBridge() as rb:
+        await rb.publish(
+            "/goal_pose",
+            "geometry_msgs/msg/PoseStamped",
+            {
+                "header": {"frame_id": "map"},
+                "pose": {
+                    "position": {"x": mx, "y": my, "z": 0.0},
+                    "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+                },
+            },
+        )
+    return {"room": room.get("name"), "map_x": round(mx, 3), "map_y": round(my, 3),
+            "note": "goal dispatched — poll nav_status"}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def openspace_scans(limit: int = 100) -> dict:
+    """List Open Space captures for the active map's sheet, with map-frame positions.
+
+    Each capture has a position on the sheet floor plan (sheet coords).  The
+    alignment transform projects these into the robot map frame so you can see
+    where each 360° scan was taken relative to the SLAM map.
+    """
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    site_id = bim.get("openspace_site_id") or ""
+    sheet_id = bim.get("openspace_sheet_id") or ""
+    if not site_id or not sheet_id:
+        raise ToolError("openspace_site_id / openspace_sheet_id not set — call bim_link first")
+    captures = await _oa_client().get_captures(site_id, sheet_id)
+    result = []
+    for cap in captures[:limit]:
+        sx, sy = cap.get("x", 0.0), cap.get("y", 0.0)
+        mx, my = _bim.sheet_to_map(sx, sy, alignment)
+        result.append({
+            "capture_id": cap.get("id"),
+            "map_x": round(mx, 3),
+            "map_y": round(my, 3),
+            "timestamp": cap.get("capturedAt") or cap.get("createdAt"),
+        })
+    return {"count": len(result), "scans": result}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def openspace_nearest() -> dict:
+    """Return the Open Space capture closest to the robot's current pose.
+
+    Includes equirectangular panoramic URL and preview URL for the nearest scan.
+    """
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    site_id = bim.get("openspace_site_id") or ""
+    sheet_id = bim.get("openspace_sheet_id") or ""
+    if not site_id or not sheet_id:
+        raise ToolError("openspace_site_id / openspace_sheet_id not set — call bim_link first")
+
+    async with RosBridge() as rb:
+        pose = await _robot_pose(rb)
+    if pose is None:
+        raise ToolError("cannot read robot pose — is the robot stack running?")
+    rx, ry = pose["x"], pose["y"]
+    captures = await _oa_client().get_captures(site_id, sheet_id)
+    if not captures:
+        return {"error": "no captures on this sheet"}
+
+    best_cap, best_dist = captures[0], float("inf")
+    for cap in captures:
+        cx, cy = _bim.sheet_to_map(cap.get("x", 0.0), cap.get("y", 0.0), alignment)
+        d = math.hypot(cx - rx, cy - ry)
+        if d < best_dist:
+            best_dist, best_cap = d, cap
+    best = best_cap
+    cap_x, cap_y = _bim.sheet_to_map(best.get("x", 0.0), best.get("y", 0.0), alignment)
+    panos = await _oa_client().get_panos(best["id"])
+    pano = panos[0] if panos else {}
+    return {
+        "capture_id": best["id"],
+        "map_x": round(cap_x, 3),
+        "map_y": round(cap_y, 3),
+        "distance_m": round(math.hypot(cap_x - rx, cap_y - ry), 3),
+        "timestamp": best.get("capturedAt") or best.get("createdAt"),
+        "equi_url": pano.get("equiUrl") or pano.get("url"),
+        "preview_url": pano.get("previewUrl"),
+    }
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def openspace_timeline(
+    map_x: float,
+    map_y: float,
+    radius_m: float = 3.0,
+) -> dict:
+    """All Open Space captures within radius_m of a map-frame position, by date.
+
+    Shows how a location has changed over time — useful for progress tracking
+    and construction deviation analysis.
+    """
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    site_id = bim.get("openspace_site_id") or ""
+    sheet_id = bim.get("openspace_sheet_id") or ""
+    if not site_id or not sheet_id:
+        raise ToolError("openspace_site_id / openspace_sheet_id not set — call bim_link first")
+    captures = await _oa_client().get_captures(site_id, sheet_id)
+    nearby = []
+    for cap in captures:
+        cx, cy = _bim.sheet_to_map(cap.get("x", 0.0), cap.get("y", 0.0), alignment)
+        dist = math.hypot(cx - map_x, cy - map_y)
+        if dist <= radius_m:
+            nearby.append({
+                "capture_id": cap["id"],
+                "map_x": round(cx, 3),
+                "map_y": round(cy, 3),
+                "dist_m": round(dist, 3),
+                "timestamp": cap.get("capturedAt") or cap.get("createdAt"),
+            })
+    nearby.sort(key=lambda c: c["timestamp"] or "")
+    return {"count": len(nearby), "radius_m": radius_m, "captures": nearby}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def openspace_field_notes(
+    status: str = "",
+    limit: int = 50,
+) -> dict:
+    """List Open Space field notes (issues) in map-frame coordinates.
+
+    Pass status= to filter (e.g. "OPEN", "CLOSED"). Each note includes its
+    map-frame position so you can navigate to it or correlate with the SLAM map.
+    """
+    name, bim = await _active_bim()
+    alignment = _require_alignment(bim)
+    site_id = bim.get("openspace_site_id") or ""
+    if not site_id:
+        raise ToolError("openspace_site_id not set — call bim_link first")
+    kwargs: dict = {}
+    if status:
+        kwargs["status"] = status
+    notes = await _oa_client().get_field_notes(site_id, **kwargs)
+    result = []
+    for note in notes[:limit]:
+        sx, sy = note.get("x") or 0.0, note.get("y") or 0.0
+        mx, my = _bim.sheet_to_map(sx, sy, alignment)
+        result.append({
+            "id": note.get("id"),
+            "title": note.get("title") or note.get("description", "")[:80],
+            "status": note.get("status"),
+            "map_x": round(mx, 3),
+            "map_y": round(my, 3),
+            "created": note.get("createdAt"),
+        })
+    return {"count": len(result), "notes": result}
+
+
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=9001, path="/mcp")

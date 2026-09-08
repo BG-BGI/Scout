@@ -373,6 +373,9 @@ services:
       - SCHINDLER_TLS_VERIFY=${SCHINDLER_TLS_VERIFY:-true}
       - SCHINDLER_IDENTITY=${SCHINDLER_IDENTITY:-}
       - ELEVATOR_CONFIG_PATH=/sites/active/elevator.json
+      # Open Space + ACC BIM reconciliation (ADR-0031). Proxy URL points to the
+      # openspace_acc service below; override in .env if the service runs elsewhere.
+      - OPENSPACE_ACC_URL=${OPENSPACE_ACC_URL:-http://openspace_acc:3100/api}
     volumes:
       # Parent dir, NEVER ./sites/active/... — mounting through the symlink
       # would freeze its target at container create (ADR-0023).
@@ -383,6 +386,27 @@ services:
       # topics). Read-only; robot_profile.py falls back to baked defaults if
       # this mount is ever missing.
       - ./scout/config/robot_profile.yaml:/robot_profile.yaml:ro
+
+  # Open Space + ACC BIM proxy (ADR-0031; profile: full).
+  # Handles all OAuth2/API-key auth for OpenSpace and ACC Model Derivative.
+  # The scout_skills Python client calls http://openspace_acc:3100/api with no
+  # credentials of its own.  Build: BG-BGI/openspace-acc-sdk apps/web.
+  # ⚠ No auth — LAN-trust only, same caveat as ros_mcp/scout_skills.
+  openspace_acc:
+    image: ghcr.io/bg-bgi/openspace-acc:${OPENSPACE_ACC_TAG:-latest}
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["full"]
+    environment:
+      - OPENSPACE_API_KEY=${OPENSPACE_API_KEY:-}
+      - OPENSPACE_BASE_URL=${OPENSPACE_BASE_URL:-https://api.us.openspace.ai}
+      - ACC_CLIENT_ID=${ACC_CLIENT_ID:-}
+      - ACC_CLIENT_SECRET=${ACC_CLIENT_SECRET:-}
+      - PORT=3100
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
 
   # --- Observability stack (profile: observability) ---
   # Opt-in, same as `explore`: `docker compose --profile observability up -d`.

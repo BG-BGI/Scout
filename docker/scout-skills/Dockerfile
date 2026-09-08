@@ -33,6 +33,13 @@ ARG SCHINDLER_RBL_REF=ca6aa9b50c7ff99d0222af02504b3a4bc18bc8d5
 RUN --mount=type=secret,id=gh_token \
     uv pip install --system --no-cache \
     "schindler-rbl @ https://x-access-token:$(cat /run/secrets/gh_token)@github.com/BG-BGI/schindler-rbl/archive/${SCHINDLER_RBL_REF}.tar.gz"
+# Open Space + ACC BIM reconciliation SDK (ADR-0031), same BuildKit-secret
+# pattern as schindler-rbl.  Local build:
+#   GH_TOKEN=$(gh auth token) docker compose build scout_skills
+ARG OPENSPACE_ACC_REF=a0874dc975fced0d4966d296440a485a522c16ca
+RUN --mount=type=secret,id=gh_token \
+    uv pip install --system --no-cache \
+    "openspace-acc @ https://x-access-token:$(cat /run/secrets/gh_token)@github.com/BG-BGI/openspace-acc-sdk/archive/${OPENSPACE_ACC_REF}.tar.gz#subdirectory=py"
 COPY --from=yolo-export /yolo11n.onnx /app/yolo11n.onnx
 COPY *.py /app/
 CMD ["python", "/app/server.py"]

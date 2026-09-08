@@ -125,6 +125,9 @@ jobs:
         env:
           BRANCH: ${{ needs.resolve.outputs.pi_branch }}
           SHA: ${{ needs.resolve.outputs.pi_sha }}
+          OPENSPACE_API_KEY: ${{ secrets.OPENSPACE_API_KEY }}
+          ACC_CLIENT_ID: ${{ secrets.ACC_CLIENT_ID }}
+          ACC_CLIENT_SECRET: ${{ secrets.ACC_CLIENT_SECRET }}
         # The git update happens HERE, before the script runs, so the deploy
         # always executes the NEW revision's deploy-pi.sh (a script that
         # updates its own file mid-run is a bash re-read hazard).
