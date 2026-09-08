@@ -52,7 +52,7 @@ main() {
   # Vars absent from CI (empty) are left as-is in .env so local overrides survive.
   cp .env .env.tmp
   for _var in SCOUT_TAG OPENSPACE_API_KEY ACC_CLIENT_ID ACC_CLIENT_SECRET; do
-    _val="${!_var}"
+    _val="${!_var:-}"
     [ -z "$_val" ] && [ "$_var" != "SCOUT_TAG" ] && continue
     [ "$_var" = "SCOUT_TAG" ] && _val="$SHA"
     { grep -v "^${_var}=" .env.tmp || true; echo "${_var}=${_val}"; } > .env.tmp2
