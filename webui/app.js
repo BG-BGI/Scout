@@ -1741,23 +1741,36 @@ async function loadAccProjects() {
   accProjectsLoaded = true;
   const picker = document.getElementById('bim-picker');
   const manual = document.getElementById('bim-manual');
+  const note = document.getElementById('bim-picker-note');
   const projSel = document.getElementById('bim-project');
+  const fallback = (msg) => {
+    picker.style.display = 'none';
+    manual.open = true;                 // manual URN is the path
+    if (note) note.textContent = msg;
+  };
   try {
-    const d = await fetch(`${FLEET_API}/acc/projects`).then((r) => r.json());
-    if (!d.configured || !(d.projects || []).length) {
-      picker.style.display = 'none';
-      manual.open = true;               // manual is the only path
-      return;
+    const res = await fetch(`${FLEET_API}/acc/projects`);
+    if (res.status === 404) {
+      // Route missing = old fleet_status image still running.
+      return fallback('project picker needs the updated robot service — rebuild fleet_status. Manual URN below.');
     }
+    const d = await res.json();
+    if (!d.configured) {
+      return fallback('ACC creds not set on the robot (ACC_CLIENT_ID/SECRET). Manual URN below.');
+    }
+    if (!(d.projects || []).length) {
+      return fallback('ACC connected but no projects visible — add this app as a Custom Integration in ACC Account Admin. Manual URN below.');
+    }
+    if (note) note.textContent = '';
     picker.style.display = '';
+    manual.open = false;
     projSel.innerHTML = '<option value="">Select project…</option>' +
       d.projects.map((p) =>
         `<option value="${p.id}" data-hub="${p.hub}">${p.name}</option>`).join('');
     projSel.onchange = loadAccModels;
   } catch (_) {
-    picker.style.display = 'none';
-    manual.open = true;
     accProjectsLoaded = false;          // allow a retry next open
+    fallback('robot service unreachable — using manual URN.');
   }
 }
 async function loadAccModels() {
