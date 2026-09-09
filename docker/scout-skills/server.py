@@ -2195,29 +2195,46 @@ async def bim_link(
     acc_model_urn: str = "",
     acc_level_name: str = "Level 1",
 ) -> dict:
-    """Set the Open Space and ACC identifiers for the active map's BIM block.
-    Run this once after creating a site to link it to the right OpenSpace sheet
-    and Revit level.  All parameters are optional — omit any you don't have yet."""
+    """Link the building's Revit model + OpenSpace project, and (per floor) the
+    level + sheet. The model/project link is SITE-level, so acc_model_urn and
+    openspace_site_id can be set right after creating a site, before any map
+    exists. acc_level_name and openspace_sheet_id are per-map and need an active
+    map — they're skipped (not an error) if there isn't one yet. All params are
+    optional; omit any you don't have."""
     site = _load_site()
     name = site.get("active_map")
-    if not name:
-        raise ToolError("no active map")
-    patch: dict = {}
-    if openspace_site_id:
-        patch["openspace_site_id"] = openspace_site_id
-    if openspace_sheet_id:
-        patch["openspace_sheet_id"] = openspace_sheet_id
+    site_patch: dict = {}
     if acc_model_urn:
-        patch["acc_model_urn"] = acc_model_urn
+        site_patch["acc_model_urn"] = acc_model_urn
+    if openspace_site_id:
+        site_patch["openspace_site_id"] = openspace_site_id
+    map_patch: dict = {}
     if acc_level_name:
-        patch["acc_level_name"] = acc_level_name
+        map_patch["acc_level_name"] = acc_level_name
+    if openspace_sheet_id:
+        map_patch["openspace_sheet_id"] = openspace_sheet_id
+    result: dict = {}
     async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.patch(
-            f"{FLEET_STATUS_URL}/api/sites/active/maps/{name}/bim",
-            json=patch,
-        )
-        resp.raise_for_status()
-    return resp.json()
+        if site_patch:
+            resp = await http.patch(
+                f"{FLEET_STATUS_URL}/api/sites/active/bim", json=site_patch)
+            resp.raise_for_status()
+            result["site"] = resp.json()
+        if map_patch:
+            if not name:
+                result["map"] = {
+                    "skipped": "no active map — level/sheet not stored yet; "
+                               "the site-level model link was saved. Re-run "
+                               "bim_link once a map is active."}
+            else:
+                resp = await http.patch(
+                    f"{FLEET_STATUS_URL}/api/sites/active/maps/{name}/bim",
+                    json=map_patch)
+                resp.raise_for_status()
+                result["map"] = resp.json()
+    if not result:
+        raise ToolError("nothing to link — pass a model URN, site, level, or sheet")
+    return result
 
 
 @mcp.tool

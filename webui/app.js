@@ -564,30 +564,46 @@ async function patchBimData(mapName, data) {
     return res.json();
 }
 
+// Site-level BIM (the building's Revit model + OpenSpace project). Linkable
+// before any map exists — that's the whole point of the site scope (ADR-0031
+// amendment). Level/sheet/alignment stay per-map (patchBimData above).
+async function patchSiteBim(data) {
+    const res = await fetch(
+        `${FLEET_API}/sites/active/bim`,
+        { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }
+    );
+    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
+    return res.json();
+}
+
 async function loadBimSetup() {
-    if (!activeSiteMeta || !activeSiteMeta.active_map) return;
-    const mapName = activeSiteMeta.active_map;
+    if (!activeSiteMeta) return;
+    const mapName = activeSiteMeta.active_map;  // may be null on a fresh site
     const bimSetupEl = document.getElementById('bim-setup');
     const bimCurrentEl = document.getElementById('bim-current');
     const bimUrnInput = document.getElementById('bim-urn');
     const bimLevelInput = document.getElementById('bim-level');
     bimSetupEl.style.display = '';
     try {
-        const bim = await fetch(`${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`).then((r) => r.json());
-        const hasUrn = bim && bim.acc_model_urn;
+        // Site-level model link (works with no map). If a map is active, the
+        // per-map GET is the merged effective block (model + level + alignment).
+        const siteBim = await fetch(`${FLEET_API}/sites/active/bim`).then((r) => r.json());
+        const bim = mapName
+            ? await fetch(`${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`).then((r) => r.json())
+            : siteBim;
+        const urn = (siteBim && siteBim.acc_model_urn) || (bim && bim.acc_model_urn);
         const hasAlign = bim && bim.alignment;
-        let status = hasUrn
-            ? `URN …${bim.acc_model_urn.slice(-16)} | Level: ${bim.acc_level_name || 'Level 1'}`
-            : 'no BIM linked';
-        if (hasAlign) {
+        let status = urn
+            ? `Model …${urn.slice(-16)} · Level ${(bim && bim.acc_level_name) || 'Level 1'}`
+            : 'no building model linked';
+        if (!mapName) status += ' · link the model now; level & alignment unlock once a floor is mapped';
+        else if (hasAlign) {
             const al = bim.alignment;
-            status += ` | aligned (scale ${al.scale.toFixed(3)}, θ ${(al.theta * 180 / Math.PI).toFixed(1)}°)`;
+            status += ` · aligned (scale ${al.scale.toFixed(3)}, θ ${(al.theta * 180 / Math.PI).toFixed(1)}°)`;
         }
         bimCurrentEl.textContent = status;
-        if (hasUrn) {
-            bimUrnInput.value = bim.acc_model_urn;
-            bimLevelInput.value = bim.acc_level_name || 'Level 1';
-        }
+        if (urn) bimUrnInput.value = urn;
+        if (bim && bim.acc_level_name) bimLevelInput.value = bim.acc_level_name;
     } catch (_) { bimCurrentEl.textContent = 'BIM: no data'; }
 }
 
@@ -1686,21 +1702,24 @@ bimAlignNextBtn.addEventListener('click', async () => {
 bimLinkBtn.addEventListener('click', async () => {
   const bimUrnInput = document.getElementById('bim-urn');
   const bimLevelInput = document.getElementById('bim-level');
-  if (!activeSiteMeta || !activeSiteMeta.active_map) {
-    bimLinkResult.textContent = 'no active map';
-    return;
-  }
+  // Model link is SITE-level, so it works with no active map — that's the fix.
+  if (!activeSiteMeta) { bimLinkResult.textContent = 'no active site'; return; }
   const urn = bimUrnInput.value.trim();
   const level = bimLevelInput.value.trim() || 'Level 1';
-  if (!urn) { bimLinkResult.textContent = 'URN required'; return; }
+  if (!urn) { bimLinkResult.textContent = 'Model URN required'; return; }
   bimLinkBtn.disabled = true;
   bimLinkResult.textContent = 'saving…';
   try {
-    await patchBimData(activeSiteMeta.active_map, {
-      acc_model_urn: urn, acc_level_name: level,
-      openspace_site_id: '', openspace_sheet_id: '',
-    });
-    bimLinkResult.textContent = 'linked ✓ — set alignment next';
+    // The building's model -> site scope (always).
+    await patchSiteBim({ acc_model_urn: urn });
+    // The floor's level -> map scope (only if a floor is active).
+    if (activeSiteMeta.active_map) {
+      await patchBimData(activeSiteMeta.active_map, { acc_level_name: level });
+      bimLinkResult.textContent = 'linked ✓ — set alignment next';
+    } else {
+      bimLinkResult.textContent =
+        'model linked ✓ — map a floor to set its level & alignment';
+    }
     await refreshSites();
     loadBimSetup();
   } catch (e) {
@@ -1754,12 +1773,9 @@ function renderSiteMaps() {
   renderFloorStack();                     // map floor stack (#mo-floors)
   const bimSetupEl = document.getElementById('bim-setup');
   if (activeSiteMeta) {
-    if (active) {
-      loadBimSetup();
-    } else {
-      bimSetupEl.style.display = '';
-      document.getElementById('bim-current').textContent = 'activate a map first';
-    }
+    // Model link is site-level, so BIM setup is usable even with no map yet
+    // (loadBimSetup handles the no-active-map case).
+    loadBimSetup();
   } else {
     bimSetupEl.style.display = 'none';
   }

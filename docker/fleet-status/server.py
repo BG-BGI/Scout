@@ -417,6 +417,14 @@ def _active_site():
 # normalized on read and write-upgraded on the next write.
 _MAP_DEFAULTS = {"label": "", "floor": None, "map_start_pose": [0.0, 0.0, 0.0]}
 
+# BIM link is split across two scopes (ADR-0031 amendment). The building's Revit
+# model + OpenSpace project belong to the SITE (linkable before any map exists);
+# each floor's level/sheet + its SLAM alignment belong to the MAP. get_map_bim
+# returns the two merged so consumers read one flat block; patch_map_bim
+# split-routes writes so older single-call clients keep working.
+SITE_BIM_KEYS = ("acc_model_urn", "openspace_site_id")
+MAP_BIM_KEYS = ("acc_level_name", "openspace_sheet_id", "alignment")
+
 
 def _norm_map_entry(name, entry):
     m = dict(_MAP_DEFAULTS)
@@ -436,7 +444,7 @@ def _normalize_site(data):
     scout.core.sites.load_site, minus the raise-on-invalid strictness —
     an HTTP status API shouldn't crash-loop on a bad file)."""
     site = {"version": 2, "display_name": "", "active_map": None,
-            "slam_mode": "auto", "maps": {}}
+            "slam_mode": "auto", "maps": {}, "bim": {}}
     if not isinstance(data, dict):
         return site
     for key in ("display_name", "slam_mode"):
@@ -444,6 +452,8 @@ def _normalize_site(data):
             site[key] = data[key]
     if "created" in data:
         site["created"] = data["created"]
+    if isinstance(data.get("bim"), dict):  # site-level model/project link
+        site["bim"] = {k: data["bim"][k] for k in SITE_BIM_KEYS if k in data["bim"]}
     if isinstance(data.get("maps"), dict):
         site["maps"] = {n: _norm_map_entry(n, e)
                         for n, e in data["maps"].items()}
@@ -627,7 +637,47 @@ def get_map_bim(map_name):
         return 503, {"error": "site.json unreadable"}
     if map_name not in site["maps"]:
         return 404, {"error": f"map '{map_name}' not found"}
-    return 200, site["maps"][map_name].get("bim") or {}
+    # Effective config: site-level model/project overlaid with the map's own
+    # level/sheet/alignment. Consumers (skills tools) read one flat block.
+    merged = dict(site.get("bim") or {})
+    merged.update(site["maps"][map_name].get("bim") or {})
+    return 200, merged
+
+
+def get_site_bim():
+    if SITE_SCAFFOLD != "pi":
+        return 404, {"error": "sites not managed here"}
+    active = _active_site()
+    if active is None:
+        return 409, {"error": "no active site"}
+    site_dir = os.path.join(SITES_DIR, active)
+    try:
+        with open(os.path.join(site_dir, "site.json")) as f:
+            site = _normalize_site(json.load(f))
+    except (OSError, json.JSONDecodeError):
+        return 503, {"error": "site.json unreadable"}
+    return 200, site.get("bim") or {}
+
+
+def patch_site_bim(patch):
+    if SITE_SCAFFOLD != "pi":
+        return 404, {"error": "sites not managed here"}
+    if not isinstance(patch, dict):
+        return 400, {"error": "body must be a JSON object"}
+    active = _active_site()
+    if active is None:
+        return 409, {"error": "no active site"}
+    site_dir = os.path.join(SITES_DIR, active)
+    try:
+        with open(os.path.join(site_dir, "site.json")) as f:
+            site = _normalize_site(json.load(f))
+    except (OSError, json.JSONDecodeError):
+        return 503, {"error": "site.json unreadable"}
+    current = site.get("bim") or {}
+    current.update({k: patch[k] for k in SITE_BIM_KEYS if k in patch})
+    site["bim"] = current
+    _write_site_json(site_dir, site)
+    return 200, {"ok": True, "bim": current}
 
 
 def patch_map_bim(map_name, patch):
@@ -647,12 +697,21 @@ def patch_map_bim(map_name, patch):
         return 503, {"error": "site.json unreadable"}
     if map_name not in site["maps"]:
         return 404, {"error": f"map '{map_name}' not found"}
+    # Split-route: model/project keys go to the site, level/sheet/alignment to
+    # the map. Lets an older client PATCH everything to one URL and still land
+    # the model at the site scope.
+    site_patch = {k: patch[k] for k in SITE_BIM_KEYS if k in patch}
+    map_patch = {k: patch[k] for k in MAP_BIM_KEYS if k in patch}
+    if site_patch:
+        sbim = site.get("bim") or {}
+        sbim.update(site_patch)
+        site["bim"] = sbim
     current = site["maps"][map_name].get("bim") or {}
-    current.update(patch)
+    current.update(map_patch)
     site["maps"][map_name]["bim"] = current
     site["default_map"] = site["active_map"]  # legacy mirror
     _write_site_json(site_dir, site)
-    return 200, {"ok": True, "bim": current}
+    return 200, {"ok": True, "bim": {**(site.get("bim") or {}), **current}}
 
 
 def _site_restarts_bg():
@@ -744,6 +803,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "sites not configured here"})
             else:
                 self._send_json(200, list_sites())
+        elif self.path.rstrip("/") == "/api/sites/active/bim":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+            else:
+                code, payload = get_site_bim()
+                self._send_json(code, payload)
         elif self.path.startswith("/api/sites/active/maps/") and self.path.endswith("/bim"):
             parts = self.path.strip("/").split("/")
             if len(parts) == 6 and not SITES_DIR:
@@ -856,6 +921,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             body = self._read_json_body()
             code, payload = patch_map_bim(parts[4], body)
+            self._send_json(code, payload)
+        elif parts == ["api", "sites", "active", "bim"]:
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            body = self._read_json_body()
+            code, payload = patch_site_bim(body)
             self._send_json(code, payload)
         else:
             self._send_json(404, {"error": "not found"})
