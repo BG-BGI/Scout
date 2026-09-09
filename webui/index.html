@@ -243,11 +243,21 @@
             </div>
 
             <div class="grp-label">Revit model — whole building</div>
-            <div class="grid tight">
-              <input id="bim-urn" type="text" placeholder="Model URN (urn:adsk.wipprod:dm.lineage:…)" autocomplete="off">
-              <button id="bim-link-btn">Link model</button>
+            <!-- Project → model pickers (shown when ACC is configured). -->
+            <div id="bim-picker" style="display:none">
+              <select id="bim-project" class="txt"><option value="">Loading projects…</option></select>
+              <select id="bim-model" class="txt" style="margin-top:6px" disabled><option value="">Pick a project first</option></select>
+              <button id="bim-link-btn" style="margin-top:6px;width:100%">Link model</button>
+              <div class="dim">Pick your ACC project, then its Revit model — no URN needed.</div>
             </div>
-            <div class="dim">Links the building's Revit model to this site — no floor needed. Paste the model's <b style="color:var(--text)">URN</b> from ACC (a long <code>urn:adsk…</code> string, not the project ID).</div>
+            <!-- Manual URN fallback (also the whole UI when ACC isn't configured). -->
+            <details id="bim-manual">
+              <summary class="mini-summary">Enter a model URN manually…</summary>
+              <div class="grid tight" style="margin-top:6px">
+                <input id="bim-urn" type="text" placeholder="urn:adsk.wipprod:… (not the project ID)" autocomplete="off">
+                <button id="bim-link-manual">Link</button>
+              </div>
+            </details>
             <div id="bim-link-result" class="dim"></div>
 
             <div id="bim-level-row" style="display:none">

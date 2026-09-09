@@ -745,6 +745,16 @@ code { font-family: var(--mono); font-size: 0.85em; color: var(--dim); }
 .mini-summary::-webkit-details-marker { display: none; }
 .mini-summary:hover { color: var(--text); }
 
+/* ACC project/model pickers */
+select.txt {
+  width: 100%;
+  background: var(--bg); border: 1px solid var(--border);
+  color: var(--text); border-radius: var(--r);
+  padding: var(--s2); font: inherit; font-size: 0.78rem;
+}
+select.txt:focus { outline: none; border-color: var(--accent); }
+select.txt:disabled { opacity: 0.5; }
+
 /* ── slam mode: buttons + plain-language explanation ───────────────── */
 #site-mode { margin-top: var(--s2); }
 .mode-explain {

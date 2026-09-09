@@ -486,6 +486,11 @@ services:
       - SITES_DIR=/sites
       - SITE_SCAFFOLD=pi
       - SITE_RESTART_SERVICES=slam,nav2,behaviors
+      # ACC project/model picker (webui BIM link). Same 2-legged APS app creds
+      # the openspace_acc service uses; unset = the picker hides and the manual
+      # URN field is the only path. App must be a Custom Integration in ACC.
+      - ACC_CLIENT_ID=${ACC_CLIENT_ID:-}
+      - ACC_CLIENT_SECRET=${ACC_CLIENT_SECRET:-}
     deploy:
       resources:
         limits:

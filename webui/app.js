@@ -584,6 +584,7 @@ async function loadBimSetup() {
     const bimUrnInput = document.getElementById('bim-urn');
     const bimLevelInput = document.getElementById('bim-level');
     bimSetupEl.style.display = '';
+    loadAccProjects();  // populate the project/model picker (once, if ACC configured)
     try {
         // Site-level model link (works with no map). If a map is active, the
         // per-map GET is the merged effective block (model + level + alignment).
@@ -1702,21 +1703,18 @@ bimAlignNextBtn.addEventListener('click', async () => {
   }
 });
 
-// Link the building's Revit model to the SITE — URN only, no floor. Works with
-// no active map (that's the whole point of the site scope).
-bimLinkBtn.addEventListener('click', async () => {
-  const urn = document.getElementById('bim-urn').value.trim();
+// Link the building's Revit model to the SITE — no floor. Works with no active
+// map (that's the whole point of the site scope). urn comes from the project→
+// model picker (its value is the model's version URN) or the manual field.
+async function linkModel(urn) {
   if (!activeSiteMeta) { bimLinkResult.textContent = 'no active site'; return; }
-  if (!urn) { bimLinkResult.textContent = 'Model URN required'; return; }
-  // Catch the common mistake: pasting a bare project/item GUID (a UUID) instead
-  // of the model URN. Anything else (raw urn:adsk… or its base64 form) passes
-  // through for the ACC service to validate.
+  if (!urn) { bimLinkResult.textContent = 'pick a model (or enter a URN)'; return; }
+  // Catch the common mistake: a bare project/item GUID instead of a model URN.
   if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(urn)) {
     bimLinkResult.textContent =
-      'that is a project/item GUID, not a model URN — paste the model’s urn:adsk… string (or its base64 form)';
+      'that is a project/item GUID, not a model URN — use the project picker or paste a urn:adsk… string';
     return;
   }
-  bimLinkBtn.disabled = true;
   bimLinkResult.textContent = 'saving…';
   try {
     await patchSiteBim({ acc_model_urn: urn });
@@ -1728,8 +1726,69 @@ bimLinkBtn.addEventListener('click', async () => {
   } catch (e) {
     bimLinkResult.textContent = 'failed: ' + e.message;
   }
-  bimLinkBtn.disabled = false;
-});
+}
+bimLinkBtn.addEventListener('click', () =>
+  linkModel(document.getElementById('bim-model').value.trim()));
+document.getElementById('bim-link-manual').addEventListener('click', () =>
+  linkModel(document.getElementById('bim-urn').value.trim()));
+
+// ACC project/model picker (fleet_status /api/acc/*). Loaded once when the BIM
+// panel first opens; if ACC isn't configured the picker hides and the manual
+// URN field stands alone.
+let accProjectsLoaded = false;
+async function loadAccProjects() {
+  if (accProjectsLoaded) return;
+  accProjectsLoaded = true;
+  const picker = document.getElementById('bim-picker');
+  const manual = document.getElementById('bim-manual');
+  const projSel = document.getElementById('bim-project');
+  try {
+    const d = await fetch(`${FLEET_API}/acc/projects`).then((r) => r.json());
+    if (!d.configured || !(d.projects || []).length) {
+      picker.style.display = 'none';
+      manual.open = true;               // manual is the only path
+      return;
+    }
+    picker.style.display = '';
+    projSel.innerHTML = '<option value="">Select project…</option>' +
+      d.projects.map((p) =>
+        `<option value="${p.id}" data-hub="${p.hub}">${p.name}</option>`).join('');
+    projSel.onchange = loadAccModels;
+  } catch (_) {
+    picker.style.display = 'none';
+    manual.open = true;
+    accProjectsLoaded = false;          // allow a retry next open
+  }
+}
+async function loadAccModels() {
+  const projSel = document.getElementById('bim-project');
+  const modelSel = document.getElementById('bim-model');
+  const opt = projSel.selectedOptions[0];
+  const pid = projSel.value;
+  const hub = opt ? (opt.dataset.hub || '') : '';
+  if (!pid) {
+    modelSel.disabled = true;
+    modelSel.innerHTML = '<option value="">Pick a project first</option>';
+    return;
+  }
+  modelSel.disabled = true;
+  modelSel.innerHTML = '<option value="">Loading models…</option>';
+  try {
+    const d = await fetch(
+      `${FLEET_API}/acc/models?project=${encodeURIComponent(pid)}&hub=${encodeURIComponent(hub)}`
+    ).then((r) => r.json());
+    const models = d.models || [];
+    if (!models.length) {
+      modelSel.innerHTML = '<option value="">No Revit models found</option>';
+      return;
+    }
+    modelSel.innerHTML = '<option value="">Select model…</option>' +
+      models.map((m) => `<option value="${m.urn}">${m.name}</option>`).join('');
+    modelSel.disabled = false;
+  } catch (_) {
+    modelSel.innerHTML = '<option value="">Failed to load models</option>';
+  }
+}
 
 // Assign the active floor to a Revit level — per-map scope.
 const bimLevelBtn = document.getElementById('bim-level-btn');

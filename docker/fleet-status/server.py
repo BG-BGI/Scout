@@ -28,6 +28,9 @@ import re
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from docker.errors import NotFound
@@ -314,6 +317,104 @@ def companion_health():
     if not COMPANION_HOST:
         return {"configured": False}
     return dict(_companion)
+
+
+# --- ACC (Autodesk) project/model listing -----------------------------------------
+# Lets the webui pick a Revit model by name instead of pasting a URN. Proxies the
+# APS Data Management API with the same 2-legged app creds the openspace_acc
+# service uses (ACC_CLIENT_ID/SECRET). The app must be added as a Custom
+# Integration in ACC Account Admin, or hubs/projects come back empty. Returns the
+# model's tip-version URN (raw urn:adsk…), which is exactly what the BIM link and
+# the openspace_acc service expect.
+ACC_CLIENT_ID = os.environ.get("ACC_CLIENT_ID", "")
+ACC_CLIENT_SECRET = os.environ.get("ACC_CLIENT_SECRET", "")
+_APS = "https://developer.api.autodesk.com"
+_aps_tok = {"value": "", "exp": 0.0}
+_aps_lock = threading.Lock()
+
+
+def _aps_get(url, token):
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def _aps_token():
+    with _aps_lock:
+        if _aps_tok["value"] and time.time() < _aps_tok["exp"]:
+            return _aps_tok["value"]
+        body = urllib.parse.urlencode({
+            "grant_type": "client_credentials", "scope": "data:read",
+            "client_id": ACC_CLIENT_ID, "client_secret": ACC_CLIENT_SECRET,
+        }).encode()
+        req = urllib.request.Request(_APS + "/authentication/v2/token", data=body)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            d = json.load(r)
+        _aps_tok["value"] = d["access_token"]
+        _aps_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
+        return _aps_tok["value"]
+
+
+def acc_projects():
+    if not (ACC_CLIENT_ID and ACC_CLIENT_SECRET):
+        return 200, {"configured": False, "projects": []}
+    try:
+        tok = _aps_token()
+        out = []
+        for hub in _aps_get(_APS + "/project/v1/hubs", tok).get("data", []):
+            hid = hub["id"]
+            for p in _aps_get(f"{_APS}/project/v1/hubs/{hid}/projects", tok).get("data", []):
+                out.append({"id": p["id"], "hub": hid,
+                            "name": p.get("attributes", {}).get("name", p["id"])})
+        out.sort(key=lambda x: x["name"].lower())
+        return 200, {"configured": True, "projects": out}
+    except urllib.error.HTTPError as e:
+        return e.code, {"configured": True,
+                        "error": e.read().decode(errors="replace")[:300]}
+    except Exception as e:  # noqa: BLE001 - surface any upstream failure as 502
+        return 502, {"configured": True, "error": str(e)}
+
+
+def _acc_walk(tok, pid, folder_id, out):
+    d = _aps_get(f"{_APS}/data/v1/projects/{pid}/folders/{folder_id}/contents", tok)
+    for item in d.get("data", []):
+        if item.get("type") == "folders":
+            _acc_walk(tok, pid, item["id"], out)
+        elif item.get("type") == "items":
+            name = item.get("attributes", {}).get("displayName", "")
+            tip = (item.get("relationships", {}).get("tip", {}).get("data") or {}).get("id")
+            if name.lower().endswith(".rvt") and tip:
+                out.append({"name": name, "urn": tip})
+
+
+def acc_models(project_id, hub_id=None):
+    if not (ACC_CLIENT_ID and ACC_CLIENT_SECRET):
+        return 200, {"configured": False, "models": []}
+    if not project_id:
+        return 400, {"error": "project query param required"}
+    try:
+        tok = _aps_token()
+        if not hub_id:  # discover the hub the project lives in
+            for hub in _aps_get(_APS + "/project/v1/hubs", tok).get("data", []):
+                projs = _aps_get(f"{_APS}/project/v1/hubs/{hub['id']}/projects",
+                                 tok).get("data", [])
+                if any(p["id"] == project_id for p in projs):
+                    hub_id = hub["id"]
+                    break
+        if not hub_id:
+            return 404, {"error": "project not found in any hub"}
+        out = []
+        tops = _aps_get(
+            f"{_APS}/project/v1/hubs/{hub_id}/projects/{project_id}/topFolders",
+            tok).get("data", [])
+        for tf in tops:
+            _acc_walk(tok, project_id, tf["id"], out)
+        out.sort(key=lambda x: x["name"].lower())
+        return 200, {"configured": True, "models": out}
+    except urllib.error.HTTPError as e:
+        return e.code, {"error": e.read().decode(errors="replace")[:300]}
+    except Exception as e:  # noqa: BLE001
+        return 502, {"error": str(e)}
 
 
 def wifi_quality():
@@ -798,6 +899,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, wifi_quality())
         elif self.path == "/api/companion":
             self._send_json(200, companion_health())
+        elif self.path.rstrip("/") == "/api/acc/projects":
+            code, payload = acc_projects()
+            self._send_json(code, payload)
+        elif urllib.parse.urlparse(self.path).path == "/api/acc/models":
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            code, payload = acc_models(q.get("project", [""])[0],
+                                       q.get("hub", [None])[0])
+            self._send_json(code, payload)
         elif self.path == "/api/sites":
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
