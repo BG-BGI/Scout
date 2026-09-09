@@ -35,10 +35,12 @@ ros.on('connection', () => {
   reconnectDelay = 1000;
   connBadge.textContent = 'connected';
   connBadge.className = 'badge connected';
+  document.body.classList.remove('offline');
 });
 ros.on('close', () => {
-  connBadge.textContent = 'disconnected';
+  connBadge.textContent = 'offline';
   connBadge.className = 'badge disconnected';
+  document.body.classList.add('offline');
   setTimeout(connect, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 5000);
 });
@@ -668,7 +670,7 @@ function drawMap() {
   mapCtx.restore();
 
   if (plan && plan.length > 1) {
-    mapCtx.strokeStyle = '#00c878';
+    mapCtx.strokeStyle = '#F2B200';
     mapCtx.lineWidth = 2;
     mapCtx.beginPath();
     plan.forEach((p, i) => {
@@ -692,9 +694,9 @@ function drawMap() {
       const wp = i + 1;   // status index is 1-based
       let color = '#5a6a7a';                       // pending
       let r = 3;
-      if (patrolProg.active && wp < patrolProg.i) color = '#00c878';   // visited
+      if (patrolProg.active && wp < patrolProg.i) color = '#F2B200';   // visited
       if (patrolProg.active && wp === patrolProg.i) {                  // current
-        color = '#ffa028';
+        color = '#E07020';
         r = 5;
       }
       mapCtx.fillStyle = color;
@@ -725,7 +727,7 @@ function drawMap() {
     mapCtx.save();
     mapCtx.translate(c.x, c.y);
     mapCtx.rotate(-robotPose.yaw);   // canvas y is flipped, so negate yaw
-    mapCtx.fillStyle = '#ff4040';
+    mapCtx.fillStyle = '#E02840';
     mapCtx.beginPath();
     mapCtx.moveTo(10, 0);
     mapCtx.lineTo(-6, 6);
@@ -1445,11 +1447,103 @@ new ROSLIB.Topic({
 
 let activeSiteMeta = null;
 
+// Plain-language phrase for each slam mode, shown in the "Active now" card.
+const MODE_PHRASE = {
+  localization: 'Localizing on the saved map',
+  continue: 'Mapping — extending the saved map',
+  new: 'Mapping — building a fresh map',
+  auto: 'Auto — continues a saved map if one exists',
+};
+
+// The map's "NOW" chip (overlay #site-active): which site/map/floor is live and
+// what the robot is doing. Everything comes from activeSiteMeta.
+function renderActiveCard(activeName) {
+  const card = document.getElementById('site-active');
+  if (!activeSiteMeta || !activeName) { card.hidden = true; return; }
+  const map = activeSiteMeta.active_map;
+  const entry = (map && (activeSiteMeta.maps || {})[map]) || {};
+  const mode = activeSiteMeta.slam_mode || 'auto';
+  document.getElementById('active-site-name').textContent =
+    (activeSiteMeta.display_name || activeName) + ' /';
+  document.getElementById('active-map-name').textContent =
+    map ? (entry.label || map) : 'no map yet';
+  const floorEl = document.getElementById('active-map-floor');
+  if (entry.floor !== null && entry.floor !== undefined) {
+    floorEl.textContent = 'F' + entry.floor;
+    floorEl.style.display = '';
+  } else {
+    floorEl.style.display = 'none';
+  }
+  let line = MODE_PHRASE[mode] || mode;
+  if (entry.bim && entry.bim.alignment) line += ' · <b>model linked</b>';
+  document.getElementById('active-mode-line').innerHTML = line;
+  card.hidden = false;
+}
+
+// Map overlay: the Navigate | Map intent toggle (#mo-intent). Two intents map
+// onto the four slam modes — Navigate = localization (finished map, instant
+// floor swaps, BIM overlays), Map = auto (build/extend). New/Continue stay in
+// the Site tab's "Advanced" section. Kept in sync with slam_mode.
+function renderIntent() {
+  const wrap = document.getElementById('mo-intent');
+  if (!activeSiteMeta || !activeSiteMeta.active_map) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const mode = activeSiteMeta.slam_mode || 'auto';
+  const navBtn = wrap.querySelector('[data-intent="nav"]');
+  const mapBtn = wrap.querySelector('[data-intent="map"]');
+  navBtn.classList.toggle('on', mode === 'localization');
+  mapBtn.classList.toggle('on', mode !== 'localization');
+  // Precondition: Navigate (localization) needs a saved grid map.
+  const entry = (activeSiteMeta.maps || {})[activeSiteMeta.active_map] || {};
+  navBtn.disabled = !entry.grid;
+  navBtn.title = entry.grid
+    ? 'Drive the finished map — floors swap instantly'
+    : 'Save a grid map first (switch to Map, drive, then Save)';
+}
+
+// Map overlay: the floor stack (#mo-floors). Floors are maps; tap to swap.
+// Hidden unless the site has more than one map.
+function renderFloorStack() {
+  const wrap = document.getElementById('mo-floors');
+  const maps = (activeSiteMeta && activeSiteMeta.maps) || {};
+  const names = Object.keys(maps);
+  if (names.length < 2) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  wrap.innerHTML = '<span class="fl-label">FLR</span>';
+  const active = activeSiteMeta.active_map;
+  // Top floor at the top; maps without a floor sort by name after.
+  names.sort((a, b) => {
+    const fa = maps[a].floor, fb = maps[b].floor;
+    if (fa != null && fb != null) return fb - fa;
+    if (fa != null) return -1;
+    if (fb != null) return 1;
+    return a.localeCompare(b);
+  });
+  for (const name of names) {
+    const m = maps[name];
+    const btn = document.createElement('button');
+    btn.textContent = (m.floor != null) ? String(m.floor) : name.slice(0, 3);
+    btn.title = m.label || name;
+    if (name === active) btn.classList.add('on');
+    btn.addEventListener('click', () => activateMap(name));
+    wrap.appendChild(btn);
+  }
+}
+
+// Intent toggle click -> the two-way mode switch (setSlamMode confirms + gates).
+document.querySelectorAll('#mo-intent button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    setSlamMode(btn.dataset.intent === 'nav' ? 'localization' : 'auto');
+  });
+});
+
 function renderSites(data) {
   activeSiteMeta = (data.sites || []).find((s) => s.name === data.active) || null;
+  const mapCount = Object.keys((activeSiteMeta && activeSiteMeta.maps) || {}).length;
   siteState.textContent = data.active
-    ? `${data.active}${activeSiteMeta && activeSiteMeta.active_map ? ' · ' + activeSiteMeta.active_map : ''} · ${(activeSiteMeta && activeSiteMeta.slam_mode) || 'auto'}`
-    : 'none';
+    ? `${mapCount} map${mapCount === 1 ? '' : 's'}`
+    : 'no active site';
+  renderActiveCard(data.active);
   renderSlamMode();
   siteList.innerHTML = '';
   for (const s of data.sites || []) {
@@ -1482,7 +1576,7 @@ function renderSites(data) {
 // slam/amcl runs on. Activating in localization mode swaps the grid live via
 // map_server LoadMap (~1 s); any other mode restarts slam (map bound at launch).
 const siteMapsEl = document.getElementById('site-maps');
-const bimControlsEl = document.getElementById('bim-controls');
+const bimControlsEl = document.getElementById('mo-layers');  // map layer toggles
 const bimScansToggle = document.getElementById('bim-scans-toggle');
 const bimRoomsToggle = document.getElementById('bim-rooms-toggle');
 
@@ -1516,24 +1610,39 @@ function bimAlignReset(msg) {
   bimAlignWizard.style.display = 'none';
   bimAlignSheetRow.style.display = 'none';
   bimAlignDescEl.textContent = '';
+  setAlignBanner(null);   // clear the on-map prompt
   if (msg && bimLinkResult) bimLinkResult.textContent = msg;
   drawMap();
+}
+
+// The alignment prompt is mirrored onto the map (#mo-banner) so the operator
+// reads the instruction where they're clicking. Coord entry stays in the Site
+// tab (#bim-align-sheet-row). Pass null to hide.
+function setAlignBanner(step, text) {
+  const banner = document.getElementById('mo-banner');
+  if (!banner) return;
+  if (step == null) { banner.classList.remove('show'); return; }
+  banner.querySelector('.step-num').textContent = step;
+  document.getElementById('mo-banner-text').textContent = text;
+  banner.classList.add('show');
 }
 
 function bimAlignUpdateStep() {
   const step = bimAlignPts.length + 1;
   if (!bimAlignCapture) {
-    bimAlignDescEl.textContent = `Click landmark ${step}/2 on the SLAM map.`;
+    bimAlignDescEl.textContent = `Point ${step} of 2 — click the spot on the map now…`;
     bimAlignSheetRow.style.display = 'none';
+    setAlignBanner(step, `Click landmark ${step} of 2 on the map — a corner, a column, a doorway.`);
   } else {
     const c = bimAlignCapture;
     bimAlignDescEl.textContent =
-      `Point ${step}/2: map (${c.x.toFixed(3)}, ${c.y.toFixed(3)}). Enter sheet coords:`;
+      `Point ${step} of 2 on map (${c.x.toFixed(3)}, ${c.y.toFixed(3)}) — now its drawing coordinates:`;
     bimAlignSheetRow.style.display = '';
     bimSheetXInput.value = '';
     bimSheetYInput.value = '';
     bimSheetXInput.focus();
-    bimAlignNextBtn.textContent = bimAlignPts.length === 1 ? 'Solve & Save' : 'Next point';
+    bimAlignNextBtn.textContent = bimAlignPts.length === 1 ? 'Solve & save' : 'Next point';
+    setAlignBanner(step, `Point ${step} captured — enter its drawing coordinates in the Site tab.`);
   }
 }
 
@@ -1607,18 +1716,33 @@ function renderSiteMaps() {
   for (const name of Object.keys(maps).sort()) {
     const m = maps[name];
     const row = document.createElement('div');
-    row.className = 'svc-row';
     const isActive = name === active;
-    const floor = (m.floor !== null && m.floor !== undefined) ? ` · F${m.floor}` : '';
+    row.className = 'map-row' + (isActive ? ' is-live' : '');
     const hasBim = m.bim && m.bim.alignment;
-    const badges = `${m.posegraph ? ' [graph]' : ''}${m.grid ? ' [grid]' : ''}${hasBim ? ' [bim]' : ''}${m.unregistered ? ' (unregistered)' : ''}`;
+    // Readable capability chips instead of [graph]/[grid]/[bim] shorthand.
+    const chips = [];
+    if (isActive) chips.push('<span class="cap live">● running</span>');
+    chips.push(m.grid
+      ? '<span class="cap on">Localize-ready</span>'
+      : '<span class="cap off">Not localizable</span>');
+    if (m.posegraph) chips.push('<span class="cap on">Extendable</span>');
+    chips.push(hasBim
+      ? '<span class="cap on">Model aligned</span>'
+      : '<span class="cap off">No model</span>');
+    if (m.unregistered) chips.push('<span class="cap warn">unregistered</span>');
+    const nameHtml = m.label && m.label !== name
+      ? `${m.label} <span style="color:var(--dim)">(${name})</span>` : name;
+    const floorHtml = (m.floor !== null && m.floor !== undefined)
+      ? `<span class="map-row-floor">Floor ${m.floor}</span>` : '';
     row.innerHTML = `
-      <span class="svc-dot ${isActive ? 'running' : 'exited'}"></span>
-      <span class="svc-name">${m.label && m.label !== name ? `${m.label} (${name})` : name}${floor}</span>
-      <span class="svc-stat">${badges.trim() || 'no files'}</span>
-      <span class="svc-actions">
-        <button data-map="${name}" ${isActive ? 'disabled' : ''}>Activate</button>
-      </span>
+      <div class="map-row-head">
+        <span class="map-row-name">${nameHtml}</span>
+        ${floorHtml}
+        <span class="svc-actions">
+          <button data-map="${name}" ${isActive ? 'disabled' : ''}>${isActive ? 'Live now' : 'Activate'}</button>
+        </span>
+      </div>
+      <div class="caps">${chips.join('')}</div>
     `;
     const btn = row.querySelector('button');
     if (btn) btn.addEventListener('click', () => activateMap(name));
@@ -1626,7 +1750,8 @@ function renderSiteMaps() {
   }
   const activeMap = active && maps[active];
   const activeHasBim = activeMap && activeMap.bim && activeMap.bim.alignment;
-  bimControlsEl.style.display = activeHasBim ? '' : 'none';
+  bimControlsEl.hidden = !activeHasBim;   // map layer toggles (#mo-layers)
+  renderFloorStack();                     // map floor stack (#mo-floors)
   const bimSetupEl = document.getElementById('bim-setup');
   if (activeSiteMeta) {
     if (active) {
@@ -1737,7 +1862,7 @@ const siteModeDesc = document.getElementById('site-mode-desc');
 
 function renderSlamMode() {
   siteModeEl.innerHTML = '';
-  if (!activeSiteMeta) { siteModeDesc.textContent = ''; return; }
+  if (!activeSiteMeta) { siteModeDesc.textContent = ''; renderIntent(); return; }
   const current = activeSiteMeta.slam_mode || 'auto';
   for (const [mode, desc] of SLAM_MODES) {
     const btn = document.createElement('button');
@@ -1748,6 +1873,7 @@ function renderSlamMode() {
     siteModeEl.appendChild(btn);
   }
   siteModeDesc.textContent = `${current}: ${SLAM_MODES.find(([m]) => m === current)[1]}`;
+  renderIntent();   // keep the map's Navigate|Map toggle in sync
 }
 
 async function setSlamMode(mode) {
