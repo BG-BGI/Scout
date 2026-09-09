@@ -604,6 +604,9 @@ async function loadBimSetup() {
         bimCurrentEl.textContent = status;
         if (urn) bimUrnInput.value = urn;
         if (bim && bim.acc_level_name) bimLevelInput.value = bim.acc_level_name;
+        // The per-floor level row only makes sense once a floor is active.
+        const levelRow = document.getElementById('bim-level-row');
+        if (levelRow) levelRow.style.display = mapName ? '' : 'none';
     } catch (_) { bimCurrentEl.textContent = 'BIM: no data'; }
 }
 
@@ -1699,33 +1702,54 @@ bimAlignNextBtn.addEventListener('click', async () => {
   }
 });
 
+// Link the building's Revit model to the SITE — URN only, no floor. Works with
+// no active map (that's the whole point of the site scope).
 bimLinkBtn.addEventListener('click', async () => {
-  const bimUrnInput = document.getElementById('bim-urn');
-  const bimLevelInput = document.getElementById('bim-level');
-  // Model link is SITE-level, so it works with no active map — that's the fix.
+  const urn = document.getElementById('bim-urn').value.trim();
   if (!activeSiteMeta) { bimLinkResult.textContent = 'no active site'; return; }
-  const urn = bimUrnInput.value.trim();
-  const level = bimLevelInput.value.trim() || 'Level 1';
   if (!urn) { bimLinkResult.textContent = 'Model URN required'; return; }
+  // Catch the common mistake: pasting a bare project/item GUID (a UUID) instead
+  // of the model URN. Anything else (raw urn:adsk… or its base64 form) passes
+  // through for the ACC service to validate.
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(urn)) {
+    bimLinkResult.textContent =
+      'that is a project/item GUID, not a model URN — paste the model’s urn:adsk… string (or its base64 form)';
+    return;
+  }
   bimLinkBtn.disabled = true;
   bimLinkResult.textContent = 'saving…';
   try {
-    // The building's model -> site scope (always).
     await patchSiteBim({ acc_model_urn: urn });
-    // The floor's level -> map scope (only if a floor is active).
-    if (activeSiteMeta.active_map) {
-      await patchBimData(activeSiteMeta.active_map, { acc_level_name: level });
-      bimLinkResult.textContent = 'linked ✓ — set alignment next';
-    } else {
-      bimLinkResult.textContent =
-        'model linked ✓ — map a floor to set its level & alignment';
-    }
+    bimLinkResult.textContent = activeSiteMeta.active_map
+      ? 'model linked ✓ — set this floor’s level & alignment below'
+      : 'model linked ✓ — map a floor, then set its level & alignment';
     await refreshSites();
     loadBimSetup();
   } catch (e) {
     bimLinkResult.textContent = 'failed: ' + e.message;
   }
   bimLinkBtn.disabled = false;
+});
+
+// Assign the active floor to a Revit level — per-map scope.
+const bimLevelBtn = document.getElementById('bim-level-btn');
+const bimLevelResult = document.getElementById('bim-level-result');
+bimLevelBtn.addEventListener('click', async () => {
+  if (!activeSiteMeta || !activeSiteMeta.active_map) {
+    bimLevelResult.textContent = 'no active floor'; return;
+  }
+  const level = document.getElementById('bim-level').value.trim() || 'Level 1';
+  bimLevelBtn.disabled = true;
+  bimLevelResult.textContent = 'saving…';
+  try {
+    await patchBimData(activeSiteMeta.active_map, { acc_level_name: level });
+    bimLevelResult.textContent = `set to “${level}” ✓`;
+    await refreshSites();
+    loadBimSetup();
+  } catch (e) {
+    bimLevelResult.textContent = 'failed: ' + e.message;
+  }
+  bimLevelBtn.disabled = false;
 });
 
 function renderSiteMaps() {

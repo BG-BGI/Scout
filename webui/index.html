@@ -242,16 +242,22 @@
               <button id="bim-align-cancel">Cancel alignment</button>
             </div>
 
-            <details>
-              <summary class="mini-summary">Change linked model…</summary>
-              <div class="grp-label">Autodesk model</div>
+            <div class="grp-label">Revit model — whole building</div>
+            <div class="grid tight">
+              <input id="bim-urn" type="text" placeholder="Model URN (urn:adsk.wipprod:dm.lineage:…)" autocomplete="off">
+              <button id="bim-link-btn">Link model</button>
+            </div>
+            <div class="dim">Links the building's Revit model to this site — no floor needed. Paste the model's <b style="color:var(--text)">URN</b> from ACC (a long <code>urn:adsk…</code> string, not the project ID).</div>
+            <div id="bim-link-result" class="dim"></div>
+
+            <div id="bim-level-row" style="display:none">
+              <div class="grp-label">This floor → Revit level</div>
               <div class="grid tight">
-                <input id="bim-urn" type="text" placeholder="Model URN from ACC" autocomplete="off">
-                <input id="bim-level" type="text" placeholder="Level name" value="Level 1" autocomplete="off">
-                <button id="bim-link-btn">Update link</button>
+                <input id="bim-level" type="text" placeholder="Level name (e.g. Level 1)" value="Level 1" autocomplete="off">
+                <button id="bim-level-btn">Set level</button>
               </div>
-              <div id="bim-link-result" class="dim"></div>
-            </details>
+              <div id="bim-level-result" class="dim"></div>
+            </div>
           </details>
 
           <!-- FLOORS & SAVING — management; live switching is the map's floor stack -->
