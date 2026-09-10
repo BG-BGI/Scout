@@ -564,7 +564,7 @@ _MAP_DEFAULTS = {"label": "", "floor": None, "map_start_pose": [0.0, 0.0, 0.0]}
 # each floor's level/sheet + its SLAM alignment belong to the MAP. get_map_bim
 # returns the two merged so consumers read one flat block; patch_map_bim
 # split-routes writes so older single-call clients keep working.
-SITE_BIM_KEYS = ("acc_model_urn", "openspace_site_id")
+SITE_BIM_KEYS = ("acc_model_urn", "acc_model_name", "openspace_site_id")
 MAP_BIM_KEYS = ("acc_level_name", "openspace_sheet_id", "alignment")
 
 

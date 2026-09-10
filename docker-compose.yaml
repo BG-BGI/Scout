@@ -374,8 +374,10 @@ services:
       - SCHINDLER_IDENTITY=${SCHINDLER_IDENTITY:-}
       - ELEVATOR_CONFIG_PATH=/sites/active/elevator.json
       # Open Space + ACC BIM reconciliation (ADR-0031). Proxy URL points to the
-      # openspace_acc service below; override in .env if the service runs elsewhere.
-      - OPENSPACE_ACC_URL=${OPENSPACE_ACC_URL:-http://openspace_acc:3100/api}
+      # openspace_acc service below; override in .env if the service runs
+      # elsewhere. Loopback, not the service name — every service here is
+      # network_mode: host, so compose DNS names never resolve.
+      - OPENSPACE_ACC_URL=${OPENSPACE_ACC_URL:-http://127.0.0.1:3100/api}
     volumes:
       # Parent dir, NEVER ./sites/active/... — mounting through the symlink
       # would freeze its target at container create (ADR-0023).
@@ -403,6 +405,10 @@ services:
       - ACC_CLIENT_ID=${ACC_CLIENT_ID:-}
       - ACC_CLIENT_SECRET=${ACC_CLIENT_SECRET:-}
       - PORT=3100
+      # Next.js standalone binds process.env.HOSTNAME; under host networking
+      # that inherits the Pi's hostname ("scout" → 127.0.1.1) and the server
+      # is unreachable from the browser and from scout_skills. Force wildcard.
+      - HOSTNAME=0.0.0.0
     deploy:
       resources:
         limits:

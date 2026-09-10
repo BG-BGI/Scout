@@ -576,11 +576,32 @@ async function patchSiteBim(data) {
     return res.json();
 }
 
+// Resolve a linked URN back to its model name via the fleet_status ACC proxy
+// (models linked before acc_model_name existed, or via the manual URN field).
+// On success the name is PATCHed back to the site so this runs once.
+async function resolveModelName(urn) {
+    try {
+        const d = await fetch(`${FLEET_API}/acc/projects`).then((r) => r.json());
+        for (const p of (d.projects || []).slice(0, 5)) {
+            const md = await fetch(
+                `${FLEET_API}/acc/models?project=${encodeURIComponent(p.id)}&hub=${encodeURIComponent(p.hub)}`
+            ).then((r) => r.json());
+            const hit = (md.models || []).find((m) => m.urn === urn);
+            if (hit) {
+                patchSiteBim({ acc_model_name: hit.name }).catch(() => {});
+                return hit.name;
+            }
+        }
+    } catch (_) { /* ACC unconfigured or unreachable — URN tail is the fallback */ }
+    return null;
+}
+
 async function loadBimSetup() {
     if (!activeSiteMeta) return;
     const mapName = activeSiteMeta.active_map;  // may be null on a fresh site
     const bimSetupEl = document.getElementById('bim-setup');
     const bimCurrentEl = document.getElementById('bim-current');
+    const bimSummaryEl = document.getElementById('bim-summary-state');
     const bimUrnInput = document.getElementById('bim-urn');
     const bimLevelInput = document.getElementById('bim-level');
     bimSetupEl.style.display = '';
@@ -593,9 +614,11 @@ async function loadBimSetup() {
             ? await fetch(`${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`).then((r) => r.json())
             : siteBim;
         const urn = (siteBim && siteBim.acc_model_urn) || (bim && bim.acc_model_urn);
+        let name = (siteBim && siteBim.acc_model_name) || (bim && bim.acc_model_name);
+        if (urn && !name) name = await resolveModelName(urn);
         const hasAlign = bim && bim.alignment;
         let status = urn
-            ? `Model …${urn.slice(-16)} · Level ${(bim && bim.acc_level_name) || 'Level 1'}`
+            ? `${name || 'Model …' + urn.slice(-16)} · Level ${(bim && bim.acc_level_name) || 'Level 1'}`
             : 'no building model linked';
         if (!mapName) status += ' · link the model now; level & alignment unlock once a floor is mapped';
         else if (hasAlign) {
@@ -603,6 +626,13 @@ async function loadBimSetup() {
             status += ` · aligned (scale ${al.scale.toFixed(3)}, θ ${(al.theta * 180 / Math.PI).toFixed(1)}°)`;
         }
         bimCurrentEl.textContent = status;
+        // Visible with the panel collapsed — the linked model shouldn't hide
+        // behind a click.
+        if (bimSummaryEl) {
+            bimSummaryEl.textContent = urn
+                ? `— ${name || '…' + urn.slice(-16)}${hasAlign ? ' · aligned' : ''}`
+                : '— not linked';
+        }
         if (urn) bimUrnInput.value = urn;
         if (bim && bim.acc_level_name) bimLevelInput.value = bim.acc_level_name;
         // The per-floor level row only makes sense once a floor is active.
@@ -1706,7 +1736,7 @@ bimAlignNextBtn.addEventListener('click', async () => {
 // Link the building's Revit model to the SITE — no floor. Works with no active
 // map (that's the whole point of the site scope). urn comes from the project→
 // model picker (its value is the model's version URN) or the manual field.
-async function linkModel(urn) {
+async function linkModel(urn, name) {
   if (!activeSiteMeta) { bimLinkResult.textContent = 'no active site'; return; }
   if (!urn) { bimLinkResult.textContent = 'pick a model (or enter a URN)'; return; }
   // A model URN is either a raw urn:adsk… string or its base64 form (40+ chars,
@@ -1720,7 +1750,7 @@ async function linkModel(urn) {
   }
   bimLinkResult.textContent = 'saving…';
   try {
-    await patchSiteBim({ acc_model_urn: urn });
+    await patchSiteBim({ acc_model_urn: urn, ...(name ? { acc_model_name: name } : {}) });
     bimLinkResult.textContent = activeSiteMeta.active_map
       ? 'model linked ✓ — set this floor’s level & alignment below'
       : 'model linked ✓ — map a floor, then set its level & alignment';
@@ -1730,8 +1760,11 @@ async function linkModel(urn) {
     bimLinkResult.textContent = 'failed: ' + e.message;
   }
 }
-bimLinkBtn.addEventListener('click', () =>
-  linkModel(document.getElementById('bim-model').value.trim()));
+bimLinkBtn.addEventListener('click', () => {
+  const sel = document.getElementById('bim-model');
+  const opt = sel.selectedOptions[0];
+  linkModel(sel.value.trim(), opt ? opt.textContent : '');
+});
 document.getElementById('bim-link-manual').addEventListener('click', () =>
   linkModel(document.getElementById('bim-urn').value.trim()));
 
