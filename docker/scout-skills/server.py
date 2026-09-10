@@ -2139,8 +2139,7 @@ async def elevator_ride(
 # Open Space 360° imagery + timeline.
 
 import bim as _bim  # noqa: E402
-
-from openspace_acc import OpenspaceAccClient, OpenspaceAccError  # noqa: E402
+from openspace_acc import OpenspaceAccClient  # noqa: E402
 
 OPENSPACE_ACC_URL = os.environ.get("OPENSPACE_ACC_URL", "http://localhost:3100/api")
 
@@ -2298,7 +2297,7 @@ async def bim_deviations(threshold_m: float = 0.15) -> dict:
     Requires both alignment and ACC room data.
     """
     name, bim = await _active_bim()
-    alignment = _require_alignment(bim)
+    _require_alignment(bim)
     urn = bim.get("acc_model_urn") or ""
     level = bim.get("acc_level_name") or "Level 1"
     if not urn:

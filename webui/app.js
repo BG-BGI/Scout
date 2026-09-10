@@ -333,7 +333,7 @@ function renderRoboclaw() {
   const s = rcLastStatus;
   const mainV = Number(s.main_battery);
   // Ladder anchored on the RoboClaw's own 16.0 V Min Main cutoff.
-  const vCls = mainV <= 16.5 ? 'bad' : mainV <= 17.5 ? 'warn' : '';
+  const vCls = mainV <= BATT_CRIT_V ? 'bad' : mainV <= BATT_WARN_V ? 'warn' : '';
   const t1 = Number(s.temperature1), t2 = Number(s.temperature2);
   const tCls = Math.max(t1, t2) >= 75 ? 'bad' : Math.max(t1, t2) >= 60 ? 'warn' : '';
   const errNum = Number(s.error_status);

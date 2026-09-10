@@ -11,7 +11,6 @@ projecting capture positions back into the map frame.
 from __future__ import annotations
 
 import io
-import json
 import math
 import os
 
@@ -150,7 +149,6 @@ def compute_deviations(
         return []
 
     ox, oy = origin
-    h = slam_arr.shape[0]
     chunk = 400
     result = []
     for i in range(0, len(bim_pts), chunk):
@@ -159,7 +157,7 @@ def compute_deviations(
         diffs = chunk_pts[:, None, :] - slam_f[None, :, :]
         min_dist_cells = np.sqrt((diffs**2).sum(axis=2)).min(axis=1)
         min_dist_m = min_dist_cells * resolution
-        for (row, col), dist_m in zip(bim_pts[i : i + chunk], min_dist_m):
+        for (row, col), dist_m in zip(bim_pts[i : i + chunk], min_dist_m, strict=True):
             if dist_m > threshold_m:
                 map_x = ox + int(col) * resolution
                 map_y = oy + int(row) * resolution
