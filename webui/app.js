@@ -1709,10 +1709,13 @@ bimAlignNextBtn.addEventListener('click', async () => {
 async function linkModel(urn) {
   if (!activeSiteMeta) { bimLinkResult.textContent = 'no active site'; return; }
   if (!urn) { bimLinkResult.textContent = 'pick a model (or enter a URN)'; return; }
-  // Catch the common mistake: a bare project/item GUID instead of a model URN.
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(urn)) {
+  // A model URN is either a raw urn:adsk… string or its base64 form (40+ chars,
+  // base64 charset). Reject account/project/item IDs (b.<guid>, bare GUIDs) —
+  // the common mistake that stores a value the ACC service can't resolve.
+  const looksLikeUrn = /^urn:/i.test(urn) || /^[A-Za-z0-9+/_=-]{40,}$/.test(urn);
+  if (!looksLikeUrn) {
     bimLinkResult.textContent =
-      'that is a project/item GUID, not a model URN — use the project picker or paste a urn:adsk… string';
+      'that looks like an account/project ID, not a model URN — use the project picker, or paste a urn:adsk… string (or its base64 form)';
     return;
   }
   bimLinkResult.textContent = 'saving…';
