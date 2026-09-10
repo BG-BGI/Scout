@@ -8,6 +8,8 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 # to ask host logind (org.freedesktop.login1) to reboot the box.
 RUN apt-get update && apt-get install -y --no-install-recommends network-manager dbus \
     && rm -rf /var/lib/apt/lists/*
-RUN uv pip install --system --no-cache docker
+# docker: container control. pyjwt[crypto]: RS256 signing for the ACC Secure
+# Service Account JWT-bearer flow (ADR-0031; only used when ACC_SSA_ID is set).
+RUN uv pip install --system --no-cache docker "pyjwt[cryptography]"
 COPY server.py /app/server.py
 CMD ["python", "/app/server.py"]

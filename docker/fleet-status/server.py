@@ -22,6 +22,7 @@ function here deliberately avoids `--show-secrets` so credentials never
 transit this API even though it has no auth of its own.
 """
 
+import base64
 import json
 import os
 import re
@@ -31,6 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from docker.errors import NotFound
@@ -328,7 +330,16 @@ def companion_health():
 # the openspace_acc service expect.
 ACC_CLIENT_ID = os.environ.get("ACC_CLIENT_ID", "")
 ACC_CLIENT_SECRET = os.environ.get("ACC_CLIENT_SECRET", "")
+# Secure Service Account (SSA): the ACC Data Management APIs (hubs/projects/
+# models) reject plain 2-legged tokens on unified accounts, so we mint a
+# 3-legged token in the SSA "robot" identity (ADR-0031). The robot must be
+# added as an account/project member to see anything. When ACC_SSA_ID is unset
+# we fall back to 2-legged (still fine for Model Derivative on a known URN).
+ACC_SSA_ID = os.environ.get("ACC_SSA_ID", "")
+ACC_SSA_KEY_FILE = os.environ.get("ACC_SSA_KEY_FILE", "/secrets/acc_ssa_key.json")
 _APS = "https://developer.api.autodesk.com"
+_APS_TOKEN_URL = _APS + "/authentication/v2/token"
+_HUB_FILTER = "?filter[extension.type]=hubs:autodesk.bim360:Account"
 _aps_tok = {"value": "", "exp": 0.0}
 _aps_lock = threading.Lock()
 
@@ -339,17 +350,47 @@ def _aps_get(url, token):
         return json.load(r)
 
 
+def _ssa_token():
+    """3-legged token in the SSA robot's identity via the RFC 7523 JWT-bearer
+    grant (app authenticates with Basic auth; the JWT, signed by the SSA's
+    private key, carries the robot identity)."""
+    import jwt  # PyJWT — only needed on the SSA path
+    with open(ACC_SSA_KEY_FILE) as f:
+        key = json.load(f)
+    now = int(time.time())
+    assertion = jwt.encode(
+        {"iss": ACC_CLIENT_ID, "sub": ACC_SSA_ID, "aud": _APS_TOKEN_URL,
+         "exp": now + 300, "iat": now, "jti": str(uuid.uuid4()),
+         "scope": ["data:read"]},
+        key["privateKey"], algorithm="RS256", headers={"kid": key["kid"]},
+    )
+    body = urllib.parse.urlencode({
+        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "scope": "data:read", "assertion": assertion,
+    }).encode()
+    basic = base64.b64encode(f"{ACC_CLIENT_ID}:{ACC_CLIENT_SECRET}".encode()).decode()
+    req = urllib.request.Request(_APS_TOKEN_URL, data=body,
+                                 headers={"Authorization": "Basic " + basic})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def _2lo_token():
+    body = urllib.parse.urlencode({
+        "grant_type": "client_credentials", "scope": "data:read",
+        "client_id": ACC_CLIENT_ID, "client_secret": ACC_CLIENT_SECRET,
+    }).encode()
+    req = urllib.request.Request(_APS_TOKEN_URL, data=body)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
 def _aps_token():
     with _aps_lock:
         if _aps_tok["value"] and time.time() < _aps_tok["exp"]:
             return _aps_tok["value"]
-        body = urllib.parse.urlencode({
-            "grant_type": "client_credentials", "scope": "data:read",
-            "client_id": ACC_CLIENT_ID, "client_secret": ACC_CLIENT_SECRET,
-        }).encode()
-        req = urllib.request.Request(_APS + "/authentication/v2/token", data=body)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            d = json.load(r)
+        use_ssa = ACC_SSA_ID and os.path.exists(ACC_SSA_KEY_FILE)
+        d = _ssa_token() if use_ssa else _2lo_token()
         _aps_tok["value"] = d["access_token"]
         _aps_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
         return _aps_tok["value"]
@@ -361,7 +402,7 @@ def acc_projects():
     try:
         tok = _aps_token()
         out = []
-        for hub in _aps_get(_APS + "/project/v1/hubs", tok).get("data", []):
+        for hub in _aps_get(_APS + "/project/v1/hubs" + _HUB_FILTER, tok).get("data", []):
             hid = hub["id"]
             for p in _aps_get(f"{_APS}/project/v1/hubs/{hid}/projects", tok).get("data", []):
                 out.append({"id": p["id"], "hub": hid,
@@ -395,7 +436,7 @@ def acc_models(project_id, hub_id=None):
     try:
         tok = _aps_token()
         if not hub_id:  # discover the hub the project lives in
-            for hub in _aps_get(_APS + "/project/v1/hubs", tok).get("data", []):
+            for hub in _aps_get(_APS + "/project/v1/hubs" + _HUB_FILTER, tok).get("data", []):
                 projs = _aps_get(f"{_APS}/project/v1/hubs/{hub['id']}/projects",
                                  tok).get("data", [])
                 if any(p["id"] == project_id for p in projs):

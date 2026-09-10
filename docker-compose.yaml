@@ -486,11 +486,17 @@ services:
       - SITES_DIR=/sites
       - SITE_SCAFFOLD=pi
       - SITE_RESTART_SERVICES=slam,nav2,behaviors
-      # ACC project/model picker (webui BIM link). Same 2-legged APS app creds
-      # the openspace_acc service uses; unset = the picker hides and the manual
-      # URN field is the only path. App must be a Custom Integration in ACC.
+      # ACC project/model picker (webui BIM link). Same APS app creds the
+      # openspace_acc service uses; unset = the picker hides and the manual
+      # URN field is the only path.
       - ACC_CLIENT_ID=${ACC_CLIENT_ID:-}
       - ACC_CLIENT_SECRET=${ACC_CLIENT_SECRET:-}
+      # Secure Service Account (ADR-0031): unified ACC rejects 2-legged tokens
+      # for Data Management, so hubs/projects/models use a 3-legged SSA "robot".
+      # ACC_SSA_ID is the serviceAccountId; the RSA key (kid + privateKey) lives
+      # in ./secrets/acc_ssa_key.json, mounted below. Unset = 2-legged fallback.
+      - ACC_SSA_ID=${ACC_SSA_ID:-}
+      - ACC_SSA_KEY_FILE=/secrets/acc_ssa_key.json
     deploy:
       resources:
         limits:
@@ -499,6 +505,8 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
+      # ACC SSA private key (kid + privateKey JSON), gitignored on the host.
+      - ./secrets:/secrets:ro
       # Site bundles (rw: creates dirs, repoints the active symlink). Parent
       # dir, never ./sites/active — see the scout_skills mount comment.
       - ./sites:/sites
