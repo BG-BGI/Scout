@@ -1059,6 +1059,69 @@ new ROSLIB.Topic({
   while (nfcList.children.length > 20) nfcList.removeChild(nfcList.lastChild);
 });
 
+// --- UHF RFID (M7E Hecto, ADR-0032) -------------------------------------------------
+// Same manual gate as the Flipper radios (/uhf/enable, SetBool). The badge
+// renders from uhf_node's latched /uhf/status; the tag list renders from the
+// companion's /uhf/registry (per-EPC centroid estimate), NOT raw /uhf/reads —
+// at up to 10 batches/s the raw feed is the wrong browser surface, so it only
+// feeds the reads/s counter.
+const uhfState = document.getElementById('uhf-state');
+const uhfList = document.getElementById('uhf-list');
+const uhfRate = document.getElementById('uhf-rate');
+const uhfResult = document.getElementById('uhf-result');
+const uhfEnableSrv = new ROSLIB.Service({
+  ros, name: '/uhf/enable', serviceType: 'std_srvs/srv/SetBool',
+});
+
+function uhfSetEnabled(on) {
+  uhfEnableSrv.callService(new ROSLIB.ServiceRequest({ data: on }),
+    (res) => { uhfResult.textContent = res.message; },
+    (err) => { uhfResult.textContent = 'error: ' + err; });
+}
+document.getElementById('uhf-enable').addEventListener('click', () => uhfSetEnabled(true));
+document.getElementById('uhf-disable').addEventListener('click', () => uhfSetEnabled(false));
+
+new ROSLIB.Topic({
+  ros, name: '/uhf/status', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let s;
+  try { s = JSON.parse(msg.data); } catch (e) { return; }
+  uhfState.textContent = !s.connected ? 'no reader'
+    : !s.enabled ? 'disabled'
+      : s.throttled ? 'THROTTLED' : 'scanning';
+  uhfState.classList.toggle('bad', !s.connected || s.throttled);
+});
+
+// reads/s over a rolling 2 s window, from batch sizes.
+let uhfReadTimes = [];
+new ROSLIB.Topic({
+  ros, name: '/uhf/reads', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let b;
+  try { b = JSON.parse(msg.data); } catch (e) { return; }
+  const now = Date.now();
+  uhfReadTimes.push([now, (b.reads || []).length]);
+  uhfReadTimes = uhfReadTimes.filter(([t]) => now - t < 2000);
+  const n = uhfReadTimes.reduce((acc, [, c]) => acc + c, 0);
+  uhfRate.textContent = n ? `${(n / 2).toFixed(0)} reads/s` : '';
+});
+
+new ROSLIB.Topic({
+  ros, name: '/uhf/registry', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let reg;
+  try { reg = JSON.parse(msg.data); } catch (e) { return; }
+  uhfList.innerHTML = '';
+  for (const t of (reg.tags || []).slice(0, 20)) {
+    const li = document.createElement('li');
+    const where = t.est_pose
+      ? `(${t.est_pose.x.toFixed(2)}, ${t.est_pose.y.toFixed(2)}) ±${t.spread_m}m`
+      : 'no position yet';
+    li.textContent = `${t.epc} · x${t.count} · ${where} · ${t.last_rssi_dbm} dBm`;
+    uhfList.appendChild(li);
+  }
+});
+
 // --- system panel: host vitals + per-container controls ---------------------------
 // fleet_status (docker/fleet-status) is a standalone REST backend, not a ROS node —
 // it holds the Docker socket, so it runs outside rosbridge entirely. Polls every 30s;

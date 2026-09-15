@@ -20,6 +20,7 @@ REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 COMPANION = REPO / 'companion'
 QOS_PY = REPO / 'scout' / 'scout' / 'qos.py'
 RFID_RECORDER = COMPANION / 'rfid' / 'recorder.py'
+UHF_RECORDER = COMPANION / 'uhf' / 'recorder.py'
 INSPECTION_RECORDER = COMPANION / 'inspection' / 'recorder.py'
 
 SENSOR_TYPES = {'Imu', 'LaserScan', 'PointCloud2', 'Image',
@@ -74,6 +75,46 @@ def test_nfc_recorder_reuses_shared_script_with_nfc_params():
         assert token in compose, (
             'nfc_recorder service lost %r — its wiring is frozen (ADR-0026)'
             % token)
+
+
+def test_uhf_recorder_qos_matches_pi():
+    # Same freeze as the rfid recorder's: uhf/recorder.py hand-copies both
+    # QoS profiles (it cannot import scout.qos).
+    pi_history = _qos_profile_kwargs(QOS_PY, 'LATCHED_HISTORY_QOS')
+    pi_latched = _qos_profile_kwargs(QOS_PY, 'LATCHED_QOS')
+    assert _qos_profile_kwargs(UHF_RECORDER, 'READS_QOS') == pi_history, (
+        'companion uhf READS_QOS drifted from scout.qos.LATCHED_HISTORY_QOS '
+        '— sync the copy')
+    assert _qos_profile_kwargs(UHF_RECORDER, 'REGISTRY_QOS') == pi_latched, (
+        'companion uhf REGISTRY_QOS drifted from scout.qos.LATCHED_QOS — '
+        'sync the copy')
+
+
+def test_uhf_recorder_compose_wiring_frozen():
+    # uhf_recorder is deliberately its OWN script (batch unpack + centroid,
+    # ADR-0032), not another rfid/recorder.py instance. Freeze the service
+    # wiring so a compose edit cannot silently repoint it.
+    compose = (COMPANION / 'docker-compose.yaml').read_text()
+    assert 'uhf_recorder:' in compose, 'companion lost the uhf_recorder service'
+    for token in ('/uhf/recorder.py', '__node:=uhf_recorder',
+                  './uhf:/uhf:ro'):
+        assert token in compose, (
+            'uhf_recorder service lost %r — its wiring is frozen (ADR-0032)'
+            % token)
+    assert 'uhf_recorder' in re.search(
+        r'SITE_RESTART_SERVICES=([^\n]+)', compose).group(1), (
+        'uhf_recorder missing from SITE_RESTART_SERVICES — a site switch '
+        "would leave it writing the old site's uhf.db")
+
+
+def test_uhf_recorder_stores_stage2_columns():
+    # The stage-2 phase-SAR solver needs phase/freq_khz/timestamp_ms per read
+    # (ADR-0032); losing a column silently kills the upgrade path.
+    src = UHF_RECORDER.read_text()
+    for col in ('rssi_dbm', 'freq_khz', 'phase', 'timestamp_ms',
+                'batch_id', 'map_x', 'map_y', 'map_yaw'):
+        assert col in src, 'uhf recorder schema lost %r (stage-2 fuel, '\
+                           'ADR-0032)' % col
 
 
 def test_site_name_regex_copy_is_identical():

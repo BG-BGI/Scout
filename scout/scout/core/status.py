@@ -137,6 +137,59 @@ def parse_nfc_read(data):
     return json.loads(data)
 
 
+def format_uhf_status(state, connected, enabled, throttled=False,
+                      last_error=''):
+    """/uhf/status (uhf_node, ADR-0032), latched. Consumers: the webui UHF
+    badge and scout-skills' wait_uhf_read gate. `throttled` reflects the
+    module's temp-throttle / high-return-loss keepalives (scanning continues,
+    degraded)."""
+    return json.dumps({
+        'state': state,
+        'connected': bool(connected),
+        'enabled': bool(enabled),
+        'throttled': bool(throttled),
+        'last_error': last_error,
+    }, sort_keys=True)
+
+
+def parse_uhf_status(data):
+    """dict with keys state/connected/enabled/throttled/last_error."""
+    return json.loads(data)
+
+
+def format_uhf_read_batch(batch_id, reads, pose, stamp_utc):
+    """/uhf/reads (uhf_node -> zenoh -> companion uhf_recorder, ADR-0032).
+    One message per batch window (<=10/s at any tag rate): ONE pose for the
+    whole window, many reads. `reads` is a list of dicts straight from
+    core.uhf.parse_tag_record plus a per-read `read_id` (uuid4 — the
+    recorder's INSERT OR IGNORE key for idempotent latched replay).
+
+    rssi_dbm/freq_khz/phase/timestamp_ms ride along RAW for the stage-2
+    synthetic-aperture solver — phase especially must never be normalized or
+    rounded here. `pose` is (x, y, yaw) or None (degrade, don't break)."""
+    return json.dumps({
+        'batch_id': batch_id,
+        'pose': (None if pose is None
+                 else {'x': pose[0], 'y': pose[1], 'yaw': pose[2]}),
+        'reads': [{
+            'read_id': r['read_id'],
+            'epc': r['epc'],
+            'rssi_dbm': r['rssi_dbm'],
+            'freq_khz': r['freq_khz'],
+            'phase': r['phase'],
+            'antenna': r['antenna'],
+            'timestamp_ms': r['timestamp_ms'],
+            'protocol': r['protocol'],
+        } for r in reads],
+        'stamp_utc': stamp_utc,
+    }, sort_keys=True)
+
+
+def parse_uhf_read_batch(data):
+    """dict with keys batch_id/pose/reads/stamp_utc."""
+    return json.loads(data)
+
+
 def format_traction_status(m1, m2, left_channel):
     """/traction/status (traction_monitor). m1/m2 are per-channel dicts with
     keys speed (counts/s), current (A), expected (A or None), verdict,

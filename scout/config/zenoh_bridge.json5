@@ -34,6 +34,8 @@
           "^/rfid/reads$",
           // Same, for NFC reads -> companion nfc_recorder (ADR-0026).
           "^/nfc/reads$",
+          // Batched pose-stamped UHF reads -> companion uhf_recorder (ADR-0032).
+          "^/uhf/reads$",
         ],
         // Read-only world-model telemetry INTO the Pi (WORLDMODEL.md gate 2).
         // First-ever inbound. Anchored, telemetry only — NOT a control topic;
@@ -46,6 +48,8 @@
           "^/rfid/registry$",
           // Same, deduped NFC tag registry from nfc_recorder (ADR-0026).
           "^/nfc/registry$",
+          // UHF tag registry (per-EPC centroid) from uhf_recorder (ADR-0032).
+          "^/uhf/registry$",
         ],
         service_servers: [],
         service_clients: [],

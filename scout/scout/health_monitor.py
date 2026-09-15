@@ -18,13 +18,14 @@ Subsystems in this version:
   * traction     — /traction/status derates (WARN while a side is derated)
   * collision    — the CM bypass + zone mode (latched — see below)
   * flipper      — /flipper/status (latched; absent hardware is OK)
+  * uhf          — /uhf/status (latched; absent hardware is OK, throttle WARNs)
   * cliff        — /cliff/stop_points freshness. cliff_detector goes
                    DELIBERATELY silent on camera/TF loss, so STALE here means
                    the negative-obstacle safeguard is blind (ADR-0024) — this
                    row is why that silence is safe to keep.
 
 Streamed subsystems are STALE until their topic delivers and STALE again if it
-stops. LATCHED subsystems (collision, flipper) publish once per change, so
+stops. LATCHED subsystems (collision, flipper, uhf) publish once per change, so
 only never-seen means STALE for them — age has no meaning on a latched wire.
 See ADR-0014.
 """
@@ -40,6 +41,7 @@ from scout.core.status import (
     parse_flipper_status,
     parse_roboclaw_status,
     parse_traction_status,
+    parse_uhf_status,
 )
 from scout.node_util import run_node
 from scout.qos import LATCHED_QOS
@@ -96,6 +98,7 @@ class HealthMonitor(Node):
         self._bypassed = None          # latched: None until first message
         self._zone_mode = 'forward'
         self._flipper = None           # latched: parsed dict or None
+        self._uhf = None               # latched: parsed dict or None
         self._cliff_pts = None
         self._cliff_t = None
 
@@ -111,6 +114,8 @@ class HealthMonitor(Node):
                                  self._on_zone_mode, LATCHED_QOS)
         self.create_subscription(String, '/flipper/status',
                                  self._on_flipper, LATCHED_QOS)
+        self.create_subscription(String, '/uhf/status',
+                                 self._on_uhf, LATCHED_QOS)
         self.create_subscription(PointCloud2, '/cliff/stop_points',
                                  self._on_cliff, qos_profile_sensor_data)
         self.create_timer(self._publish_period, self._publish)
@@ -150,6 +155,12 @@ class HealthMonitor(Node):
     def _on_flipper(self, msg: String):
         try:
             self._flipper = parse_flipper_status(msg.data)
+        except ValueError:
+            pass
+
+    def _on_uhf(self, msg: String):
+        try:
+            self._uhf = parse_uhf_status(msg.data)
         except ValueError:
             pass
 
@@ -217,6 +228,16 @@ class HealthMonitor(Node):
                 f.get('last_error', ''), f.get('nfc_enabled', False))
         return self._status('flipper', lvl, msg, [])
 
+    def _uhf_status(self):
+        if self._uhf is None:
+            lvl, msg = health.staleness_level(None, 0.0, 'uhf')
+        else:
+            u = self._uhf
+            lvl, msg = health.uhf_level(
+                u.get('connected', False), u.get('enabled', False),
+                u.get('throttled', False), u.get('last_error', ''))
+        return self._status('uhf', lvl, msg, [])
+
     def _cliff_status(self):
         lvl, msg = health.staleness_level(
             self._age(self._cliff_t), self._cliff_timeout, 'cliff')
@@ -237,7 +258,7 @@ class HealthMonitor(Node):
         subs = [self._battery_status(), self._tilt_status(),
                 self._drivetrain_status(), self._traction_status(),
                 self._collision_status(), self._flipper_status(),
-                self._cliff_status()]
+                self._uhf_status(), self._cliff_status()]
         level = health.worst([s.level[0] for s in subs])
         overall = self._status(
             'scout', level, 'OK' if level == health.OK else 'attention', [])

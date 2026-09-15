@@ -183,6 +183,22 @@ services:
       -p reads_topic:=/nfc/reads
       -p registry_topic:=/nfc/registry
 
+  # UHF read recorder (ADR-0032) — the PRIMARY UHF DB. Subscribes the bridged
+  # /uhf/reads BATCHES (pose-stamped JSON from the Pi's uhf_node, latched
+  # depth-50 for outage replay) into /sites/active/uhf.db (one transaction per
+  # batch; rssi/freq/phase stored raw as stage-2 fuel) and republishes the
+  # /uhf/registry (per-EPC RSSI-weighted centroid + spread) back across the
+  # bridge for the webui/MCP. Own script, not rfid/recorder.py — batch wire
+  # format, signal columns, and the centroid solver are UHF-only.
+  uhf_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./uhf:/uhf:ro
+      - ./data/sites:/sites   # writable — this service owns uhf.db
+    command: python3 /uhf/recorder.py --ros-args -r __node:=uhf_recorder
+
   # Batch anomaly captioner (inspection F2) — run-on-demand, NOT a daemon:
   #   docker compose run --rm captioner /captures/inspection/<UTC>
   # Florence-2-base on CPU over the run's .mcap; writes anomalies.json beside
@@ -214,7 +230,7 @@ services:
       # switch; 'plain' scaffold = bare per-site dirs (just rtabmap.db).
       - SITES_DIR=/sites
       - SITE_SCAFFOLD=plain
-      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder,nfc_recorder
+      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder,nfc_recorder,uhf_recorder
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro

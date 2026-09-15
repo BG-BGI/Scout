@@ -255,6 +255,17 @@
       <div class="tab-panel" data-panel="sensors">
 
         <details class="panel">
+          <summary><h2>UHF RFID <span id="uhf-state">—</span></h2></summary>
+          <div class="grid">
+            <button id="uhf-enable" class="primary">Enable scanning</button>
+            <button id="uhf-disable">Disable</button>
+          </div>
+          <div id="uhf-rate" class="dim"></div>
+          <ul id="uhf-list" class="dim"></ul>
+          <div id="uhf-result" class="dim">M7E Hecto EPC Gen2 reader (902&ndash;928 MHz, reads at range while driving). Scanning stays OFF until enabled; every read is pose-stamped and stored in the companion DB, which estimates each tag's map position from the drive-past geometry.</div>
+        </details>
+
+        <details class="panel">
           <summary><h2>RFID <span id="rfid-state">—</span></h2></summary>
           <div class="grid">
             <button id="rfid-enable" class="primary">Enable scanning</button>

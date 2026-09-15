@@ -474,6 +474,26 @@ def generate_launch_description():
             respawn_delay=2.0,
         ),
 
+        # M7E Hecto UHF reader bridge (ADR-0032): enable-gated continuous EPC
+        # Gen2 inventory (/uhf/enable from the webui UHF panel), batched
+        # pose-stamped reads on /uhf/reads -> zenoh -> companion uhf_recorder.
+        # Reader absent is normal — the node idles and retries. respawn: USB
+        # unplug/replug is recoverable; loss degrades UHF only, the robot
+        # stays drivable (ADR-0015 tier 2).
+        Node(
+            package='scout',
+            executable='uhf_node',
+            output='screen',
+            parameters=[os.path.join(config, 'uhf.yaml')],
+            remappings=[
+                ('uhf/status', '/uhf/status'),
+                ('uhf/enable', '/uhf/enable'),
+                ('uhf/reads', '/uhf/reads'),
+            ],
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+
         # Fail-fast tier: these dying makes the stack lie (see _fail_fast).
         _fail_fast(twist_mux_auto,
                    'twist_mux_auto exited — autonomous cmd_vel arbitration dead'),

@@ -1148,6 +1148,103 @@ async def list_nfc_tags() -> dict:
     return {"count": len(tags), "tags": tags}
 
 
+# --- UHF RFID (M7E Hecto, ADR-0032) --------------------------------------------
+#
+# uhf_node (robot service) owns the M7E's serial port and runs a continuous
+# EPC Gen2 inventory ONLY while a human has enabled scanning in the webui UHF
+# panel (/uhf/enable). Reads land BATCHED and pose-stamped on /uhf/reads; the
+# companion's uhf_recorder is the primary DB and republishes /uhf/registry
+# (per-EPC RSSI-weighted centroid position + spread) back across the bridge.
+
+UHF_STATUS_TOPIC = "/uhf/status"
+UHF_READS_TOPIC = "/uhf/reads"
+UHF_REGISTRY_TOPIC = "/uhf/registry"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def wait_uhf_read(timeout_s: float = 30.0) -> dict:
+    """Wait for the NEXT batch of UHF tag reads from the M7E reader and return
+    it (a batch = every EPC heard in one ~100 ms window, each with RSSI, raw
+    phase, frequency, plus ONE map pose for the window — filter the reads list
+    by epc yourself). Does NOT start scanning — the inventory loop is enabled
+    by a human in the webui UHF panel, never by tools; if scanning is disabled
+    this fails immediately with instructions instead of waiting. UHF reads at
+    range (~1.5-2.5 m at the capped power), so driving PAST tags is enough.
+    Returns within timeout_s or reports that nothing was read."""
+    timeout_s = max(1.0, min(timeout_s, 120.0))
+    async with RosBridge() as rb:
+        status_msg = await rb.subscribe_once(
+            UHF_STATUS_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+        if status_msg is None:
+            raise ToolError(
+                "uhf_node silent (/uhf/status) — robot service down or node "
+                "not launched"
+            )
+        status = json.loads(status_msg["data"])
+        if not status.get("connected"):
+            raise ToolError("UHF reader not connected (USB)")
+        if not status.get("enabled"):
+            raise ToolError(
+                "UHF scanning is disabled — enable it in the webui UHF panel "
+                "first (manual gate, ADR-0032)"
+            )
+        # The latched depth-50 window replays PAST batches on subscribe;
+        # swallow that backlog first, then wait for a new batch_id.
+        await rb.subscribe(UHF_READS_TOPIC, "std_msgs/msg/String")
+        seen: set = set()
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        settling = True
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return {
+                    "status": "no tags read within %.0f s (scanning stays "
+                    "enabled)" % timeout_s,
+                    "batch": None,
+                }
+            msg = await rb.recv_msg(
+                UHF_READS_TOPIC, timeout=0.5 if settling else remaining
+            )
+            if msg is None:
+                settling = False  # replay backlog drained; now block for new
+                continue
+            batch = json.loads(msg["data"])
+            if settling:
+                seen.add(batch.get("batch_id"))
+                continue
+            if batch.get("batch_id") not in seen:
+                return {"status": "read", "batch": batch}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_uhf_tags() -> dict:
+    """Every UHF (EPC Gen2) tag Scout has ever read at this site, one row per
+    EPC with hit count, last-seen time, last RSSI, and est_pose — the
+    RSSI-weighted centroid of all localized read positions (stage-1 accuracy
+    1-3 m; spread_m is the weighted RMS scatter, a rough confidence; hand
+    est_pose to go_to to drive to a tag). Served from the companion's
+    persistent per-site DB via the latched /uhf/registry; empty with a note
+    when the companion is offline or no reads exist yet."""
+    async with RosBridge() as rb:
+        msg = await rb.subscribe_once(
+            UHF_REGISTRY_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+    if msg is None:
+        return {
+            "status": "uhf registry offline (companion down, /uhf/registry "
+            "not bridged, or no reads recorded yet)",
+            "count": 0,
+            "tags": [],
+        }
+    try:
+        payload = json.loads(msg["data"])
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"malformed /uhf/registry payload: {e}") from e
+    tags = payload.get("tags", [])
+    return {"count": len(tags), "tags": tags}
+
+
 # --- AprilTags ---------------------------------------------------------------
 #
 # Registry (sqlite, /maps/tags.db) + standoff geometry live in tags.py;
