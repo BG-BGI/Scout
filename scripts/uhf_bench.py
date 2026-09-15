@@ -76,15 +76,24 @@ def main():
     ser = serial.Serial(port, 115200, timeout=0.05)
     time.sleep(0.3)  # module spits its boot version ~200 ms after power-on
 
+    # A module left in continuous read by a killed session streams tag frames
+    # instead of answering — SparkFun's setupRfidModule() recovery: stop the
+    # read unconditionally, then probe (a fresh module ignores the stop).
+    ser.write(uhf.cmd_stop_continuous())
+    time.sleep(0.2)
+    ser.reset_input_buffer()
+
+    # Library order (setupRfidModule): version, protocol, antenna, region,
+    # power; read filter off belongs with startReading().
     send_expect(ser, uhf.cmd_version(), "version")
-    send_expect(ser, uhf.cmd_set_region(), "set region NA")
     send_expect(ser, uhf.cmd_set_tag_protocol(), "set protocol GEN2")
     send_expect(ser, uhf.cmd_set_antenna_port(), "set antenna port")
-    send_expect(ser, uhf.cmd_disable_read_filter(), "disable read filter")
+    send_expect(ser, uhf.cmd_set_region(), "set region NA")
     send_expect(ser, uhf.cmd_set_read_power(args.power),
                 f"set read power {min(args.power, uhf.READ_POWER_MAX_CDBM)}")
 
     print("starting continuous read — Ctrl+C to stop\n")
+    ser.write(uhf.cmd_disable_read_filter())
     ser.write(uhf.cmd_start_continuous())
 
     cap = open(args.capture, "a") if args.capture else None

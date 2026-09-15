@@ -183,17 +183,26 @@ class UhfNode(Node):
         # answers nothing Mercury-framed, so we close and retry — never send
         # config writes to a device we have not identified.
         if self._command(uhf.cmd_version(), 'version') is None:
-            self.get_logger().warn(
-                'port opened but no Mercury version response — not an M7E? '
-                '(check the host udev pin, ADR-0032)',
-                throttle_duration_sec=30.0)
-            self._ser.close()
-            return
+            # A module left in continuous read (this node died mid-scan)
+            # streams tag frames instead of answering — SparkFun's
+            # setupRfidModule() recovery: stop the read and probe once more.
+            self._ser.write(uhf.cmd_stop_continuous())
+            time.sleep(0.1)
+            self._ser.read_available()   # drop the in-flight tail
+            if self._command(uhf.cmd_version(), 'version (after stop)') is None:
+                self.get_logger().warn(
+                    'port opened but no Mercury version response — not an '
+                    'M7E? (check the host udev pin, ADR-0032)',
+                    throttle_duration_sec=30.0)
+                self._ser.close()
+                return
+        # Library order (setupRfidModule): protocol, antenna, region, power.
+        # disableReadFilter is NOT here — it precedes every start, matching
+        # the library's startReading().
         for frame, name in (
-                (uhf.cmd_set_region(), 'set region'),
                 (uhf.cmd_set_tag_protocol(), 'set protocol'),
                 (uhf.cmd_set_antenna_port(), 'set antenna'),
-                (uhf.cmd_disable_read_filter(), 'disable read filter'),
+                (uhf.cmd_set_region(), 'set region'),
                 (uhf.cmd_set_read_power(self._read_power), 'set read power')):
             if self._command(frame, name) is None:
                 self._ser.close()
@@ -206,6 +215,9 @@ class UhfNode(Node):
         self._ser.read_available()        # keep the buffer drained
         if not self._enabled:
             return
+        # Mirror the library's startReading(): read filter off, then the
+        # continuous-read blob (repeat sightings must keep streaming).
+        self._ser.write(uhf.cmd_disable_read_filter())
         self._ser.write(uhf.cmd_start_continuous())
         self._keepalive_deadline = time.monotonic() + self._keepalive_timeout
         self._set_state(SCANNING)
