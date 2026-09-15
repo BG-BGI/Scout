@@ -482,165 +482,6 @@ let grid = null;      // latest OccupancyGrid info
 let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
 
-const OPENSPACE_ACC_API = 'http://' + location.hostname + ':3100/api';
-
-let bimScans = [];        // [{map_x, map_y, capture_id, timestamp}] from openspace_acc
-let bimRoomsData = [];    // [{name, map_x, map_y}] from ACC rooms
-let bimShowScans = false;
-let bimShowRooms = false;
-let bimAlignMode = false;
-let bimAlignPts = [];        // [{map_x, map_y, sheet_x, sheet_y}]
-let bimAlignCapture = null;  // {x, y} map-frame point waiting for sheet coords
-
-function sheetToMap(sx, sy, alignment) {
-    const {scale, theta, tx, ty} = alignment;
-    const dx = (sx - tx) / scale;
-    const dy = (sy - ty) / scale;
-    const cos = Math.cos(-theta);
-    const sin = Math.sin(-theta);
-    return {x: dx * cos - dy * sin, y: dx * sin + dy * cos};
-}
-
-async function fetchBimScans(bim) {
-    const a = bim && bim.alignment;
-    if (!a || !bim.openspace_site_id || !bim.openspace_sheet_id) return;
-    try {
-        const url = `${OPENSPACE_ACC_API}/openspace/sites/${bim.openspace_site_id}/captures?sheet=${bim.openspace_sheet_id}`;
-        const caps = await fetch(url).then((r) => r.json());
-        bimScans = (Array.isArray(caps) ? caps : caps.content || []).map((c) => {
-            const pos = sheetToMap(c.x || 0, c.y || 0, a);
-            return {map_x: pos.x, map_y: pos.y, capture_id: c.id, timestamp: c.capturedAt || c.createdAt};
-        });
-    } catch (_) { bimScans = []; }
-    drawMap();
-}
-
-async function fetchBimRooms(bim, mapName) {
-    const a = bim && bim.alignment;
-    if (!a || !bim.acc_model_urn) return;
-    try {
-        const url = `${OPENSPACE_ACC_API}/acc/rooms?urn=${encodeURIComponent(bim.acc_model_urn)}&level=${encodeURIComponent(bim.acc_level_name || 'Level 1')}`;
-        const rooms = await fetch(url).then((r) => r.json());
-        bimRoomsData = (Array.isArray(rooms) ? rooms : rooms.rooms || []).map((r) => {
-            const cx = r.centroid_sheet ? r.centroid_sheet[0] : 0;
-            const cy = r.centroid_sheet ? r.centroid_sheet[1] : 0;
-            const pos = sheetToMap(cx, cy, a);
-            return {name: r.name, map_x: pos.x, map_y: pos.y};
-        });
-    } catch (_) { bimRoomsData = []; }
-    drawMap();
-}
-
-async function loadBimData() {
-    if (!activeSiteMeta || !activeSiteMeta.active_map) return;
-    const mapName = activeSiteMeta.active_map;
-    try {
-        const bim = await fetch(`${FLEET_API}/sites/active/maps/${mapName}/bim`).then((r) => r.json());
-        if (bimShowScans) fetchBimScans(bim);
-        if (bimShowRooms) fetchBimRooms(bim, mapName);
-    } catch (_) {}
-}
-
-function solveBimAlignment(pts) {
-    const [p1, p2] = pts;
-    const dm = { x: p2.map_x - p1.map_x, y: p2.map_y - p1.map_y };
-    const ds = { x: p2.sheet_x - p1.sheet_x, y: p2.sheet_y - p1.sheet_y };
-    const den = dm.x ** 2 + dm.y ** 2;
-    const a = (ds.x * dm.x + ds.y * dm.y) / den;
-    const b = (ds.y * dm.x - ds.x * dm.y) / den;
-    const scale = Math.sqrt(a ** 2 + b ** 2);
-    const theta = Math.atan2(b, a);
-    const tx = p1.sheet_x - (a * p1.map_x - b * p1.map_y);
-    const ty = p1.sheet_y - (b * p1.map_x + a * p1.map_y);
-    return { tx, ty, theta, scale };
-}
-
-async function patchBimData(mapName, data) {
-    const res = await fetch(
-        `${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`,
-        { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }
-    );
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
-    return res.json();
-}
-
-// Site-level BIM (the building's Revit model + OpenSpace project). Linkable
-// before any map exists — that's the whole point of the site scope (ADR-0031
-// amendment). Level/sheet/alignment stay per-map (patchBimData above).
-async function patchSiteBim(data) {
-    const res = await fetch(
-        `${FLEET_API}/sites/active/bim`,
-        { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }
-    );
-    if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || res.status); }
-    return res.json();
-}
-
-// Resolve a linked URN back to its model name via the fleet_status ACC proxy
-// (models linked before acc_model_name existed, or via the manual URN field).
-// On success the name is PATCHed back to the site so this runs once.
-async function resolveModelName(urn) {
-    try {
-        const d = await fetch(`${FLEET_API}/acc/projects`).then((r) => r.json());
-        for (const p of (d.projects || []).slice(0, 5)) {
-            const md = await fetch(
-                `${FLEET_API}/acc/models?project=${encodeURIComponent(p.id)}&hub=${encodeURIComponent(p.hub)}`
-            ).then((r) => r.json());
-            const hit = (md.models || []).find((m) => m.urn === urn);
-            if (hit) {
-                patchSiteBim({ acc_model_name: hit.name }).catch(() => {});
-                return hit.name;
-            }
-        }
-    } catch (_) { /* ACC unconfigured or unreachable — URN tail is the fallback */ }
-    return null;
-}
-
-async function loadBimSetup() {
-    if (!activeSiteMeta) return;
-    const mapName = activeSiteMeta.active_map;  // may be null on a fresh site
-    const bimSetupEl = document.getElementById('bim-setup');
-    const bimCurrentEl = document.getElementById('bim-current');
-    const bimSummaryEl = document.getElementById('bim-summary-state');
-    const bimUrnInput = document.getElementById('bim-urn');
-    const bimLevelInput = document.getElementById('bim-level');
-    bimSetupEl.style.display = '';
-    loadAccProjects();  // populate the project/model picker (once, if ACC configured)
-    try {
-        // Site-level model link (works with no map). If a map is active, the
-        // per-map GET is the merged effective block (model + level + alignment).
-        const siteBim = await fetch(`${FLEET_API}/sites/active/bim`).then((r) => r.json());
-        const bim = mapName
-            ? await fetch(`${FLEET_API}/sites/active/maps/${encodeURIComponent(mapName)}/bim`).then((r) => r.json())
-            : siteBim;
-        const urn = (siteBim && siteBim.acc_model_urn) || (bim && bim.acc_model_urn);
-        let name = (siteBim && siteBim.acc_model_name) || (bim && bim.acc_model_name);
-        if (urn && !name) name = await resolveModelName(urn);
-        const hasAlign = bim && bim.alignment;
-        let status = urn
-            ? `${name || 'Model …' + urn.slice(-16)} · Level ${(bim && bim.acc_level_name) || 'Level 1'}`
-            : 'no building model linked';
-        if (!mapName) status += ' · link the model now; level & alignment unlock once a floor is mapped';
-        else if (hasAlign) {
-            const al = bim.alignment;
-            status += ` · aligned (scale ${al.scale.toFixed(3)}, θ ${(al.theta * 180 / Math.PI).toFixed(1)}°)`;
-        }
-        bimCurrentEl.textContent = status;
-        // Visible with the panel collapsed — the linked model shouldn't hide
-        // behind a click.
-        if (bimSummaryEl) {
-            bimSummaryEl.textContent = urn
-                ? `— ${name || '…' + urn.slice(-16)}${hasAlign ? ' · aligned' : ''}`
-                : '— not linked';
-        }
-        if (urn) bimUrnInput.value = urn;
-        if (bim && bim.acc_level_name) bimLevelInput.value = bim.acc_level_name;
-        // The per-floor level row only makes sense once a floor is active.
-        const levelRow = document.getElementById('bim-level-row');
-        if (levelRow) levelRow.style.display = mapName ? '' : 'none';
-    } catch (_) { bimCurrentEl.textContent = 'BIM: no data'; }
-}
-
 const mapTopic = new ROSLIB.Topic({
   ros, name: '/map', messageType: 'nav_msgs/msg/OccupancyGrid',
   throttle_rate: 2000, queue_length: 1,
@@ -787,68 +628,6 @@ function drawMap() {
     mapCtx.restore();
   }
 
-
-  if (bimShowScans && bimScans.length && grid) {
-    bimScans.forEach((scan) => {
-      const c = worldToCanvas(scan.map_x, scan.map_y);
-      mapCtx.save();
-      mapCtx.fillStyle = 'rgba(255, 200, 0, 0.85)';
-      mapCtx.strokeStyle = '#a06000';
-      mapCtx.lineWidth = 1;
-      mapCtx.beginPath();
-      mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
-      mapCtx.fill();
-      mapCtx.stroke();
-      mapCtx.restore();
-    });
-  }
-
-  if (bimShowRooms && bimRoomsData.length && grid) {
-    mapCtx.font = '10px monospace';
-    mapCtx.textAlign = 'center';
-    bimRoomsData.forEach((room) => {
-      const c = worldToCanvas(room.map_x, room.map_y);
-      mapCtx.fillStyle = 'rgba(80, 200, 120, 0.9)';
-      mapCtx.beginPath();
-      mapCtx.arc(c.x, c.y, 4, 0, 2 * Math.PI);
-      mapCtx.fill();
-      mapCtx.fillStyle = '#1a4a2a';
-      mapCtx.fillText(room.name, c.x, c.y - 8);
-    });
-  }
-
-  if (bimAlignMode) {
-    bimAlignPts.forEach((p, i) => {
-      const c = worldToCanvas(p.map_x, p.map_y);
-      mapCtx.save();
-      mapCtx.fillStyle = '#ff8800';
-      mapCtx.strokeStyle = '#fff';
-      mapCtx.lineWidth = 2;
-      mapCtx.beginPath();
-      mapCtx.arc(c.x, c.y, 8, 0, 2 * Math.PI);
-      mapCtx.fill();
-      mapCtx.stroke();
-      mapCtx.fillStyle = '#000';
-      mapCtx.font = 'bold 10px monospace';
-      mapCtx.textAlign = 'center';
-      mapCtx.textBaseline = 'middle';
-      mapCtx.fillText(i + 1, c.x, c.y);
-      mapCtx.restore();
-    });
-    if (bimAlignCapture) {
-      const c = worldToCanvas(bimAlignCapture.x, bimAlignCapture.y);
-      mapCtx.save();
-      mapCtx.strokeStyle = '#ff8800';
-      mapCtx.lineWidth = 2;
-      mapCtx.setLineDash([4, 4]);
-      mapCtx.beginPath();
-      mapCtx.arc(c.x, c.y, 8, 0, 2 * Math.PI);
-      mapCtx.stroke();
-      mapCtx.setLineDash([]);
-      mapCtx.restore();
-    }
-  }
-
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
     mapCtx.fillStyle = '#40a0ff';
@@ -887,12 +666,6 @@ mapCanvas.addEventListener('click', (ev) => {
   if (areaMode) {
     areaPts.push(canvasToWorld(ev));
     areaBtn.textContent = 'Finish (' + areaPts.length + ')';
-    drawMap();
-    return;
-  }
-  if (bimAlignMode && !bimAlignCapture) {
-    bimAlignCapture = canvasToWorld(ev);
-    bimAlignUpdateStep();
     drawMap();
     return;
   }
@@ -1525,14 +1298,13 @@ function renderActiveCard(activeName) {
     floorEl.style.display = 'none';
   }
   let line = MODE_PHRASE[mode] || mode;
-  if (entry.bim && entry.bim.alignment) line += ' · <b>model linked</b>';
   document.getElementById('active-mode-line').innerHTML = line;
   card.hidden = false;
 }
 
 // Map overlay: the Navigate | Map intent toggle (#mo-intent). Two intents map
 // onto the four slam modes — Navigate = localization (finished map, instant
-// floor swaps, BIM overlays), Map = auto (build/extend). New/Continue stay in
+// floor swaps), Map = auto (build/extend). New/Continue stay in
 // the Site tab's "Advanced" section. Kept in sync with slam_mode.
 function renderIntent() {
   const wrap = document.getElementById('mo-intent');
@@ -1626,239 +1398,6 @@ function renderSites(data) {
 // slam/amcl runs on. Activating in localization mode swaps the grid live via
 // map_server LoadMap (~1 s); any other mode restarts slam (map bound at launch).
 const siteMapsEl = document.getElementById('site-maps');
-const bimControlsEl = document.getElementById('mo-layers');  // map layer toggles
-const bimScansToggle = document.getElementById('bim-scans-toggle');
-const bimRoomsToggle = document.getElementById('bim-rooms-toggle');
-
-bimScansToggle.addEventListener('click', () => {
-  bimShowScans = !bimShowScans;
-  bimScansToggle.classList.toggle('selected', bimShowScans);
-  if (bimShowScans) loadBimData(); else { bimScans = []; drawMap(); }
-});
-bimRoomsToggle.addEventListener('click', () => {
-  bimShowRooms = !bimShowRooms;
-  bimRoomsToggle.classList.toggle('selected', bimShowRooms);
-  if (bimShowRooms) loadBimData(); else { bimRoomsData = []; drawMap(); }
-});
-
-// BIM Setup: link form + 2-point alignment wizard
-const bimLinkBtn = document.getElementById('bim-link-btn');
-const bimLinkResult = document.getElementById('bim-link-result');
-const bimAlignWizard = document.getElementById('bim-align-wizard');
-const bimAlignDescEl = document.getElementById('bim-align-desc');
-const bimAlignSheetRow = document.getElementById('bim-align-sheet-row');
-const bimSheetXInput = document.getElementById('bim-sheet-x');
-const bimSheetYInput = document.getElementById('bim-sheet-y');
-const bimAlignStartBtn = document.getElementById('bim-align-start');
-const bimAlignNextBtn = document.getElementById('bim-align-next');
-const bimAlignCancelBtn = document.getElementById('bim-align-cancel');
-
-function bimAlignReset(msg) {
-  bimAlignMode = false;
-  bimAlignPts = [];
-  bimAlignCapture = null;
-  bimAlignWizard.style.display = 'none';
-  bimAlignSheetRow.style.display = 'none';
-  bimAlignDescEl.textContent = '';
-  setAlignBanner(null);   // clear the on-map prompt
-  if (msg && bimLinkResult) bimLinkResult.textContent = msg;
-  drawMap();
-}
-
-// The alignment prompt is mirrored onto the map (#mo-banner) so the operator
-// reads the instruction where they're clicking. Coord entry stays in the Site
-// tab (#bim-align-sheet-row). Pass null to hide.
-function setAlignBanner(step, text) {
-  const banner = document.getElementById('mo-banner');
-  if (!banner) return;
-  if (step == null) { banner.classList.remove('show'); return; }
-  banner.querySelector('.step-num').textContent = step;
-  document.getElementById('mo-banner-text').textContent = text;
-  banner.classList.add('show');
-}
-
-function bimAlignUpdateStep() {
-  const step = bimAlignPts.length + 1;
-  if (!bimAlignCapture) {
-    bimAlignDescEl.textContent = `Point ${step} of 2 — click the spot on the map now…`;
-    bimAlignSheetRow.style.display = 'none';
-    setAlignBanner(step, `Click landmark ${step} of 2 on the map — a corner, a column, a doorway.`);
-  } else {
-    const c = bimAlignCapture;
-    bimAlignDescEl.textContent =
-      `Point ${step} of 2 on map (${c.x.toFixed(3)}, ${c.y.toFixed(3)}) — now its drawing coordinates:`;
-    bimAlignSheetRow.style.display = '';
-    bimSheetXInput.value = '';
-    bimSheetYInput.value = '';
-    bimSheetXInput.focus();
-    bimAlignNextBtn.textContent = bimAlignPts.length === 1 ? 'Solve & save' : 'Next point';
-    setAlignBanner(step, `Point ${step} captured — enter its drawing coordinates in the Site tab.`);
-  }
-}
-
-bimAlignStartBtn.addEventListener('click', () => {
-  bimAlignMode = true;
-  bimAlignPts = [];
-  bimAlignCapture = null;
-  bimAlignWizard.style.display = '';
-  bimAlignUpdateStep();
-});
-
-bimAlignCancelBtn.addEventListener('click', () => bimAlignReset('alignment cancelled'));
-
-bimAlignNextBtn.addEventListener('click', async () => {
-  if (!bimAlignCapture) return;
-  const sx = parseFloat(bimSheetXInput.value);
-  const sy = parseFloat(bimSheetYInput.value);
-  if (isNaN(sx) || isNaN(sy)) {
-    bimAlignDescEl.textContent = 'Enter valid sheet X and Y.';
-    return;
-  }
-  bimAlignPts.push({ map_x: bimAlignCapture.x, map_y: bimAlignCapture.y, sheet_x: sx, sheet_y: sy });
-  bimAlignCapture = null;
-  if (bimAlignPts.length < 2) { bimAlignUpdateStep(); return; }
-  const alignment = solveBimAlignment(bimAlignPts);
-  bimAlignDescEl.textContent =
-    `Solved: scale=${alignment.scale.toFixed(4)}, θ=${(alignment.theta * 180 / Math.PI).toFixed(1)}°. Saving…`;
-  bimAlignSheetRow.style.display = 'none';
-  try {
-    await patchBimData(activeSiteMeta.active_map, { alignment });
-    bimAlignReset(
-      `alignment saved ✓  scale ${alignment.scale.toFixed(3)}, θ ${(alignment.theta * 180 / Math.PI).toFixed(1)}°`
-    );
-    await refreshSites();
-    loadBimSetup();
-  } catch (e) {
-    bimAlignReset('alignment save failed: ' + e.message);
-  }
-});
-
-// Link the building's Revit model to the SITE — no floor. Works with no active
-// map (that's the whole point of the site scope). urn comes from the project→
-// model picker (its value is the model's version URN) or the manual field.
-async function linkModel(urn, name) {
-  if (!activeSiteMeta) { bimLinkResult.textContent = 'no active site'; return; }
-  if (!urn) { bimLinkResult.textContent = 'pick a model (or enter a URN)'; return; }
-  // A model URN is either a raw urn:adsk… string or its base64 form (40+ chars,
-  // base64 charset). Reject account/project/item IDs (b.<guid>, bare GUIDs) —
-  // the common mistake that stores a value the ACC service can't resolve.
-  const looksLikeUrn = /^urn:/i.test(urn) || /^[A-Za-z0-9+/_=-]{40,}$/.test(urn);
-  if (!looksLikeUrn) {
-    bimLinkResult.textContent =
-      'that looks like an account/project ID, not a model URN — use the project picker, or paste a urn:adsk… string (or its base64 form)';
-    return;
-  }
-  bimLinkResult.textContent = 'saving…';
-  try {
-    await patchSiteBim({ acc_model_urn: urn, ...(name ? { acc_model_name: name } : {}) });
-    bimLinkResult.textContent = activeSiteMeta.active_map
-      ? 'model linked ✓ — set this floor’s level & alignment below'
-      : 'model linked ✓ — map a floor, then set its level & alignment';
-    await refreshSites();
-    loadBimSetup();
-  } catch (e) {
-    bimLinkResult.textContent = 'failed: ' + e.message;
-  }
-}
-bimLinkBtn.addEventListener('click', () => {
-  const sel = document.getElementById('bim-model');
-  const opt = sel.selectedOptions[0];
-  linkModel(sel.value.trim(), opt ? opt.textContent : '');
-});
-document.getElementById('bim-link-manual').addEventListener('click', () =>
-  linkModel(document.getElementById('bim-urn').value.trim()));
-
-// ACC project/model picker (fleet_status /api/acc/*). Loaded once when the BIM
-// panel first opens; if ACC isn't configured the picker hides and the manual
-// URN field stands alone.
-let accProjectsLoaded = false;
-async function loadAccProjects() {
-  if (accProjectsLoaded) return;
-  accProjectsLoaded = true;
-  const picker = document.getElementById('bim-picker');
-  const manual = document.getElementById('bim-manual');
-  const note = document.getElementById('bim-picker-note');
-  const projSel = document.getElementById('bim-project');
-  const fallback = (msg) => {
-    picker.style.display = 'none';
-    manual.open = true;                 // manual URN is the path
-    if (note) note.textContent = msg;
-  };
-  try {
-    const res = await fetch(`${FLEET_API}/acc/projects`);
-    if (res.status === 404) {
-      // Route missing = old fleet_status image still running.
-      return fallback('project picker needs the updated robot service — rebuild fleet_status. Manual URN below.');
-    }
-    const d = await res.json();
-    if (!d.configured) {
-      return fallback('ACC creds not set on the robot (ACC_CLIENT_ID/SECRET). Manual URN below.');
-    }
-    if (!(d.projects || []).length) {
-      return fallback('ACC connected but no projects visible — add this app as a Custom Integration in ACC Account Admin. Manual URN below.');
-    }
-    if (note) note.textContent = '';
-    picker.style.display = '';
-    manual.open = false;
-    projSel.innerHTML = '<option value="">Select project…</option>' +
-      d.projects.map((p) =>
-        `<option value="${p.id}" data-hub="${p.hub}">${p.name}</option>`).join('');
-    projSel.onchange = loadAccModels;
-  } catch (_) {
-    accProjectsLoaded = false;          // allow a retry next open
-    fallback('robot service unreachable — using manual URN.');
-  }
-}
-async function loadAccModels() {
-  const projSel = document.getElementById('bim-project');
-  const modelSel = document.getElementById('bim-model');
-  const opt = projSel.selectedOptions[0];
-  const pid = projSel.value;
-  const hub = opt ? (opt.dataset.hub || '') : '';
-  if (!pid) {
-    modelSel.disabled = true;
-    modelSel.innerHTML = '<option value="">Pick a project first</option>';
-    return;
-  }
-  modelSel.disabled = true;
-  modelSel.innerHTML = '<option value="">Loading models…</option>';
-  try {
-    const d = await fetch(
-      `${FLEET_API}/acc/models?project=${encodeURIComponent(pid)}&hub=${encodeURIComponent(hub)}`
-    ).then((r) => r.json());
-    const models = d.models || [];
-    if (!models.length) {
-      modelSel.innerHTML = '<option value="">No Revit models found</option>';
-      return;
-    }
-    modelSel.innerHTML = '<option value="">Select model…</option>' +
-      models.map((m) => `<option value="${m.urn}">${m.name}</option>`).join('');
-    modelSel.disabled = false;
-  } catch (_) {
-    modelSel.innerHTML = '<option value="">Failed to load models</option>';
-  }
-}
-
-// Assign the active floor to a Revit level — per-map scope.
-const bimLevelBtn = document.getElementById('bim-level-btn');
-const bimLevelResult = document.getElementById('bim-level-result');
-bimLevelBtn.addEventListener('click', async () => {
-  if (!activeSiteMeta || !activeSiteMeta.active_map) {
-    bimLevelResult.textContent = 'no active floor'; return;
-  }
-  const level = document.getElementById('bim-level').value.trim() || 'Level 1';
-  bimLevelBtn.disabled = true;
-  bimLevelResult.textContent = 'saving…';
-  try {
-    await patchBimData(activeSiteMeta.active_map, { acc_level_name: level });
-    bimLevelResult.textContent = `set to “${level}” ✓`;
-    await refreshSites();
-    loadBimSetup();
-  } catch (e) {
-    bimLevelResult.textContent = 'failed: ' + e.message;
-  }
-  bimLevelBtn.disabled = false;
-});
 
 function renderSiteMaps() {
   siteMapsEl.innerHTML = '';
@@ -1869,17 +1408,13 @@ function renderSiteMaps() {
     const row = document.createElement('div');
     const isActive = name === active;
     row.className = 'map-row' + (isActive ? ' is-live' : '');
-    const hasBim = m.bim && m.bim.alignment;
-    // Readable capability chips instead of [graph]/[grid]/[bim] shorthand.
+    // Readable capability chips instead of [graph]/[grid] shorthand.
     const chips = [];
     if (isActive) chips.push('<span class="cap live">● running</span>');
     chips.push(m.grid
       ? '<span class="cap on">Localize-ready</span>'
       : '<span class="cap off">Not localizable</span>');
     if (m.posegraph) chips.push('<span class="cap on">Extendable</span>');
-    chips.push(hasBim
-      ? '<span class="cap on">Model aligned</span>'
-      : '<span class="cap off">No model</span>');
     if (m.unregistered) chips.push('<span class="cap warn">unregistered</span>');
     const nameHtml = m.label && m.label !== name
       ? `${m.label} <span style="color:var(--dim)">(${name})</span>` : name;
@@ -1899,18 +1434,7 @@ function renderSiteMaps() {
     if (btn) btn.addEventListener('click', () => activateMap(name));
     siteMapsEl.appendChild(row);
   }
-  const activeMap = active && maps[active];
-  const activeHasBim = activeMap && activeMap.bim && activeMap.bim.alignment;
-  bimControlsEl.hidden = !activeHasBim;   // map layer toggles (#mo-layers)
   renderFloorStack();                     // map floor stack (#mo-floors)
-  const bimSetupEl = document.getElementById('bim-setup');
-  if (activeSiteMeta) {
-    // Model link is site-level, so BIM setup is usable even with no map yet
-    // (loadBimSetup handles the no-active-map case).
-    loadBimSetup();
-  } else {
-    bimSetupEl.style.display = 'none';
-  }
 }
 
 const loadMapSrv = new ROSLIB.Service({

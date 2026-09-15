@@ -37,9 +37,8 @@
 
         <!-- Map overlays: the map is the Site control surface.
              renderActiveCard() fills #site-active; renderFloorStack() fills
-             #mo-floors; renderIntent() lights #mo-intent; the bim toggles keep
-             their #bim-scans-toggle / #bim-rooms-toggle IDs so app.js binds
-             them unchanged. All start hidden until there's a live site. -->
+             #mo-floors; renderIntent() lights #mo-intent. All start hidden
+             until there's a live site. -->
         <div class="mo mo-tl mo-card mo-now" id="site-active" hidden>
           <div class="mo-now-where">
             <span id="active-site-name"></span>
@@ -58,17 +57,8 @@
           <span class="fl-label">FLR</span>
         </div>
 
-        <div class="mo mo-bl mo-card mo-layers" id="mo-layers" hidden>
-          <button id="bim-scans-toggle">Photos</button>
-          <button id="bim-rooms-toggle">Rooms</button>
-        </div>
-
-        <div class="mo mo-card" id="mo-banner">
-          <span class="step-num">1</span>
-          <span id="mo-banner-text"></span>
-        </div>
       </div>
-      <div class="map-hint">Tap map to drive there · floor &amp; layers live on the map — the Site tab is just setup</div>
+      <div class="map-hint">Tap map to drive there · floor switching lives on the map — the Site tab is just setup</div>
     </section>
 
     <section class="panel" id="camera-panel">
@@ -212,65 +202,6 @@
             floors, the corner toggles layers. This tab is just for setup.
           </div>
 
-          <!-- BUILDING MODEL & SITE PHOTOS — progressive; app.js shows it when a map is active -->
-          <details class="panel" id="bim-setup" style="display:none">
-            <summary><h2>Building model &amp; site photos</h2> <span id="bim-summary-state" class="dim"></span></summary>
-            <div id="bim-current" class="dim"></div>
-
-            <button id="bim-align-start">Align map to drawing</button>
-
-            <div id="bim-align-wizard" class="wiz" style="display:none">
-              <div class="wiz-head">
-                <span class="wiz-title">Align map to drawing</span>
-              </div>
-              <div class="wiz-steps">
-                <div class="wiz-line">
-                  <span class="wiz-num">1</span>
-                  <span>Click a spot on the map you can also find on the drawing — a corner, a column, a doorway.</span>
-                </div>
-                <div class="wiz-line">
-                  <span class="wiz-num">2</span>
-                  <span>Type that spot's coordinates from the drawing. Do it for two points and Scout lines them up.</span>
-                </div>
-              </div>
-              <div id="bim-align-desc" class="dim"></div>
-              <div class="grid tight" id="bim-align-sheet-row" style="display:none">
-                <input id="bim-sheet-x" type="number" placeholder="Drawing X" step="any" autocomplete="off">
-                <input id="bim-sheet-y" type="number" placeholder="Drawing Y" step="any" autocomplete="off">
-                <button id="bim-align-next">Confirm</button>
-              </div>
-              <button id="bim-align-cancel">Cancel alignment</button>
-            </div>
-
-            <div class="grp-label">Revit model — whole building</div>
-            <!-- Why the picker isn't shown (deploy / creds / provisioning). -->
-            <div id="bim-picker-note" class="dim"></div>
-            <!-- Project → model pickers (shown when ACC is configured). -->
-            <div id="bim-picker" style="display:none">
-              <select id="bim-project" class="txt"><option value="">Loading projects…</option></select>
-              <select id="bim-model" class="txt" style="margin-top:6px" disabled><option value="">Pick a project first</option></select>
-              <button id="bim-link-btn" style="margin-top:6px;width:100%">Link model</button>
-              <div class="dim">Pick your ACC project, then its Revit model — no URN needed.</div>
-            </div>
-            <!-- Manual URN fallback (also the whole UI when ACC isn't configured). -->
-            <details id="bim-manual">
-              <summary class="mini-summary">Enter a model URN manually…</summary>
-              <div class="grid tight" style="margin-top:6px">
-                <input id="bim-urn" type="text" placeholder="urn:adsk.wipprod:… (not the project ID)" autocomplete="off">
-                <button id="bim-link-manual">Link</button>
-              </div>
-            </details>
-            <div id="bim-link-result" class="dim"></div>
-
-            <div id="bim-level-row" style="display:none">
-              <div class="grp-label">This floor → Revit level</div>
-              <div class="grid tight">
-                <input id="bim-level" type="text" placeholder="Level name (e.g. Level 1)" value="Level 1" autocomplete="off">
-                <button id="bim-level-btn">Set level</button>
-              </div>
-              <div id="bim-level-result" class="dim"></div>
-            </div>
-          </details>
 
           <!-- FLOORS & SAVING — management; live switching is the map's floor stack -->
           <details class="panel">
@@ -280,7 +211,7 @@
             <div class="legend">
               <span><b>Localize-ready</b> robot can drive here</span>
               <span><b>Extendable</b> mapping can add to it</span>
-              <span><b>Model aligned</b> BIM overlay works</span>
+
             </div>
             <details>
               <summary class="mini-summary">+ Save the current map as a new floor</summary>

@@ -232,35 +232,6 @@ aside  { order: 3; }
 .mo-floors button.on { color: #000; background: var(--accent); border-color: var(--accent); }
 .mo-floors button:hover:not(.on) { border-color: var(--dim); }
 
-/* layer toggles — app.js toggles .selected on these (bim-scans/rooms IDs) */
-.mo-layers { display: flex; gap: 4px; padding: 4px; }
-.mo-layers button {
-  font-family: var(--mono); font-size: 0.6rem; padding: 4px 7px; cursor: pointer;
-  color: var(--dim); background: transparent;
-  border: 1px solid var(--border); border-radius: 2px;
-  display: flex; align-items: center; gap: 4px;
-}
-.mo-layers button::before {
-  content: ''; width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--dim);
-}
-.mo-layers button.selected { color: var(--accent); border-color: rgba(242,178,0,.5); }
-.mo-layers button.selected::before { background: var(--accent); border-color: var(--accent); }
-
-/* alignment banner — spans the top while aligning */
-#mo-banner {
-  top: var(--s2); left: var(--s2); right: var(--s2);
-  padding: 7px 10px; display: none;
-  border-color: var(--accent);
-  font-size: 0.7rem; color: var(--text);
-  align-items: center; gap: var(--s2);
-}
-#mo-banner .step-num {
-  flex: 0 0 auto; width: 16px; height: 16px; border-radius: 50%;
-  font-size: 0.6rem; font-weight: 700; line-height: 16px; text-align: center;
-  color: #000; background: var(--accent);
-}
-#mo-banner.show { display: flex; }
-
 #map-canvas {
   width: 100%;
   height: auto;
@@ -783,10 +754,6 @@ select.txt:disabled { opacity: 0.5; }
   font-size: 0.62rem; font-weight: 700; line-height: 16px; text-align: center;
   color: var(--dim); border: 1px solid var(--border); background: var(--surface);
 }
-
-/* ── BIM setup (inside site panel) ─────────────────────────────────── */
-#bim-setup { font-size: 0.78rem; }
-#bim-align-wizard { margin-top: var(--s2); }
 
 /* ── network scan results ───────────────────────────────────────────── */
 #net-status, #net-connections, #net-scan-results { font-size: 0.75rem; }

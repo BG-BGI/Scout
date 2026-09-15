@@ -22,17 +22,12 @@ function here deliberately avoids `--show-secrets` so credentials never
 transit this API even though it has no auth of its own.
 """
 
-import base64
 import json
 import os
 import re
 import subprocess
 import threading
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
-import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from docker.errors import NotFound
@@ -321,143 +316,6 @@ def companion_health():
     return dict(_companion)
 
 
-# --- ACC (Autodesk) project/model listing -----------------------------------------
-# Lets the webui pick a Revit model by name instead of pasting a URN. Proxies the
-# APS Data Management API with the same 2-legged app creds the openspace_acc
-# service uses (ACC_CLIENT_ID/SECRET). The app must be added as a Custom
-# Integration in ACC Account Admin, or hubs/projects come back empty. Returns the
-# model's tip-version URN (raw urn:adsk…), which is exactly what the BIM link and
-# the openspace_acc service expect.
-ACC_CLIENT_ID = os.environ.get("ACC_CLIENT_ID", "")
-ACC_CLIENT_SECRET = os.environ.get("ACC_CLIENT_SECRET", "")
-# Secure Service Account (SSA): the ACC Data Management APIs (hubs/projects/
-# models) reject plain 2-legged tokens on unified accounts, so we mint a
-# 3-legged token in the SSA "robot" identity (ADR-0031). The robot must be
-# added as an account/project member to see anything. When ACC_SSA_ID is unset
-# we fall back to 2-legged (still fine for Model Derivative on a known URN).
-ACC_SSA_ID = os.environ.get("ACC_SSA_ID", "")
-ACC_SSA_KEY_FILE = os.environ.get("ACC_SSA_KEY_FILE", "/secrets/acc_ssa_key.json")
-_APS = "https://developer.api.autodesk.com"
-_APS_TOKEN_URL = _APS + "/authentication/v2/token"
-_HUB_FILTER = "?filter[extension.type]=hubs:autodesk.bim360:Account"
-_aps_tok = {"value": "", "exp": 0.0}
-_aps_lock = threading.Lock()
-
-
-def _aps_get(url, token):
-    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
-
-
-def _ssa_token():
-    """3-legged token in the SSA robot's identity via the RFC 7523 JWT-bearer
-    grant (app authenticates with Basic auth; the JWT, signed by the SSA's
-    private key, carries the robot identity)."""
-    import jwt  # PyJWT — only needed on the SSA path
-    with open(ACC_SSA_KEY_FILE) as f:
-        key = json.load(f)
-    now = int(time.time())
-    assertion = jwt.encode(
-        {"iss": ACC_CLIENT_ID, "sub": ACC_SSA_ID, "aud": _APS_TOKEN_URL,
-         "exp": now + 300, "iat": now, "jti": str(uuid.uuid4()),
-         "scope": ["data:read"]},
-        key["privateKey"], algorithm="RS256", headers={"kid": key["kid"]},
-    )
-    body = urllib.parse.urlencode({
-        "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-        "scope": "data:read", "assertion": assertion,
-    }).encode()
-    basic = base64.b64encode(f"{ACC_CLIENT_ID}:{ACC_CLIENT_SECRET}".encode()).decode()
-    req = urllib.request.Request(_APS_TOKEN_URL, data=body,
-                                 headers={"Authorization": "Basic " + basic})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
-
-
-def _2lo_token():
-    body = urllib.parse.urlencode({
-        "grant_type": "client_credentials", "scope": "data:read",
-        "client_id": ACC_CLIENT_ID, "client_secret": ACC_CLIENT_SECRET,
-    }).encode()
-    req = urllib.request.Request(_APS_TOKEN_URL, data=body)
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.load(r)
-
-
-def _aps_token():
-    with _aps_lock:
-        if _aps_tok["value"] and time.time() < _aps_tok["exp"]:
-            return _aps_tok["value"]
-        use_ssa = ACC_SSA_ID and os.path.exists(ACC_SSA_KEY_FILE)
-        d = _ssa_token() if use_ssa else _2lo_token()
-        _aps_tok["value"] = d["access_token"]
-        _aps_tok["exp"] = time.time() + d.get("expires_in", 3600) - 60
-        return _aps_tok["value"]
-
-
-def acc_projects():
-    if not (ACC_CLIENT_ID and ACC_CLIENT_SECRET):
-        return 200, {"configured": False, "projects": []}
-    try:
-        tok = _aps_token()
-        out = []
-        for hub in _aps_get(_APS + "/project/v1/hubs" + _HUB_FILTER, tok).get("data", []):
-            hid = hub["id"]
-            for p in _aps_get(f"{_APS}/project/v1/hubs/{hid}/projects", tok).get("data", []):
-                out.append({"id": p["id"], "hub": hid,
-                            "name": p.get("attributes", {}).get("name", p["id"])})
-        out.sort(key=lambda x: x["name"].lower())
-        return 200, {"configured": True, "projects": out}
-    except urllib.error.HTTPError as e:
-        return e.code, {"configured": True,
-                        "error": e.read().decode(errors="replace")[:300]}
-    except Exception as e:  # noqa: BLE001 - surface any upstream failure as 502
-        return 502, {"configured": True, "error": str(e)}
-
-
-def _acc_walk(tok, pid, folder_id, out):
-    d = _aps_get(f"{_APS}/data/v1/projects/{pid}/folders/{folder_id}/contents", tok)
-    for item in d.get("data", []):
-        if item.get("type") == "folders":
-            _acc_walk(tok, pid, item["id"], out)
-        elif item.get("type") == "items":
-            name = item.get("attributes", {}).get("displayName", "")
-            tip = (item.get("relationships", {}).get("tip", {}).get("data") or {}).get("id")
-            if name.lower().endswith(".rvt") and tip:
-                out.append({"name": name, "urn": tip})
-
-
-def acc_models(project_id, hub_id=None):
-    if not (ACC_CLIENT_ID and ACC_CLIENT_SECRET):
-        return 200, {"configured": False, "models": []}
-    if not project_id:
-        return 400, {"error": "project query param required"}
-    try:
-        tok = _aps_token()
-        if not hub_id:  # discover the hub the project lives in
-            for hub in _aps_get(_APS + "/project/v1/hubs" + _HUB_FILTER, tok).get("data", []):
-                projs = _aps_get(f"{_APS}/project/v1/hubs/{hub['id']}/projects",
-                                 tok).get("data", [])
-                if any(p["id"] == project_id for p in projs):
-                    hub_id = hub["id"]
-                    break
-        if not hub_id:
-            return 404, {"error": "project not found in any hub"}
-        out = []
-        tops = _aps_get(
-            f"{_APS}/project/v1/hubs/{hub_id}/projects/{project_id}/topFolders",
-            tok).get("data", [])
-        for tf in tops:
-            _acc_walk(tok, project_id, tf["id"], out)
-        out.sort(key=lambda x: x["name"].lower())
-        return 200, {"configured": True, "models": out}
-    except urllib.error.HTTPError as e:
-        return e.code, {"error": e.read().decode(errors="replace")[:300]}
-    except Exception as e:  # noqa: BLE001
-        return 502, {"error": str(e)}
-
-
 def wifi_quality():
     with _quality_lock:
         samples = list(_quality_ring)
@@ -559,14 +417,6 @@ def _active_site():
 # normalized on read and write-upgraded on the next write.
 _MAP_DEFAULTS = {"label": "", "floor": None, "map_start_pose": [0.0, 0.0, 0.0]}
 
-# BIM link is split across two scopes (ADR-0031 amendment). The building's Revit
-# model + OpenSpace project belong to the SITE (linkable before any map exists);
-# each floor's level/sheet + its SLAM alignment belong to the MAP. get_map_bim
-# returns the two merged so consumers read one flat block; patch_map_bim
-# split-routes writes so older single-call clients keep working.
-SITE_BIM_KEYS = ("acc_model_urn", "acc_model_name", "openspace_site_id")
-MAP_BIM_KEYS = ("acc_level_name", "openspace_sheet_id", "alignment")
-
 
 def _norm_map_entry(name, entry):
     m = dict(_MAP_DEFAULTS)
@@ -574,8 +424,6 @@ def _norm_map_entry(name, entry):
         for key in m:
             if key in entry and entry[key] is not None:
                 m[key] = entry[key]
-        if isinstance(entry.get("bim"), dict):
-            m["bim"] = entry["bim"]
     if not m["label"]:
         m["label"] = name
     return m
@@ -586,7 +434,7 @@ def _normalize_site(data):
     scout.core.sites.load_site, minus the raise-on-invalid strictness —
     an HTTP status API shouldn't crash-loop on a bad file)."""
     site = {"version": 2, "display_name": "", "active_map": None,
-            "slam_mode": "auto", "maps": {}, "bim": {}}
+            "slam_mode": "auto", "maps": {}}
     if not isinstance(data, dict):
         return site
     for key in ("display_name", "slam_mode"):
@@ -594,8 +442,6 @@ def _normalize_site(data):
             site[key] = data[key]
     if "created" in data:
         site["created"] = data["created"]
-    if isinstance(data.get("bim"), dict):  # site-level model/project link
-        site["bim"] = {k: data["bim"][k] for k in SITE_BIM_KEYS if k in data["bim"]}
     if isinstance(data.get("maps"), dict):
         site["maps"] = {n: _norm_map_entry(n, e)
                         for n, e in data["maps"].items()}
@@ -765,97 +611,6 @@ def update_active_site(patch):
     return 200, {"ok": True, "site": _site_meta(active)}
 
 
-def get_map_bim(map_name):
-    if SITE_SCAFFOLD != "pi":
-        return 404, {"error": "sites not managed here"}
-    active = _active_site()
-    if active is None:
-        return 409, {"error": "no active site"}
-    site_dir = os.path.join(SITES_DIR, active)
-    try:
-        with open(os.path.join(site_dir, "site.json")) as f:
-            site = _normalize_site(json.load(f))
-    except (OSError, json.JSONDecodeError):
-        return 503, {"error": "site.json unreadable"}
-    if map_name not in site["maps"]:
-        return 404, {"error": f"map '{map_name}' not found"}
-    # Effective config: site-level model/project overlaid with the map's own
-    # level/sheet/alignment. Consumers (skills tools) read one flat block.
-    merged = dict(site.get("bim") or {})
-    merged.update(site["maps"][map_name].get("bim") or {})
-    return 200, merged
-
-
-def get_site_bim():
-    if SITE_SCAFFOLD != "pi":
-        return 404, {"error": "sites not managed here"}
-    active = _active_site()
-    if active is None:
-        return 409, {"error": "no active site"}
-    site_dir = os.path.join(SITES_DIR, active)
-    try:
-        with open(os.path.join(site_dir, "site.json")) as f:
-            site = _normalize_site(json.load(f))
-    except (OSError, json.JSONDecodeError):
-        return 503, {"error": "site.json unreadable"}
-    return 200, site.get("bim") or {}
-
-
-def patch_site_bim(patch):
-    if SITE_SCAFFOLD != "pi":
-        return 404, {"error": "sites not managed here"}
-    if not isinstance(patch, dict):
-        return 400, {"error": "body must be a JSON object"}
-    active = _active_site()
-    if active is None:
-        return 409, {"error": "no active site"}
-    site_dir = os.path.join(SITES_DIR, active)
-    try:
-        with open(os.path.join(site_dir, "site.json")) as f:
-            site = _normalize_site(json.load(f))
-    except (OSError, json.JSONDecodeError):
-        return 503, {"error": "site.json unreadable"}
-    current = site.get("bim") or {}
-    current.update({k: patch[k] for k in SITE_BIM_KEYS if k in patch})
-    site["bim"] = current
-    _write_site_json(site_dir, site)
-    return 200, {"ok": True, "bim": current}
-
-
-def patch_map_bim(map_name, patch):
-    if SITE_SCAFFOLD != "pi":
-        return 404, {"error": "sites not managed here"}
-    if not isinstance(patch, dict):
-        return 400, {"error": "body must be a JSON object"}
-    active = _active_site()
-    if active is None:
-        return 409, {"error": "no active site"}
-    site_dir = os.path.join(SITES_DIR, active)
-    try:
-        with open(os.path.join(site_dir, "site.json")) as f:
-            raw = json.load(f)
-        site = _normalize_site(raw)
-    except (OSError, json.JSONDecodeError):
-        return 503, {"error": "site.json unreadable"}
-    if map_name not in site["maps"]:
-        return 404, {"error": f"map '{map_name}' not found"}
-    # Split-route: model/project keys go to the site, level/sheet/alignment to
-    # the map. Lets an older client PATCH everything to one URL and still land
-    # the model at the site scope.
-    site_patch = {k: patch[k] for k in SITE_BIM_KEYS if k in patch}
-    map_patch = {k: patch[k] for k in MAP_BIM_KEYS if k in patch}
-    if site_patch:
-        sbim = site.get("bim") or {}
-        sbim.update(site_patch)
-        site["bim"] = sbim
-    current = site["maps"][map_name].get("bim") or {}
-    current.update(map_patch)
-    site["maps"][map_name]["bim"] = current
-    site["default_map"] = site["active_map"]  # legacy mirror
-    _write_site_json(site_dir, site)
-    return 200, {"ok": True, "bim": {**(site.get("bim") or {}), **current}}
-
-
 def _site_restarts_bg():
     """Restart the launch-bound services in order (slam before nav2 so nav2
     sees the new site's map frame; behaviors last so patrol's
@@ -921,7 +676,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -940,34 +695,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, wifi_quality())
         elif self.path == "/api/companion":
             self._send_json(200, companion_health())
-        elif self.path.rstrip("/") == "/api/acc/projects":
-            code, payload = acc_projects()
-            self._send_json(code, payload)
-        elif urllib.parse.urlparse(self.path).path == "/api/acc/models":
-            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            code, payload = acc_models(q.get("project", [""])[0],
-                                       q.get("hub", [None])[0])
-            self._send_json(code, payload)
         elif self.path == "/api/sites":
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
             else:
                 self._send_json(200, list_sites())
-        elif self.path.rstrip("/") == "/api/sites/active/bim":
-            if not SITES_DIR:
-                self._send_json(404, {"error": "sites not configured here"})
-            else:
-                code, payload = get_site_bim()
-                self._send_json(code, payload)
-        elif self.path.startswith("/api/sites/active/maps/") and self.path.endswith("/bim"):
-            parts = self.path.strip("/").split("/")
-            if len(parts) == 6 and not SITES_DIR:
-                self._send_json(404, {"error": "sites not configured here"})
-            elif len(parts) == 6:
-                code, payload = get_map_bim(parts[4])
-                self._send_json(code, payload)
-            else:
-                self._send_json(404, {"error": "not found"})
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -1060,27 +792,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self._send_json(404, {"error": "not found"})
-
-    def do_PATCH(self):
-        parts = self.path.strip("/").split("/")
-        if (len(parts) == 6
-                and parts[:4] == ["api", "sites", "active", "maps"]
-                and parts[5] == "bim"):
-            if not SITES_DIR:
-                self._send_json(404, {"error": "sites not configured here"})
-                return
-            body = self._read_json_body()
-            code, payload = patch_map_bim(parts[4], body)
-            self._send_json(code, payload)
-        elif parts == ["api", "sites", "active", "bim"]:
-            if not SITES_DIR:
-                self._send_json(404, {"error": "sites not configured here"})
-                return
-            body = self._read_json_body()
-            code, payload = patch_site_bim(body)
-            self._send_json(code, payload)
-        else:
-            self._send_json(404, {"error": "not found"})
 
 
 if __name__ == "__main__":
