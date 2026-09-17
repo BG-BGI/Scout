@@ -643,21 +643,27 @@ function drawMap() {
     for (const t of uhfTags) {
       const c = worldToCanvas(t.est_pose.x, t.est_pose.y);
       if (t.spread_m > 0.05) {
-        mapCtx.strokeStyle = 'rgba(242, 178, 0, 0.3)';
+        mapCtx.strokeStyle = 'rgba(225, 0, 225, 0.35)';
         mapCtx.lineWidth = 1;
         mapCtx.beginPath();
         mapCtx.arc(c.x, c.y, t.spread_m * pxPerM, 0, 2 * Math.PI);
         mapCtx.stroke();
       }
-      mapCtx.fillStyle = '#F2B200';
-      mapCtx.strokeStyle = '#3a2c00';
-      mapCtx.lineWidth = t.epc === uhfPopTag ? 3 : 1;
+      // Magenta on a white halo: the fill pops on black walls, the halo
+      // separates it from white free space — nothing on an occupancy grid
+      // is magenta.
       mapCtx.beginPath();
       mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
+      mapCtx.strokeStyle = '#ffffff';
+      mapCtx.lineWidth = t.epc === uhfPopTag ? 5 : 3;
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#E100E1';
+      mapCtx.strokeStyle = '#3a0030';
+      mapCtx.lineWidth = 1;
       mapCtx.fill();
       mapCtx.stroke();
-      mapCtx.fillStyle = '#F2B200';
-      mapCtx.strokeStyle = 'rgba(8, 10, 12, 0.85)';
+      mapCtx.fillStyle = '#E100E1';
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
       mapCtx.lineWidth = 3;
       const label = t.epc.slice(-6);
       mapCtx.strokeText(label, c.x, c.y - 9);
@@ -674,28 +680,38 @@ function drawMap() {
     mapCtx.textAlign = 'center';
     for (const t of aprilTags) {
       const c = worldToCanvas(t.map_x, t.map_y);
+      // Vivid blue on a white halo (an emoji can't be recolored, so home is
+      // a drawn house): fill carries it on black walls, halo on white floor.
+      mapCtx.beginPath();
       if (t.role === 'home') {
-        mapCtx.font = '16px sans-serif';
-        mapCtx.fillText('🏠', c.x, c.y + 6);
+        mapCtx.moveTo(c.x, c.y - 9);       // roof apex
+        mapCtx.lineTo(c.x + 8, c.y - 1);   // right eave
+        mapCtx.lineTo(c.x + 5, c.y - 1);
+        mapCtx.lineTo(c.x + 5, c.y + 8);   // right wall
+        mapCtx.lineTo(c.x - 5, c.y + 8);   // floor
+        mapCtx.lineTo(c.x - 5, c.y - 1);   // left wall
+        mapCtx.lineTo(c.x - 8, c.y - 1);   // left eave
       } else {
-        mapCtx.fillStyle = '#40ffa0';
-        mapCtx.strokeStyle = '#0a3a22';
-        mapCtx.lineWidth = 1;
-        mapCtx.beginPath();
-        mapCtx.moveTo(c.x, c.y - 6);
-        mapCtx.lineTo(c.x + 6, c.y);
-        mapCtx.lineTo(c.x, c.y + 6);
-        mapCtx.lineTo(c.x - 6, c.y);
-        mapCtx.closePath();
-        mapCtx.fill();
-        mapCtx.stroke();
+        mapCtx.moveTo(c.x, c.y - 7);
+        mapCtx.lineTo(c.x + 7, c.y);
+        mapCtx.lineTo(c.x, c.y + 7);
+        mapCtx.lineTo(c.x - 7, c.y);
       }
-      mapCtx.font = '10px monospace';
-      mapCtx.fillStyle = '#40ffa0';
-      mapCtx.strokeStyle = 'rgba(8, 10, 12, 0.85)';
+      mapCtx.closePath();
+      mapCtx.strokeStyle = '#ffffff';
       mapCtx.lineWidth = 3;
-      mapCtx.strokeText(t.name, c.x, c.y - 10);
-      mapCtx.fillText(t.name, c.x, c.y - 10);
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#2E7BFF';
+      mapCtx.strokeStyle = '#0a1f4d';
+      mapCtx.lineWidth = 1;
+      mapCtx.fill();
+      mapCtx.stroke();
+      mapCtx.font = '10px monospace';
+      mapCtx.fillStyle = '#2E7BFF';
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+      mapCtx.lineWidth = 3;
+      mapCtx.strokeText(t.name, c.x, c.y - (t.role === 'home' ? 13 : 11));
+      mapCtx.fillText(t.name, c.x, c.y - (t.role === 'home' ? 13 : 11));
     }
     mapCtx.restore();
   }
