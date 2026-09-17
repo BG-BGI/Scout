@@ -8,7 +8,7 @@ loss, dB per port) — TMR_SR_cmdAntennaDetect / cmdGetAntennaReturnLoss in
 mercuryapi serial_reader_l3.c. Interpreting the number (M7E User Guide §
 performance spec + mercuryapi antenna detection):
 
-    >= 17 dB  spec-grade match (VSWR <= 1.33) — full sensitivity
+    >= 17 dB  spec-grade match (VSWR <= 1.33) — full sensitivity (profile-exempt: RF dB, not volts)
     >= 10 dB  detected as "antenna present"; usable, reduced sensitivity
     <  10 dB  the module's high-return-loss protection (FAULT 0x0505)
               territory — open port, bad solder joint, or bad cable
@@ -81,7 +81,7 @@ def main():
     pairs = payload[1:] if payload and payload[0] == 0x06 else payload
     for i in range(0, len(pairs) - 1, 2):
         db = pairs[i + 1]
-        verdict = ("spec-grade" if db >= 17 else
+        verdict = ("spec-grade" if db >= 17 else  # profile-exempt: RF dB, not volts
                    "usable" if db >= 10 else
                    "BAD — open/mismatched path" if db >= 3 else
                    "OPEN CIRCUIT")
