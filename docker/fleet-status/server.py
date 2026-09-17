@@ -25,6 +25,7 @@ transit this API even though it has no auth of its own.
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
@@ -509,6 +510,27 @@ def list_sites():
     }
 
 
+def apriltags():
+    """Registered AprilTags from the active site's tags.db (read-only) — the
+    webui draws surveyed ones as map markers. scout-skills owns the writes;
+    mode=ro so a mid-write read can't corrupt anything. Rows may predate
+    ADR-0029 (no map_name column) — SELECT * tolerates both schemas."""
+    active = _active_site()
+    if active is None:
+        return {"tags": []}
+    path = os.path.join(SITES_DIR, active, "maps", "tags.db")
+    if not os.path.exists(path):
+        return {"tags": []}
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        rows = [dict(r) for r in db.execute("SELECT * FROM tags")]
+        db.close()
+    except sqlite3.Error as e:
+        return {"tags": [], "error": str(e)}
+    return {"tags": rows}
+
+
 def create_site(name, display_name=""):
     if not _valid_site_name(name):
         return 400, {"error": "invalid site name (a-z0-9_-, max 32, "
@@ -700,6 +722,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "sites not configured here"})
             else:
                 self._send_json(200, list_sites())
+        elif self.path == "/api/apriltags":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+            else:
+                self._send_json(200, apriltags())
         else:
             self._send_json(404, {"error": "not found"})
 

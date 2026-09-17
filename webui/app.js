@@ -482,7 +482,8 @@ let grid = null;      // latest OccupancyGrid info
 let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
 let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
-let uhfShowTags = true;
+let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
+let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
 let uhfPopTag = null; // EPC of the marker whose popup is open
 
 const mapTopic = new ROSLIB.Topic({
@@ -661,6 +662,40 @@ function drawMap() {
       const label = t.epc.slice(-6);
       mapCtx.strokeText(label, c.x, c.y - 9);
       mapCtx.fillText(label, c.x, c.y - 9);
+    }
+    mapCtx.restore();
+  }
+
+  // AprilTag markers: surveyed registry tags (tags.db via fleet_status).
+  // role=home draws a house — the boot-relocalization anchor. Shares the
+  // corner Tags toggle with the UHF markers.
+  if (uhfShowTags && aprilTags.length) {
+    mapCtx.save();
+    mapCtx.textAlign = 'center';
+    for (const t of aprilTags) {
+      const c = worldToCanvas(t.map_x, t.map_y);
+      if (t.role === 'home') {
+        mapCtx.font = '16px sans-serif';
+        mapCtx.fillText('🏠', c.x, c.y + 6);
+      } else {
+        mapCtx.fillStyle = '#40ffa0';
+        mapCtx.strokeStyle = '#0a3a22';
+        mapCtx.lineWidth = 1;
+        mapCtx.beginPath();
+        mapCtx.moveTo(c.x, c.y - 6);
+        mapCtx.lineTo(c.x + 6, c.y);
+        mapCtx.lineTo(c.x, c.y + 6);
+        mapCtx.lineTo(c.x - 6, c.y);
+        mapCtx.closePath();
+        mapCtx.fill();
+        mapCtx.stroke();
+      }
+      mapCtx.font = '10px monospace';
+      mapCtx.fillStyle = '#40ffa0';
+      mapCtx.strokeStyle = 'rgba(8, 10, 12, 0.85)';
+      mapCtx.lineWidth = 3;
+      mapCtx.strokeText(t.name, c.x, c.y - 10);
+      mapCtx.fillText(t.name, c.x, c.y - 10);
     }
     mapCtx.restore();
   }
@@ -1264,7 +1299,7 @@ new ROSLIB.Topic({
   try { reg = JSON.parse(msg.data); } catch (e) { return; }
   // Map markers: localized tags only; the corner Tags toggle shows up with them.
   uhfTags = (reg.tags || []).filter((t) => t.est_pose);
-  document.getElementById('mo-layers').hidden = !uhfTags.length;
+  document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length);
   if (uhfPopTag && !uhfTags.some((t) => t.epc === uhfPopTag)) closeTagPop();
   drawMap();
   uhfList.innerHTML = '';
@@ -1979,6 +2014,26 @@ async function refreshSites() {
     sitePanel.style.display = '';
     renderSites(await res.json());
   } catch (e) { siteState.textContent = 'offline'; }
+  refreshAprilTags();
+}
+
+// Surveyed AprilTags -> map markers. Rides the sites poll: after renderSites
+// so activeSiteMeta is fresh (markers filter to the active map — a tag
+// surveyed on another floor doesn't draw here).
+async function refreshAprilTags() {
+  try {
+    const res = await fetch(FLEET_API + '/apriltags');
+    if (!res.ok) return;
+    const body = await res.json();
+    const active = activeSiteMeta && activeSiteMeta.active_map;
+    const next = (body.tags || []).filter((t) => t.map_x !== null
+      && (!t.map_name || !active || t.map_name === active));
+    if (JSON.stringify(next) !== JSON.stringify(aprilTags)) {
+      aprilTags = next;
+      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length);
+      drawMap();
+    }
+  } catch (e) { /* fleet_status offline — markers just don't refresh */ }
 }
 refreshSites();
 setInterval(refreshSites, 30000);
