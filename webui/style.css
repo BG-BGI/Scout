@@ -136,9 +136,22 @@ aside  { order: 3; }
     height: 100%;
     gap: var(--s3);
   }
+  /* Map | splitter | camera. --stage-split is the map pane's share of the
+     row (app.js drags it, localStorage persists it); map-first default. */
   #stage { grid-area: stage; flex-direction: row; min-height: 0; }
-  #stage #nav { flex: 1 1 0; }
+  #stage #nav { flex: 0 1 calc(var(--stage-split, 62%) - 5px); }
   #stage #camera-panel { flex: 1 1 0; align-self: flex-start; }
+  #stage-split {
+    flex: 0 0 10px;
+    align-self: stretch;
+    cursor: col-resize;
+    border-radius: 2px;
+    background: linear-gradient(var(--border), var(--border)) center / 2px 48px no-repeat;
+    touch-action: none;
+  }
+  #stage-split:hover, #stage-split.dragging {
+    background: linear-gradient(var(--accent), var(--accent)) center / 2px 64px no-repeat;
+  }
   #drive { grid-area: drive; }
   aside  { grid-area: aside; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 }
@@ -146,6 +159,8 @@ aside  { order: 3; }
 /* ── stage: map + camera ───────────────────────────────────────────── */
 #stage { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 #stage > * { min-width: 0; }
+#stage-split { display: none; }   /* stacked mobile layout: no splitter */
+@media (min-width: 940px) { #stage-split { display: block; } }
 
 /* ── map panel ─────────────────────────────────────────────────────── */
 #nav {

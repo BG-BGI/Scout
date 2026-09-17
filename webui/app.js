@@ -925,6 +925,45 @@ function camStop() {
   camToggle.textContent = 'Show camera';
 }
 camToggle.addEventListener('click', () => (camTopic ? camStop() : camStart()));
+
+// --- map/camera split slider -------------------------------------------------------
+// Drag #stage-split to trade map vs camera width (desktop row layout only).
+// The fraction lives in --stage-split on #stage; localStorage persists it
+// per-browser (a convenience, not state — wrapped per the storage rules).
+const stageEl = document.getElementById('stage');
+const stageSplit = document.getElementById('stage-split');
+const SPLIT_KEY = 'scout.stageSplit';
+const SPLIT_DEFAULT = 62;         // % of the row given to the map
+
+function applySplit(pct) {
+  pct = Math.min(80, Math.max(25, pct));
+  stageEl.style.setProperty('--stage-split', pct + '%');
+  return pct;
+}
+try {
+  const saved = parseFloat(localStorage.getItem(SPLIT_KEY));
+  if (!isNaN(saved)) applySplit(saved);
+} catch (e) { /* private mode etc. — default split stands */ }
+
+stageSplit.addEventListener('pointerdown', (ev) => {
+  ev.preventDefault();
+  stageSplit.setPointerCapture(ev.pointerId);
+  stageSplit.classList.add('dragging');
+});
+stageSplit.addEventListener('pointermove', (ev) => {
+  if (!stageSplit.classList.contains('dragging')) return;
+  const r = stageEl.getBoundingClientRect();
+  const pct = applySplit(((ev.clientX - r.left) / r.width) * 100);
+  try { localStorage.setItem(SPLIT_KEY, pct); } catch (e) { /* ignore */ }
+});
+stageSplit.addEventListener('pointerup', (ev) => {
+  stageSplit.releasePointerCapture(ev.pointerId);
+  stageSplit.classList.remove('dragging');
+});
+stageSplit.addEventListener('dblclick', () => {
+  applySplit(SPLIT_DEFAULT);
+  try { localStorage.removeItem(SPLIT_KEY); } catch (e) { /* ignore */ }
+});
 // Coexists with the zeroBurst visibility hook: hidden tab = stop streaming.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) camStop();
