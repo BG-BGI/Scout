@@ -693,13 +693,73 @@ function drawMap() {
       mapCtx.fill();
     });
   }
+
+  if (posePin) {
+    // Pose-pin position placed, awaiting the heading tap.
+    const c = worldToCanvas(posePin.x, posePin.y);
+    mapCtx.strokeStyle = '#ff9f40';
+    mapCtx.fillStyle = '#ff9f40';
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath();
+    mapCtx.arc(c.x, c.y, 6, 0, 2 * Math.PI);
+    mapCtx.stroke();
+    mapCtx.beginPath();
+    mapCtx.arc(c.x, c.y, 2, 0, 2 * Math.PI);
+    mapCtx.fill();
+  }
 }
 
 const goalPub = new ROSLIB.Topic({
   ros, name: '/goal_pose', messageType: 'geometry_msgs/msg/PoseStamped',
 });
+
+// --- manual pose pin (amcl /initialpose from the map) -----------------------
+// Two taps, like the coverage polygon (touch drags scroll the page): first
+// places the position, second points the heading (pin -> tap direction).
+// Deliberately does NOT re-arm tag_relocalizer: a tag surveyed while
+// mislocalized would win the bad pose right back — re-survey the tag
+// (detect_tags) after pinning, then reseed.
+const setPoseBtn = document.getElementById('set-pose');
+let poseMode = 0;      // 0 off, 1 awaiting position tap, 2 awaiting heading tap
+let posePin = null;    // {x, y} map frame, set by the first tap
+setPoseBtn.addEventListener('click', () => {
+  poseMode = poseMode ? 0 : 1;
+  posePin = null;
+  setPoseBtn.textContent = poseMode ? 'Tap position…' : 'Set pose';
+  drawMap();
+});
 mapCanvas.addEventListener('click', (ev) => {
   if (!grid) return;
+  if (poseMode === 1) {
+    posePin = canvasToWorld(ev);
+    poseMode = 2;
+    setPoseBtn.textContent = 'Tap heading…';
+    drawMap();
+    return;
+  }
+  if (poseMode === 2) {
+    const h = canvasToWorld(ev);
+    const yaw = Math.atan2(h.y - posePin.y, h.x - posePin.x);
+    const cov = new Array(36).fill(0);
+    cov[0] = 0.25; cov[7] = 0.25; cov[35] = 0.0685; // ~15 deg, same as activateMap
+    initialPosePub.publish(new ROSLIB.Message({
+      header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+      pose: {
+        pose: {
+          position: { x: posePin.x, y: posePin.y, z: 0 },
+          orientation: { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) },
+        },
+        covariance: cov,
+      },
+    }));
+    navState.textContent = 'pose set (' + posePin.x.toFixed(2) + ', '
+      + posePin.y.toFixed(2) + ') yaw ' + (yaw * 180 / Math.PI).toFixed(0) + '°';
+    poseMode = 0;
+    posePin = null;
+    setPoseBtn.textContent = 'Set pose';
+    drawMap();
+    return;
+  }
   if (areaMode) {
     areaPts.push(canvasToWorld(ev));
     areaBtn.textContent = 'Finish (' + areaPts.length + ')';
@@ -1651,6 +1711,10 @@ const initialPosePub = new ROSLIB.Topic({
   ros, name: '/initialpose',
   messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
 });
+// Advertise at load (same race as /coverage_box): a publish on a
+// just-advertised topic can be dropped before DDS discovery matches, which
+// would eat the first Set-pose pin after a page load.
+ros.on('connection', () => initialPosePub.advertise());
 const reseedSrv = new ROSLIB.Service({
   ros, name: '/tag_relocalizer/reseed',
   serviceType: 'std_srvs/srv/Trigger',
