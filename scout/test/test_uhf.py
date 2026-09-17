@@ -135,3 +135,47 @@ def test_parse_tag_record_epc_length_variation():
 def test_rssi_two_complement_low_values():
     rec = uhf.parse_tag_record(_tag_frame(rssi=0xEA))
     assert rec['rssi_dbm'] == -22
+
+
+# --- bench captures (real M7E Hecto, fw 2024-09-13, 2026-09-17) -----------------
+# Raw frames from scripts/uhf_bench.py --capture on the actual board — the
+# hardware ground truth the synthetic fixtures above approximate. Recapture
+# after any module firmware update.
+
+BENCH_KEEPALIVE = bytes.fromhex('FF0022040084E0')
+BENCH_HIGH_RETURN_LOSS = bytes.fromhex('FF0022050585E5')
+BENCH_TAG_12B_EPC = bytes.fromhex(
+    'FF2822000010001B01FF0101DD110E222A000003D90015050000800080300034'
+    '3030303634390000000000C665A4AE')
+BENCH_TAG_10B_EPC = bytes.fromhex(
+    'FF2622000010001B01FF0101CD110E1C4E00000012002B05000080007029AE1B'
+    'FF100AA00021FBEE9FA29E7ED2')
+
+
+def test_bench_capture_frames_pass_crc_and_classify():
+    acc = uhf.FrameAccumulator()
+    out = acc.feed(BENCH_KEEPALIVE + BENCH_HIGH_RETURN_LOSS
+                   + BENCH_TAG_12B_EPC + BENCH_TAG_10B_EPC)
+    assert [uhf.classify_frame(f) for f in out] == [
+        'keepalive', 'high_return_loss', 'tag', 'tag']
+
+
+def test_bench_capture_12_byte_epc():
+    rec = uhf.parse_tag_record(BENCH_TAG_12B_EPC)
+    assert rec['epc'] == '343030303634390000000000'  # ASCII "4000649"
+    assert rec['rssi_dbm'] == -35          # 0xDD
+    assert rec['freq_khz'] == 926250       # 0x0E222A
+    assert rec['timestamp_ms'] == 985      # 0x03D9
+    assert rec['phase'] == 21              # 0x0015
+    assert rec['protocol'] == uhf.TAG_PROTOCOL_GEN2
+
+
+def test_bench_capture_10_byte_epc():
+    # A second real tag with a 10-byte EPC (length field 0x0070 = 112 bits =
+    # 14 bytes - PC - CRC), proving epc length comes from the length field,
+    # not an assumed 12 bytes.
+    rec = uhf.parse_tag_record(BENCH_TAG_10B_EPC)
+    assert rec['epc'] == '1BFF100AA00021FBEE9F'
+    assert rec['rssi_dbm'] == -51          # 0xCD
+    assert rec['freq_khz'] == 924750       # 0x0E1C4E
+    assert rec['phase'] == 43              # 0x002B
