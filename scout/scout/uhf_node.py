@@ -50,7 +50,8 @@ class UhfNode(Node):
     def __init__(self):
         super().__init__('uhf_node')
 
-        self.declare_parameter('port', '/dev/ttyUSB1')
+        self.declare_parameter('port',
+                               '/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0')
         self.declare_parameter('baud', 115200)
         self.declare_parameter('poll_hz', 30.0)
         self.declare_parameter('reconnect_period_s', 5.0)

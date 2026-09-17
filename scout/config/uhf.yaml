@@ -1,15 +1,16 @@
 # uhf_node — SparkFun M7E Hecto UHF RFID reader over USB CH340C (ADR-0032).
 #
-# ⚠ PORT MUST BE PINNED BY A HOST UDEV RULE before the reader and the RPLIDAR
-# coexist: BOTH are /dev/ttyUSB* (CH340 vs CP2102) and /dev/serial/by-id/ does
-# not exist inside the container (no udev — same trap as rplidar.yaml and
-# flipper.yaml). Until the udev rule lands, /dev/ttyUSB1 assumes the lidar
-# probed first; the node's version handshake refuses a mispinned lidar rather
-# than configuring it, but do NOT rely on probe order across reboots.
-# Identify from the HOST with `ls -l /dev/serial/by-id/`.
+# by-id path: the CH340 and the lidar's CP2102 share /dev/ttyUSB* and probe
+# order flips between boots (measured 2026-09-17: CH340 took ttyUSB0 from the
+# lidar). The robot service bind-mounts /dev/serial from the host, so the
+# udev farm resolves in-container — see rplidar.yaml and docker-compose.yaml.
+# ⚠ This CH340 exposes no serial number ("usb-1a86_USB_Serial"), so a SECOND
+# CH340 device would collide on this name — identify from the host with
+# `ls -l /dev/serial/by-id/` if one is ever added. The node's version
+# handshake refuses a mispinned non-Mercury device either way.
 uhf_node:
   ros__parameters:
-    port: "/dev/ttyUSB1"
+    port: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
     # Module boots at 115200 (hardware serial convention for the M7E).
     baud: 115200
     # Poll timer rate — the sole serial reader/writer. 30 Hz drains the

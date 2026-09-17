@@ -111,6 +111,19 @@ services:
       - ROS_LOCALHOST_ONLY=1
       - FASTRTPS_DEFAULT_PROFILES_FILE=/ros_ws/src/scout/config/sensor_publish_profiles.xml
       - RMW_FASTRTPS_USE_QOS_FROM_XML=1
+    # `volumes:` here overrides the &base merge too, so the base list is
+    # re-listed (same trap as environment above). The extra /dev/serial bind
+    # brings the HOST udev symlink farm into the container: with both a CP2102
+    # (lidar) and a CH340 (M7E, ADR-0032) on the bus, /dev/ttyUSB* probe order
+    # flips between boots, so rplidar.yaml and uhf.yaml pin by-id paths. The
+    # symlinks resolve as ../../ttyUSBn against the container's own real
+    # nodes (privileged), and udev re-points them on replug — hotplug-safe.
+    volumes:
+      - .:/ros_ws/src/
+      - ros_ws_build:/ros_ws/build
+      - ros_ws_log:/ros_ws/log
+      - ros_overlay_install:/opt/overlay/install
+      - /dev/serial:/dev/serial:ro
     deploy:
       resources:
         limits:

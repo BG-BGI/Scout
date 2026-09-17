@@ -2,8 +2,8 @@
 #
 # ⚠ Raw ttyACM path on purpose: /dev/serial/by-id/ does not exist inside the
 # container (no udev — same trap documented in rplidar.yaml). Today this is
-# unambiguous: the Flipper is the only CDC-ACM device (lidar is ttyUSB0 via
-# CP2102, roboclaw is the GPIO UART). If a second ACM device is ever added,
+# unambiguous: the Flipper is the only CDC-ACM device (lidar + M7E are ttyUSB* via
+# CP2102/CH340, roboclaw is the GPIO UART). If a second ACM device is ever added,
 # identify from the HOST with `ls -l /dev/serial/by-id/` and pin by probe
 # order or a udev rule on the host.
 flipper_node:

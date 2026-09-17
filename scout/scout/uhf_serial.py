@@ -1,9 +1,9 @@
 """M7E Hecto USB-serial driver (plain module, no ROS — flipper_cli pattern).
 
-The SparkFun board's CH340C enumerates as /dev/ttyUSB* (the /dev/serial/by-id
-symlink farm does NOT exist in-container — see rplidar.yaml), so the port is
-pinned by a HOST udev rule, not probe order: the RPLIDAR's CP2102 already owns
-/dev/ttyUSB0 (ADR-0032). The wire is binary ThingMagic Mercury frames
+The SparkFun board's CH340C enumerates as /dev/ttyUSB*, racing the RPLIDAR's
+CP2102 for probe order, so the port is pinned via the /dev/serial/by-id path
+(the robot service bind-mounts /dev/serial from the host — see rplidar.yaml
+and docker-compose.yaml). The wire is binary ThingMagic Mercury frames
 (scout.core.uhf), NOT a text shell — bytes in, bytes out, no decoding.
 
 uhf_node owns exactly one instance and is the sole caller (single-timer I/O,
