@@ -96,7 +96,10 @@ jobs:
             # stale tag markers clear immediately.
             wipe-uhf-reads)
               [ "$TARGET" = companion ] || { echo "::error::uhf.db lives on the companion"; exit 1; }
-              python3 -c 'import sqlite3; db = sqlite3.connect("data/sites/active/uhf.db"); print("wiped", db.execute("DELETE FROM reads").rowcount, "reads"); db.commit(); db.execute("VACUUM")'
+              # Inside the container: the db is root-owned (written by the
+              # recorder), so the runner user gets "readonly database" on the
+              # host path.
+              docker compose exec -T uhf_recorder python3 -c 'import sqlite3; db = sqlite3.connect("/sites/active/uhf.db"); print("wiped", db.execute("DELETE FROM reads").rowcount, "reads"); db.commit(); db.execute("VACUUM")'
               docker compose restart uhf_recorder
               ;;
           esac
