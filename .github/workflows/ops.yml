@@ -21,7 +21,7 @@ on:
       action:
         description: compose action (diag = read-only host diagnostics — port listeners + all containers, for port-conflict hunts)
         type: choice
-        options: [ps, logs, restart, stop, start, up, down, diag, rm]
+        options: [ps, logs, restart, stop, start, up, down, diag, rm, wipe-uhf-reads]
         default: ps
       services:
         description: "space-separated services; blank = all (in the active profiles)"
@@ -87,5 +87,16 @@ jobs:
             rm)
               [ -n "$SERVICES" ] || { echo "::error::rm needs container names in services"; exit 1; }
               docker rm -f $SERVICES
+              ;;
+            # Destructive: clear the UHF reads table (stage-1 centroid fuel).
+            # Exists because a mislocalized session writes wrong robot poses
+            # into every read and the centroid never forgets them — the only
+            # recovery is a wipe + re-survey. Companion-only (it owns uhf.db);
+            # the recorder restart republishes the latched /uhf/registry so
+            # stale tag markers clear immediately.
+            wipe-uhf-reads)
+              [ "$TARGET" = companion ] || { echo "::error::uhf.db lives on the companion"; exit 1; }
+              python3 -c 'import sqlite3; db = sqlite3.connect("data/sites/active/uhf.db"); print("wiped", db.execute("DELETE FROM reads").rowcount, "reads"); db.commit(); db.execute("VACUUM")'
+              docker compose restart uhf_recorder
               ;;
           esac
