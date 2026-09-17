@@ -245,6 +245,36 @@ aside  { order: 3; }
   border: 1px solid var(--border); border-radius: 2px;
 }
 .mo-floors button.on { color: #000; background: var(--accent); border-color: var(--accent); }
+
+/* layer toggles — app.js toggles .selected (UHF tag markers, ADR-0032) */
+.mo-layers { display: flex; gap: 4px; padding: 4px; }
+.mo-layers button {
+  font-family: var(--mono); font-size: 0.6rem; padding: 4px 7px; cursor: pointer;
+  color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: 2px;
+  display: flex; align-items: center; gap: 4px;
+}
+.mo-layers button::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--dim);
+}
+.mo-layers button.selected { color: var(--accent); border-color: rgba(242,178,0,.5); }
+.mo-layers button.selected::before { background: var(--accent); border-color: var(--accent); }
+
+/* tag marker popup — bottom-center of the map frame */
+#tag-pop {
+  left: 50%; bottom: var(--s2); transform: translateX(-50%);
+  padding: var(--s2) var(--s3); max-width: 90%;
+  font-size: 0.7rem;
+}
+#tag-pop-title { font-family: var(--mono); font-weight: 600; word-break: break-all; }
+#tag-pop-meta { font-size: 0.65rem; margin-top: 2px; }
+.tag-pop-actions { display: flex; gap: var(--s2); margin-top: var(--s2); }
+.tag-pop-actions button {
+  font-family: var(--mono); font-size: 0.65rem; padding: 4px 8px; cursor: pointer;
+  color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: 2px;
+}
+#tag-pop-goto { color: var(--accent); border-color: rgba(242,178,0,.5); }
 .mo-floors button:hover:not(.on) { border-color: var(--dim); }
 
 #map-canvas {

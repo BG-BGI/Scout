@@ -57,6 +57,22 @@
           <span class="fl-label">FLR</span>
         </div>
 
+        <!-- Map layers (ADR-0032): UHF tag markers from /uhf/registry.
+             Card hidden until the registry has a localized tag. -->
+        <div class="mo mo-bl mo-card mo-layers" id="mo-layers" hidden>
+          <button id="uhf-tags-toggle" class="selected">Tags</button>
+        </div>
+
+        <!-- Tag marker popup: filled by app.js on marker tap. -->
+        <div class="mo mo-card" id="tag-pop" hidden>
+          <div id="tag-pop-title"></div>
+          <div id="tag-pop-meta" class="dim"></div>
+          <div class="tag-pop-actions">
+            <button id="tag-pop-goto">Drive here</button>
+            <button id="tag-pop-close">Close</button>
+          </div>
+        </div>
+
       </div>
       <div class="map-hint">Tap map to drive there · floor switching lives on the map — the Site tab is just setup</div>
     </section>

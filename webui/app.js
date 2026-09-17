@@ -481,6 +481,9 @@ const gridCanvas = document.createElement('canvas');
 let grid = null;      // latest OccupancyGrid info
 let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
+let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
+let uhfShowTags = true;
+let uhfPopTag = null; // EPC of the marker whose popup is open
 
 const mapTopic = new ROSLIB.Topic({
   ros, name: '/map', messageType: 'nav_msgs/msg/OccupancyGrid',
@@ -628,6 +631,40 @@ function drawMap() {
     mapCtx.restore();
   }
 
+  // UHF tag markers (ADR-0032): centroid dot + EPC tail + spread ring — the
+  // ring radius IS the confidence (RSSI-weighted RMS scatter from the
+  // registry), so a wide ring reads as "somewhere around here".
+  if (uhfShowTags && uhfTags.length) {
+    const pxPerM = (mapCanvas.width / grid.width) / grid.resolution;
+    mapCtx.save();
+    mapCtx.font = '10px monospace';
+    mapCtx.textAlign = 'center';
+    for (const t of uhfTags) {
+      const c = worldToCanvas(t.est_pose.x, t.est_pose.y);
+      if (t.spread_m > 0.05) {
+        mapCtx.strokeStyle = 'rgba(242, 178, 0, 0.3)';
+        mapCtx.lineWidth = 1;
+        mapCtx.beginPath();
+        mapCtx.arc(c.x, c.y, t.spread_m * pxPerM, 0, 2 * Math.PI);
+        mapCtx.stroke();
+      }
+      mapCtx.fillStyle = '#F2B200';
+      mapCtx.strokeStyle = '#3a2c00';
+      mapCtx.lineWidth = t.epc === uhfPopTag ? 3 : 1;
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
+      mapCtx.fill();
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#F2B200';
+      mapCtx.strokeStyle = 'rgba(8, 10, 12, 0.85)';
+      mapCtx.lineWidth = 3;
+      const label = t.epc.slice(-6);
+      mapCtx.strokeText(label, c.x, c.y - 9);
+      mapCtx.fillText(label, c.x, c.y - 9);
+    }
+    mapCtx.restore();
+  }
+
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
     mapCtx.fillStyle = '#40a0ff';
@@ -668,6 +705,21 @@ mapCanvas.addEventListener('click', (ev) => {
     areaBtn.textContent = 'Finish (' + areaPts.length + ')';
     drawMap();
     return;
+  }
+  // Tag-marker hit test first: a tap within 12 canvas px of a dot opens the
+  // popup instead of sending a goal (tap empty space to navigate as before).
+  if (uhfShowTags && uhfTags.length) {
+    const rr = mapCanvas.getBoundingClientRect();
+    const px = (ev.clientX - rr.left) * (mapCanvas.width / rr.width);
+    const py = (ev.clientY - rr.top) * (mapCanvas.height / rr.height);
+    for (const t of uhfTags) {
+      const c = worldToCanvas(t.est_pose.x, t.est_pose.y);
+      if ((c.x - px) ** 2 + (c.y - py) ** 2 <= 12 ** 2) {
+        openTagPop(t);
+        return;
+      }
+    }
+    if (uhfPopTag) closeTagPop();   // tap elsewhere dismisses an open popup
   }
   const r = mapCanvas.getBoundingClientRect();
   const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
@@ -1150,6 +1202,11 @@ new ROSLIB.Topic({
 }).subscribe((msg) => {
   let reg;
   try { reg = JSON.parse(msg.data); } catch (e) { return; }
+  // Map markers: localized tags only; the corner Tags toggle shows up with them.
+  uhfTags = (reg.tags || []).filter((t) => t.est_pose);
+  document.getElementById('mo-layers').hidden = !uhfTags.length;
+  if (uhfPopTag && !uhfTags.some((t) => t.epc === uhfPopTag)) closeTagPop();
+  drawMap();
   uhfList.innerHTML = '';
   for (const t of (reg.tags || []).slice(0, 20)) {
     const li = document.createElement('li');
@@ -1159,6 +1216,53 @@ new ROSLIB.Topic({
     li.textContent = `${t.epc} · x${t.count} · ${where} · ${t.last_rssi_dbm} dBm`;
     uhfList.appendChild(li);
   }
+});
+
+// Tag marker popup + the corner Tags layer toggle.
+const tagPop = document.getElementById('tag-pop');
+const tagPopTitle = document.getElementById('tag-pop-title');
+const tagPopMeta = document.getElementById('tag-pop-meta');
+const tagsToggle = document.getElementById('uhf-tags-toggle');
+let tagPopPose = null;   // est_pose of the open popup's tag (Drive here target)
+
+function openTagPop(t) {
+  uhfPopTag = t.epc;
+  tagPopPose = t.est_pose;
+  tagPopTitle.textContent = t.epc;
+  tagPopMeta.textContent =
+    `x${t.count} reads · ±${t.spread_m} m · last ${t.last_rssi_dbm} dBm · ` +
+    (t.last_seen_utc || '').replace(/^.*T/, '').replace(/\..*$/, '') + ' UTC';
+  tagPop.hidden = false;
+  drawMap();
+}
+
+function closeTagPop() {
+  uhfPopTag = null;
+  tagPopPose = null;
+  tagPop.hidden = true;
+  drawMap();
+}
+
+document.getElementById('tag-pop-close').addEventListener('click', closeTagPop);
+document.getElementById('tag-pop-goto').addEventListener('click', () => {
+  if (!tagPopPose) return;
+  const wx = tagPopPose.x, wy = tagPopPose.y;
+  const yaw = robotPose ? Math.atan2(wy - robotPose.y, wx - robotPose.x) : 0;
+  goalPub.publish(new ROSLIB.Message({
+    header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+    pose: {
+      position: { x: wx, y: wy, z: 0 },
+      orientation: { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) },
+    },
+  }));
+  navState.textContent = 'goal sent (' + wx.toFixed(2) + ', ' + wy.toFixed(2) + ')';
+  closeTagPop();
+});
+
+tagsToggle.addEventListener('click', () => {
+  uhfShowTags = !uhfShowTags;
+  tagsToggle.classList.toggle('selected', uhfShowTags);
+  if (!uhfShowTags) closeTagPop(); else drawMap();
 });
 
 // --- system panel: host vitals + per-container controls ---------------------------
