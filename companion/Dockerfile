@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-humble-rtabmap-ros \
         ros-humble-image-transport-plugins \
         ros-humble-foxglove-bridge \
+        # AprilTag detection offloaded from the Pi (ADR-0034) — runs on the
+        # bridged color stream here instead of the Pi's throttled copy.
+        ros-humble-apriltag-ros \
         # MCAP storage for the inspection recorder — Foxglove reads MCAP
         # directly, so the Humble split-playback ban does not apply here.
         ros-humble-rosbag2-storage-mcap \

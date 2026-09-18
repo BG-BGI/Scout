@@ -114,6 +114,29 @@ services:
     # file straight into robot_description (Humble-supported).
     command: ros2 run robot_state_publisher robot_state_publisher /urdf/scout_description.urdf
 
+  # AprilTag detection (ADR-0034) — moved off the Pi, where it cost three
+  # processes (throttle + info relay + detector). Subscribes the bridged JPEG
+  # color at 5 fps (image_transport: compressed in apriltag.yaml; camera_info
+  # derives from the image topic's namespace, so the bridged
+  # /camera/camera/color/camera_info pairs by identical stamps — no relay).
+  # /tf is remapped to /tf_tags: blanket reverse-bridging /tf would carry
+  # rtabmap's map->odom into the Pi graph and fight amcl/slam. The Pi's
+  # tag_tf_relay folds /tf_tags back into its /tf, so tag_relocalizer and
+  # scout-skills' TF lookups are unchanged.
+  apriltag:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./config:/companion/config:ro
+    command: >
+      ros2 run apriltag_ros apriltag_node --ros-args
+      -r __node:=apriltag
+      --params-file /companion/config/apriltag.yaml
+      -r image_rect:=/camera/camera/color/image_raw
+      -r detections:=/detections
+      -r /tf:=/tf_tags
+
   # World-model detector (WORLDMODEL.md, gate 1). Continuous YOLO11n on the
   # bridged D455 stream -> map-frame object table on /world/objects (latched
   # std_msgs/String JSON). CPU-only, onnxruntime, no torch. Consumes only

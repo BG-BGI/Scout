@@ -1,0 +1,27 @@
+# apriltag_ros ON THE COMPANION (ADR-0034): same detector the Pi ran, moved
+# off the Pi's CPU. Mirror scout/config/apriltag.yaml for family/size/detector
+# — the ⚠ family-string and one-family-only warnings there apply verbatim.
+# Differences here, both deliberate:
+#   - image_transport: compressed — the color stream arrives over the zenoh
+#     bridge as JPEG (^/camera/camera/color/image_raw/compressed$); the
+#     plugins package decodes it locally for free.
+#   - No 2 Hz throttle: the Pi throttled to cut ITS per-frame cost; at the
+#     bridged 5 fps this box detects on every frame (better tag refresh for
+#     tag_relocalizer, trivial on x86-class CPU).
+# Tag MEANING (names/roles/home) still lives in scout-skills' registry on the
+# Pi; this node only produces /detections + a TF frame per tag ("36h11:0"),
+# which cross back on /detections and /tf_tags (see zenoh_bridge.json5).
+apriltag:
+  ros__parameters:
+    image_transport: compressed
+    family: 36h11
+    size: 0.16
+    max_hamming: 0
+    detector:
+      threads: 2
+      # Half-resolution quad detection; decode still runs at full res.
+      decimate: 2.0
+      blur: 0.0
+      refine: true
+      sharpening: 0.25
+      debug: false

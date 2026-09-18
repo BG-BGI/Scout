@@ -6,7 +6,8 @@ that turns a tag's TF frame into a waypoint.
 
 Registry lives at /maps/tags.db (the ./maps bind mount — same persistence
 story as waypoints.json). Detection coverage (family, sizes) is configured
-in scout/config/apriltag.yaml and needs a robot-service restart to change;
+in companion/config/apriltag.yaml (companion apriltag service, ADR-0034)
+and needs that service restarted to change;
 registering a tag here is instant but only names what the node can already
 see.
 """

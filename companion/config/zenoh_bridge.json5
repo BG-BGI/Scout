@@ -26,6 +26,15 @@
           "^/nfc/registry$",
           // UHF tag registry (per-EPC centroid) from uhf_recorder (ADR-0032).
           "^/uhf/registry$",
+          // AprilTag detections from the companion apriltag node (ADR-0034) —
+          // consumed by the Pi's tag_relocalizer and scout-skills. Same
+          // read-only perception-telemetry class as /world/detections.
+          "^/detections$",
+          // Tag TF frames (camera_optical -> "36h11:<id>") from the same node,
+          // on a DEDICATED topic: reverse-bridging /tf itself would carry
+          // rtabmap's map->odom into the Pi graph. The Pi's tag_tf_relay
+          // folds these into its /tf.
+          "^/tf_tags$",
         ],
         // Local subscribers (rtabmap, foxglove) fed FROM the Pi — must mirror
         // the Pi bridge's `publishers` list exactly.

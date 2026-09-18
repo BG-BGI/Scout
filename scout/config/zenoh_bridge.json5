@@ -58,6 +58,16 @@
           "^/nfc/registry$",
           // UHF tag registry (per-EPC centroid) from uhf_recorder (ADR-0032).
           "^/uhf/registry$",
+          // AprilTag detections from the companion apriltag node (ADR-0034) —
+          // feeds tag_relocalizer and scout-skills exactly as the Pi-local
+          // detector did. Read-only perception telemetry; it influences
+          // localization only through tag_relocalizer's own /initialpose
+          // logic on THIS side of the bridge, same as before the move.
+          "^/detections$",
+          // Tag TF frames from the companion apriltag, on a dedicated topic
+          // (never ^/tf$ inbound — that would admit rtabmap's map->odom).
+          // tag_tf_relay in robot.launch.py folds them into the Pi's /tf.
+          "^/tf_tags$",
         ],
         service_servers: [],
         service_clients: [],

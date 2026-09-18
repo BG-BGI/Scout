@@ -390,57 +390,22 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 2 Hz color feed for apriltag (2026-08-24): the detector was running
-        # on every frame at ~16% of a core, and tag refresh (passive
-        # tag_watch, register_tag) needs nothing faster than ~2 Hz. C++
-        # throttle, so the full-rate subscription costs ~nothing. camera_info
-        # is NOT throttled — apriltag's exact-time sync matches the 2 Hz
-        # images against the full-rate info stream by identical RealSense
-        # stamps. (Source rate is now 5 fps, ADR-0033 — throttle stays for
-        # the per-frame detection cost, not the subscription.)
-        Node(
-            package='topic_tools',
-            executable='throttle',
-            name='apriltag_color_throttle',
-            output='screen',
-            arguments=['messages', '/camera/camera/color/image_raw', '2.0',
-                       '/apriltag_color_throttled/image_raw'],
-        ),
-
-        # ⚠ image_transport's CameraSubscriber derives the camera_info topic
-        # from the image topic's namespace and IGNORES a camera_info remap —
-        # so the info stream must exist INSIDE the throttled namespace. Full
-        # rate relay (info messages are tiny): every 2 Hz image then finds an
-        # exactly-stamped partner.
+        # AprilTag detection runs on the COMPANION (ADR-0034) — the Pi shed
+        # the throttle + info relay + apriltag_node trio; the companion
+        # detects on the bridged 5 fps JPEG stream and its /detections cross
+        # back over zenoh under the same topic name. Tag TF frames arrive on
+        # /tf_tags (a dedicated topic: reverse-bridging /tf itself would
+        # carry the companion rtabmap's map->odom into this graph), and this
+        # relay folds them into /tf so tag_relocalizer's and scout-skills'
+        # lookups are byte-identical to the Pi-local era. Companion down =
+        # no tag refresh AND no tag boot-relocalization (ADR-0034 trade);
+        # scout/config/apriltag.yaml is retired to companion/config/.
         Node(
             package='topic_tools',
             executable='relay',
-            name='apriltag_info_relay',
+            name='tag_tf_relay',
             output='screen',
-            arguments=['/camera/camera/color/camera_info',
-                       '/apriltag_color_throttled/camera_info'],
-        ),
-
-        # Official AprilTag detector (apriltag_ros), single family — see
-        # apriltag.yaml for why the all-families fan-out was reverted.
-        # /detections + a TF frame per tag off the D455 color stream (2 Hz
-        # throttled — see above). Tag MEANING (names/roles/home) lives in
-        # scout-skills' registry.
-        # respawn: vision-only feature; a crash loses tag refresh, not motion
-        # (ADR-0015 tier 2).
-        Node(
-            package='apriltag_ros',
-            executable='apriltag_node',
-            name='apriltag',
-            output='screen',
-            parameters=[os.path.join(config, 'apriltag.yaml')],
-            remappings=[
-                ('image_rect', '/apriltag_color_throttled/image_raw'),
-                ('camera_info', '/camera/camera/color/camera_info'),
-                ('detections', '/detections'),
-            ],
-            respawn=True,
-            respawn_delay=2.0,
+            arguments=['/tf_tags', '/tf'],
         ),
 
         # Boot relocalization off the portable home base (2026-08-27): first
