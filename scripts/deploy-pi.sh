@@ -41,6 +41,15 @@ main() {
     exit 1
   fi
 
+  # Boot-mode gate (LED pulse arm-window -> dev mode; docs/deploy.md):
+  # refresh the systemd units so the mechanism self-propagates. Needs root —
+  # sudo -n skips silently where the runner lacks passwordless sudo; a warn
+  # surfaces that the one-time manual install is still pending.
+  if [ -f scripts/install-bootmode.sh ]; then
+    sudo -n --preserve-env=SCOUT_REPO bash scripts/install-bootmode.sh 2>/dev/null \
+      || echo "::warning::bootmode units not installed (needs root once: sudo scripts/install-bootmode.sh)"
+  fi
+
   # Every profile, so pull/down see the whole stack (explore, observability,
   # build_package). Which services actually START is decided at `up` below.
   ALL="--profile full --profile observability --profile explore --profile build"

@@ -122,8 +122,9 @@ while `nmcli` still shows the association up.**
 
 1. Deploy the ADR-0020 compose change on the branch (`ROS_LOCALHOST_ONLY`
    removed, domain 17, discovery `-l 0.0.0.0`).
-2. Companion host up with rtabmap subscribed (compressed color + compressedDepth
-   + `/scan` — the real streaming load).
+2. Companion host up with rtabmap subscribed (compressed color + raw aligned
+   depth + `/scan` — the real streaming load; depth moved off compressedDepth
+   in ADR-0033).
 3. ≥30 min under load; robot static, teleop only with the operator at the
    controls. `wifi_link_baseline.py` running throughout on both ends.
 4. Same pass criterion. Record both rows in the baseline table above.

@@ -370,10 +370,11 @@ local_costmap:
       update_frequency: 10.0
       # Only for Foxglove; the controller reads the costmap directly, not the topic.
       publish_frequency: 2.0
-      # True for Foxglove testing (full OccupancyGrid each publish). Foxglove does not
-      # apply /costmap_updates, so False looks like an empty map. TODO: set False again
-      # once viz is sorted — saves DDS/CPU; controller never reads this topic.
-      always_send_full_costmap: True
+      # False (ADR-0033): full-grid publishes every cycle were pure DDS/CPU
+      # tax — the controller never reads the topic. Cost: Foxglove's costmap
+      # panel shows empty (it ignores /costmap_updates); flip back for a
+      # debugging session.
+      always_send_full_costmap: False
       # Deliberately still 0.2 where the controller and global costmap are 0.5: this
       # costmap's global_frame is odom, so it never touches the bursty map->odom. Its
       # chain is the EKF's odom->base_link, which is fast and steady, and holding a
@@ -527,8 +528,10 @@ global_costmap:
       # one cost that scales with map AREA rather than with motion.
       update_frequency: 1.0
       publish_frequency: 1.0
-      # True with local for Foxglove; TODO: False again for CPU (see local_costmap note).
-      always_send_full_costmap: True
+      # False with local (ADR-0033) — same DDS/CPU reasoning; the global grid
+      # is map-sized, so this publish was the expensive one. Same Foxglove
+      # trade as the local costmap.
+      always_send_full_costmap: False
       # 0.5 for the same reason as the controller above: global_frame is map, so every
       # pose lookup here inherits slam_toolbox's bursty map->odom.
       transform_tolerance: 0.5

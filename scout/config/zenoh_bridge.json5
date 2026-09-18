@@ -18,7 +18,11 @@
         // Local DDS publishers routed OUT to the companion.
         publishers: [
           "^/camera/camera/color/image_raw/compressed$",
-          "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$",
+          // Raw aligned depth, NOT compressedDepth (ADR-0033): the PNG
+          // encode was the most expensive per-frame cost this bridge forced
+          // on the Pi (~20-40 ms @5 Hz). Raw is ~3 MB/s on the wire —
+          // nothing on a LAN — and the companion decodes 16UC1 directly.
+          "^/camera/camera/aligned_depth_to_color/image_raw$",
           "^/camera/camera/color/camera_info$",
           "^/odom$",
           "^/scan$",
@@ -43,6 +47,10 @@
         subscribers: [
           "^/world/objects$",
           "^/world/registry$",
+          // Per-frame detection boxes (+ distance/map pos) from the
+          // companion detector — feeds scout_skills' detect_objects so YOLO
+          // no longer runs on the Pi (ADR-0033). Read-only telemetry class.
+          "^/world/detections$",
           // Deduped RFID tag registry back from the companion recorder —
           // same read-only telemetry class as /world/registry (ADR-0025).
           "^/rfid/registry$",

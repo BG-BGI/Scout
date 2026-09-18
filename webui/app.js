@@ -1099,7 +1099,7 @@ const SPLIT_KEY = 'scout.stageSplit';
 const SPLIT_DEFAULT = 62;         // % of the row given to the map
 
 function applySplit(pct) {
-  pct = Math.min(80, Math.max(25, pct));
+  pct = Math.min(80, Math.max(25, pct));  // profile-exempt: UI split %, not publish_hz
   stageEl.style.setProperty('--stage-split', pct + '%');
   return pct;
 }

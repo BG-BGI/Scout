@@ -50,11 +50,12 @@ services:
     command: -c /zenoh_bridge.json5 -e tcp/${PI_IP}:7447
 
   # Live 3D capture (spec §2.1). Consumes the bridged topics from the local
-  # graph exactly as if the camera were local. The compressed encoders on the
-  # Pi are per-subscriber lazy — the Pi-side zenoh bridge is that subscriber,
-  # so the Pi pays the JPEG/PNG cost only while this stack is up. Visual
-  # odometry OFF: the EKF's fused /odom (wheel speed + gyro yaw) is the pose
-  # input; rtabmap does appearance-based loop closure on top.
+  # graph exactly as if the camera were local. Depth arrives RAW over the
+  # bridge (ADR-0033): the compressedDepth PNG encode was the Pi's most
+  # expensive per-frame cost; raw 16UC1 is ~3 MB/s on the wire and decodes
+  # for free here. Color still crosses as JPEG (cheap enough at 5 fps).
+  # Visual odometry OFF: the EKF's fused /odom (wheel speed + gyro yaw) is
+  # the pose input; rtabmap does appearance-based loop closure on top.
   rtabmap:
     <<: *companion
     depends_on:
@@ -76,7 +77,7 @@ services:
         depth_topic:=/camera/camera/aligned_depth_to_color/image_raw
         camera_info_topic:=/camera/camera/color/camera_info
         rgb_image_transport:=compressed
-        depth_image_transport:=compressedDepth
+        depth_image_transport:=raw
         visual_odometry:=false
         odom_topic:=/odom
         frame_id:=base_link

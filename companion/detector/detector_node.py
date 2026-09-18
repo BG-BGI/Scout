@@ -5,16 +5,22 @@ Continuous YOLO11n on the bridged D455 stream -> map-frame object table.
 CPU-only, onnxruntime — no torch (the .onnx is baked in a throwaway build
 stage, same as scout-skills).
 
-Two outputs (both latched std_msgs/String JSON, map frame):
-- /world/objects  — LIVE view: tracks seen within ttl_s. Same schema as ever;
-  ids are now registry ids, so they no longer churn when an object leaves FOV
-  and comes back.
-- /world/registry — PERSISTENT registry: every confirmed track since node
-  start, never aged out. Class is a cross-frame vote (a chair that YOLO calls
-  `skateboard` in three frames and `chair` in five stays a chair), position is
-  a median over recent sightings, `hits` counts sightings so consumers can
-  reject one-frame false positives. This is what "count the chairs" queries —
-  the LLM never reassembles counts from live frames.
+Three outputs (all latched std_msgs/String JSON):
+- /world/objects  — LIVE view (map frame): tracks seen within ttl_s. Same
+  schema as ever; ids are now registry ids, so they no longer churn when an
+  object leaves FOV and comes back.
+- /world/registry — PERSISTENT registry (map frame): every confirmed track
+  since node start, never aged out. Class is a cross-frame vote (a chair
+  that YOLO calls `skateboard` in three frames and `chair` in five stays a
+  chair), position is a median over recent sightings, `hits` counts
+  sightings so consumers can reject one-frame false positives. This is what
+  "count the chairs" queries — the LLM never reassembles counts from live
+  frames.
+- /world/detections — PER-FRAME view (camera frame, ADR-0033): the raw
+  detections from the last processed image with pixel boxes, distance_m and
+  position_map where computable. Feeds scout_skills' detect_objects so YOLO
+  no longer runs on the Pi — the Pi tool just annotates its own grabbed
+  frame with these boxes.
 
 Runs on the companion's LOCAL DDS graph: color/depth/info/tf all arrive over
 the zenoh bridge. /world/objects and /world/registry cross back to the Pi via
@@ -48,7 +54,7 @@ from rclpy.qos import (
     qos_profile_sensor_data,
 )
 from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, CompressedImage
+from sensor_msgs.msg import CameraInfo, CompressedImage, Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import TransformException
@@ -60,19 +66,11 @@ def _decode_color(msg: CompressedImage) -> np.ndarray:
     return np.asarray(PILImage.open(BytesIO(bytes(msg.data))).convert("RGB"))
 
 
-def _decode_depth(msg: CompressedImage) -> np.ndarray | None:
-    """compressedDepth CompressedImage -> uint16 mm array.
-
-    ⚠ The payload is a compressed_depth_image_transport ConfigHeader (enum +
-    two float params, 12 bytes) FOLLOWED by a 16-bit PNG. Slicing a fixed 12
-    is fragile across ROS versions, so seek the PNG magic instead. 16UC1 depth
-    decodes as PIL mode 'I;16' (millimetres)."""
-    data = bytes(msg.data)
-    i = data.find(b"\x89PNG")
-    if i < 0:
-        return None
-    img = PILImage.open(BytesIO(data[i:]))
-    return np.asarray(img).astype(np.uint16)
+def _decode_depth(msg: Image) -> np.ndarray:
+    """Raw 16UC1 depth Image -> uint16 mm array. Depth crosses the bridge RAW
+    now (ADR-0033): the compressedDepth PNG encode was the Pi's most
+    expensive per-frame cost; raw needs no decode at all."""
+    return np.frombuffer(msg.data, np.uint16).reshape(msg.height, msg.width)
 
 
 def _median_depth_m(depth: np.ndarray, box) -> float | None:
@@ -113,7 +111,7 @@ class Detector(Node):
         self.declare_parameter("color_topic",
             "/camera/camera/color/image_raw/compressed")
         self.declare_parameter("depth_topic",
-            "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth")
+            "/camera/camera/aligned_depth_to_color/image_raw")
         self.declare_parameter("info_topic", "/camera/camera/color/camera_info")
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("min_confidence", 0.35)
@@ -156,7 +154,7 @@ class Detector(Node):
         self.cbg = ReentrantCallbackGroup()
         self.create_subscription(CompressedImage, g("color_topic"),
             self._on_color, sensor, callback_group=self.cbg)
-        self.create_subscription(CompressedImage, g("depth_topic"),
+        self.create_subscription(Image, g("depth_topic"),
             self._on_depth, sensor, callback_group=self.cbg)
         self.create_subscription(CameraInfo, g("info_topic"),
             self._on_info, sensor, callback_group=self.cbg)
@@ -174,6 +172,8 @@ class Detector(Node):
         )
         self.pub = self.create_publisher(String, "/world/objects", latched)
         self.pub_reg = self.create_publisher(String, "/world/registry", latched)
+        self.pub_det = self.create_publisher(String, "/world/detections",
+                                             latched)
         self.create_service(Trigger, "/world/clear_registry", self._on_clear)
 
         # tracks IS the persistent registry. A track:
@@ -263,6 +263,8 @@ class Detector(Node):
                 z = _median_depth_m(depth, d["box"])
                 if z is None:
                     continue
+                # Enrich the /world/detections copy as we go (ADR-0033).
+                d["distance_m"] = round(z, 2)
                 u = (d["box"][0] + d["box"][2]) / 2
                 v = (d["box"][1] + d["box"][3]) / 2
                 pt = ((u - cx) / fx * z, (v - cy) / fy * z, z)
@@ -272,12 +274,23 @@ class Detector(Node):
                         f"TF {cam_frame}->{self.map_frame} incomplete "
                         "(need slam up + /tf_static durability over bridge)")
                     continue
+                d["position_map"] = [round(float(w[0]), 2),
+                                     round(float(w[1]), 2)]
                 self._associate(d["label"], d["confidence"], w, now)
         elif depth is not None and self.info is not None \
                 and depth.shape[:2] != rgb.shape[:2]:
             self._warn_once("shape",
                 f"depth {depth.shape[:2]} != color {rgb.shape[:2]} — "
                 "aligned_depth_to_color required")
+
+        # Per-frame detections for Pi-side detect_objects (ADR-0033): pixel
+        # boxes on THIS frame + the distance/map enrichment computed above.
+        # stamp lets the consumer judge staleness against its own frame.
+        self.pub_det.publish(String(data=json.dumps({
+            "frame": "camera",
+            "stamp": round(self._last_stamp, 2)
+                     if self._last_stamp else None,
+            "objects": dets})))
 
         self._publish(now)
 

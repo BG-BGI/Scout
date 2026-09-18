@@ -77,7 +77,12 @@ def _safety_setup(context, *args, **kwargs):
         name='lifecycle_manager_safety',
         output='screen',
         parameters=[{'autostart': True,
-                     'node_names': ['collision_monitor']}],
+                     'node_names': ['collision_monitor'],
+                     # Bonds off (ADR-0033): a starved heartbeat would
+                     # deactivate CM and freeze the autonomous cmd_vel path —
+                     # the "crash that isn't a crash". Health is judged from
+                     # /cmd_vel_safe liveness instead; matches amcl.yaml.
+                     'bond_timeout': 0.0}],
     )
     return [
         collision_monitor,
@@ -386,11 +391,13 @@ def generate_launch_description():
         ),
 
         # 2 Hz color feed for apriltag (2026-08-24): the detector was running
-        # on every 15 fps frame at ~16% of a core, and tag refresh (passive
+        # on every frame at ~16% of a core, and tag refresh (passive
         # tag_watch, register_tag) needs nothing faster than ~2 Hz. C++
-        # throttle, so the 15 Hz subscription costs ~nothing. camera_info is
-        # NOT throttled — apriltag's exact-time sync matches the 2 Hz images
-        # against the full-rate info stream by identical RealSense stamps.
+        # throttle, so the full-rate subscription costs ~nothing. camera_info
+        # is NOT throttled — apriltag's exact-time sync matches the 2 Hz
+        # images against the full-rate info stream by identical RealSense
+        # stamps. (Source rate is now 5 fps, ADR-0033 — throttle stays for
+        # the per-frame detection cost, not the subscription.)
         Node(
             package='topic_tools',
             executable='throttle',

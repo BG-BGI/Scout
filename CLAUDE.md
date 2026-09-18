@@ -375,6 +375,10 @@ Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, 
 
 **Exception (2026-08-12): `scripts/camera_health.py` and `scripts/camera_selfcal.py` are KEEPERS**, not bench rigs — recurring camera maintenance instruments (stereo calibration drifts with temperature and knocks), same class as the kept `gyro_calibrator`. `camera_health.py --plane` is the plane-fit RMS check (subpixel <0.1 good, >0.2 recalibrate); `--watch` is the MinZ/MaxZ instrument for the disparity-shift bench. Both need the robot service stopped first (device claim). **IMU flash recalibration is deliberately not provided** — online `gyro_calibrator` bias estimation is the only IMU path the EKF consumes, `rs-imu-calibration` corrects bias-not-scale anyway, and flash writes sit next to the Motion-Module wedge hazard. Do not re-litigate.
 
+## Boot / dev mode (LED pulse gate)
+
+Every power-on: `scout-bootpulse.service` (Before=docker.service) breathes the strip **blue ×5 over ~5 s** before any container starts. **Cutting power mid-pulse = next boot is dev mode** — everything down except `webui` + `fleet_status` (the web UI System panel is the recovery console). One-shot: the flag is consumed at the dev boot, so the next power-on boots normal. Persistent dev: `scout_dev` file on the SD FAT partition. SSH toggle: `sudo scripts/devmode.sh on|off|status`. Units: `systemd/scout-*.service`, state `/var/lib/scout-bootmode/`, installed once via `sudo scripts/install-bootmode.sh` (deploy-pi.sh refreshes opportunistically). Details: docs/deploy.md.
+
 ## Pi-side control notes
 
 - RoboClaw is on the Pi 5 GPIO UART **`/dev/ttyAMA0`** (needs `dtparam=uart0=on` in config.txt). **NOT `/dev/ttyAMA10`**, which is the debug/console UART

@@ -1,6 +1,6 @@
 """Prometheus exporter for the Scout stack (http://<pi>:9100/metrics).
 
-One process, three sources, all read-only:
+One process, four sources, all read-only:
   - docker-py against the host socket -> per-service CPU/mem/net/restarts
     for every container in this compose project (labels, not names, so it
     survives compose recreating containers).
@@ -11,6 +11,9 @@ One process, three sources, all read-only:
     rosbridge's JSON protocol cannot answer, so it borrows the one
     container that already carries the full ROS/DDS environment instead of
     shipping a second one here.
+  - sysfs (/sys/class/thermal, /sys/devices/system/cpu/cpufreq) -> SoC
+    temperature and per-core frequency, for catching thermal throttling —
+    the mode where every service looks healthy but the whole Pi slows down.
 
 Deliberately NOT scraping /var/run/docker.sock for host-level CPU/mem: this
 container inherits network_mode: host like every other Scout service (see
@@ -21,10 +24,12 @@ sometimes not be.
 """
 
 import asyncio
+import glob
 import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 from prometheus_client import Gauge, start_http_server
 from rosbridge import RosBridge
@@ -81,6 +86,38 @@ topic_pub_gauge = Gauge("scout_ros_topic_publisher_count", "DDS matched publishe
 topic_sub_gauge = Gauge("scout_ros_topic_subscriber_count", "DDS matched subscriber count",
                         ["topic"])
 dds_probe_ok_gauge = Gauge("scout_dds_probe_ok", "1 if the last `ros2 topic info` exec succeeded")
+
+host_temp_gauge = Gauge("scout_host_cpu_temp_celsius",
+                        "SoC temperature (hottest thermal zone), degrees C")
+host_freq_gauge = Gauge("scout_host_cpu_freq_khz",
+                        "Per-core current frequency (scaling_cur_freq)", ["cpu"])
+
+# Host vitals from sysfs (mounted read-only into every container — no host
+# mount needed). The Pi 5 throttles at 85 C, so temp + scaling_cur_freq
+# together catch thermal collapse: temp near 85 with freq dropping below
+# 2400000 kHz = throttling. Both files are absent off-Pi, so the gauges just
+# stay stale/zero there.
+THERMAL_GLOB = "/sys/class/thermal/thermal_zone*/temp"
+CPUFREQ_GLOB = "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq"
+
+
+def poll_host():
+    temps = []
+    for path in glob.glob(THERMAL_GLOB):
+        try:
+            temps.append(int(Path(path).read_text().strip()) / 1000.0)
+        except (OSError, ValueError):
+            pass
+    if temps:
+        host_temp_gauge.set(max(temps))
+    for path in glob.glob(CPUFREQ_GLOB):
+        cpu = re.search(r"cpu(\d+)", path)
+        try:
+            khz = int(Path(path).read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if cpu:
+            host_freq_gauge.labels(cpu.group(1)).set(khz)
 
 
 def _service_name(container) -> str:
@@ -184,12 +221,13 @@ def poll_hz():
 
 def main():
     start_http_server(METRICS_PORT)
-    pool = ThreadPoolExecutor(max_workers=3)
+    pool = ThreadPoolExecutor(max_workers=4)
     while True:
         start = time.monotonic()
         pool.submit(poll_docker)
         pool.submit(poll_dds)
         pool.submit(poll_hz)
+        pool.submit(poll_host)
         elapsed = time.monotonic() - start
         time.sleep(max(0.0, POLL_S - elapsed))
 

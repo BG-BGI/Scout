@@ -16,6 +16,9 @@
         publishers: [
           "^/world/objects$",
           "^/world/registry$",
+          // Per-frame detection boxes for scout_skills' detect_objects —
+          // mirrors the Pi subscribers list (ADR-0033).
+          "^/world/detections$",
           // Deduped RFID tag registry from rfid_recorder (ADR-0025) — same
           // read-only telemetry class as /world/registry.
           "^/rfid/registry$",
@@ -28,7 +31,9 @@
         // the Pi bridge's `publishers` list exactly.
         subscribers: [
           "^/camera/camera/color/image_raw/compressed$",
-          "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$",
+          // Raw aligned depth, NOT compressedDepth (ADR-0033) — the PNG
+          // encode lived on the Pi; raw 16UC1 decodes directly here.
+          "^/camera/camera/aligned_depth_to_color/image_raw$",
           "^/camera/camera/color/camera_info$",
           "^/odom$",
           "^/scan$",

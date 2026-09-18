@@ -713,6 +713,10 @@ async def nav_status() -> dict:
 COLOR_TOPIC = "/camera/camera/color/image_raw"
 DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"
 CAMERA_INFO_TOPIC = "/camera/camera/color/camera_info"
+# Per-frame boxes + distance/map enrichment from the companion world
+# detector (ADR-0033): the primary source for detect_objects so YOLO no
+# longer runs on the Pi. Silent => companion down => local inference.
+WORLD_DETECTIONS_TOPIC = "/world/detections"
 
 
 def _img_to_np(msg: dict) -> np.ndarray:
@@ -762,7 +766,9 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
     world_query once. Each detection here gets a camera distance and, when
     depth + TF cooperate, a map-frame position usable with go_to. For objects
     outside the COCO label set, use camera_snapshot and read the frame
-    visually."""
+    visually. Detections come from the companion world model (boxes may lag
+    the frame ~1 s — fine when stationary); Pi-local inference is the
+    companion-down fallback and is reported in `notes.source`."""
     async with RosBridge() as rb:
         color = await rb.subscribe_once(
             COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=5.0
@@ -771,34 +777,78 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
             raise ToolError(
                 f"no frame on {COLOR_TOPIC} within 5 s — is the robot service up?"
             )
-        info = await rb.subscribe_once(
-            CAMERA_INFO_TOPIC, "sensor_msgs/msg/CameraInfo", timeout=3.0
+        # Companion detections first (ADR-0033): the world detector already
+        # runs YOLO on this same stream, so the Pi doesn't. Boxes arrive
+        # already carrying distance_m/position_map — no depth or TF fetch
+        # needed. Silent topic => companion down => local inference below.
+        det_msg = await rb.subscribe_once(
+            WORLD_DETECTIONS_TOPIC, "std_msgs/msg/String", timeout=2.5
         )
-        # Aligned depth + TF are enrichment: detection still works without
-        # them, the objects just come back with null distance/position.
-        depth_msg = await rb.subscribe_once(
-            DEPTH_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
-        )
-        tree = TfTree()
-        # Collect, don't subscribe_once: /tf_static has multiple latched
-        # publishers (camera internals + URDF chain) and one message is not
-        # the whole tree — the cause of silently missing map positions.
-        for m in await rb.subscribe_collect(
-            "/tf_static", "tf2_msgs/msg/TFMessage", duration=1.0
-        ):
-            tree.add_message(m)
-        for m in await rb.subscribe_collect(
-            "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
-        ):
-            tree.add_message(m)
+        info = depth_msg = None
+        tree = None
+        if det_msg is None:
+            info = await rb.subscribe_once(
+                CAMERA_INFO_TOPIC, "sensor_msgs/msg/CameraInfo", timeout=3.0
+            )
+            # Aligned depth + TF are enrichment: detection still works
+            # without them, the objects just come back with null
+            # distance/position.
+            depth_msg = await rb.subscribe_once(
+                DEPTH_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
+            )
+            tree = TfTree()
+            # Collect, don't subscribe_once: /tf_static has multiple latched
+            # publishers (camera internals + URDF chain) and one message is
+            # not the whole tree — the cause of silently missing map
+            # positions.
+            for m in await rb.subscribe_collect(
+                "/tf_static", "tf2_msgs/msg/TFMessage", duration=1.0
+            ):
+                tree.add_message(m)
+            for m in await rb.subscribe_collect(
+                "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
+            ):
+                tree.add_message(m)
 
     rgb = _img_to_np(color)
+
+    if det_msg is not None:
+        try:
+            payload = json.loads(det_msg["data"])
+        except (KeyError, ValueError) as e:
+            raise ToolError(f"malformed /world/detections payload: {e}") from e
+        dets = [d for d in payload.get("objects", [])
+                if d.get("confidence", 0.0) >= min_confidence]
+        notes: list[str] = ["source: companion world model"]
+        # Boxes were computed on the companion's last processed frame, which
+        # lags the frame just grabbed by up to ~1 s — fine on a stationary
+        # robot; flag it when the gap is bigger.
+        dstamp = payload.get("stamp")
+        h = color.get("header", {}).get("stamp", {})
+        if dstamp and h:
+            age = (h.get("sec", 0) + h.get("nanosec", 0) * 1e-9) - dstamp
+            if age > 1.5:
+                notes.append(
+                    f"detections are {age:.1f} s older than the frame — "
+                    "boxes may not line up if the robot moved")
+        png = await asyncio.to_thread(annotate, rgb, dets)
+        meta = {
+            "objects": dets,
+            "count": len(dets),
+            "min_confidence": min_confidence,
+            "notes": notes,
+        }
+        return [json.dumps(meta),
+                Image(data=png, format="png").to_image_content()]
+
+    # --- companion-down fallback: local YOLO (the pre-ADR-0033 path) -------
     # ~0.5–1 s of CPU on the Pi — off the event loop so nav/status calls
     # keep answering.
     dets = await asyncio.to_thread(detect, rgb, min_confidence)
 
     depth = _img_to_np(depth_msg) if depth_msg is not None else None
-    notes: list[str] = []
+    notes: list[str] = [
+        "source: Pi-local inference (companion world model offline)"]
     if depth is None:
         notes.append(
             f"no aligned depth on {DEPTH_TOPIC} — distances/positions omitted "
