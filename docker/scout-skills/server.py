@@ -1471,8 +1471,9 @@ async def register_tag(
     it a role ("home" marks the robot's home), record its printed size.
     ⚠ Detection coverage is separate: the apriltag_ros node detects the
     family/size configured in companion/config/apriltag.yaml (companion
-    apriltag service restart to change, ADR-0034) — registering here names tags that node can already
-    see. A tag's surveyed pose is stamped with the map it was seen on
+    apriltag service restart to change, ADR-0034) — registering here names
+    tags that node can already see.
+    A tag's surveyed pose is stamped with the map it was seen on
     (ADR-0029) — one surveyed pose per tag ID, so use a DISTINCT physical tag
     per floor/map."""
     if not (0.01 <= size_m <= 2.0):
