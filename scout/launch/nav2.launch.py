@@ -105,7 +105,7 @@ def _launch_setup(context, *args, **kwargs):
     configured_params = ParameterFile(
         RewrittenYaml(
             source_file=params_file,
-            param_rewrites={'use_sim_time': False, 'autostart': True},
+            param_rewrites={'use_sim_time': 'false', 'autostart': 'true'},
             convert_types=True),
         allow_substs=True)
 
