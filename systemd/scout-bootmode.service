@@ -1,0 +1,12 @@
+[Unit]
+Description=Scout boot mode apply — dev mode vs normal stack bring-up
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+Environment=SCOUT_REPO=@REPO@
+ExecStart=@REPO@/scripts/bootmode.sh apply
+
+[Install]
+WantedBy=multi-user.target

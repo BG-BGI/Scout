@@ -27,7 +27,7 @@ frames). Everything runs on the companion; the Pi pays nothing.
 
 ## Recorded topics
 
-color/compressed, aligned depth/compressedDepth, camera_info, `/scan`,
+color/compressed, aligned depth raw (ADR-0033), camera_info, `/scan`,
 `/odom`, `/tf`, `/tf_static`, `/world/objects`, `/world/registry`,
 `/rtabmap/cloud_map`. Edit `RECORD_TOPICS` in `inspection/recorder.py`.
 

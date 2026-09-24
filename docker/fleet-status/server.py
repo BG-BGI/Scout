@@ -25,11 +25,13 @@ transit this API even though it has no auth of its own.
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import requests
 from docker.errors import NotFound
 
 import docker
@@ -72,7 +74,9 @@ SITE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # reflects the Pi's real SD card, not this container's own overlay fs.
 HOST_ROOT = "/hostfs" if os.path.isdir("/hostfs") else "/"
 
-client = docker.from_env()
+# timeout=15 bounds every blocking Docker API call so a wedged dockerd can't
+# hang a request handler or the stats sampler forever.
+client = docker.from_env(timeout=15)
 
 
 def _containers():
@@ -102,14 +106,54 @@ def _container_stats(container):
         mem_bytes = stats["memory_stats"].get("usage", 0)
         mem_limit = stats["memory_stats"].get("limit", 0)
         return round(cpu_pct, 1), mem_bytes // (1024 * 1024), mem_limit // (1024 * 1024)
-    except (KeyError, ZeroDivisionError):
+    except (KeyError, ZeroDivisionError, docker.errors.APIError,
+            requests.exceptions.RequestException):
+        # docker-py raises requests timeouts through (client timeout=15) —
+        # one slow container must not kill the sampler thread.
         return 0.0, 0, 0
 
 
+# --- Cached container stats --------------------------------------------------
+# Each stats(stream=False) blocks ~1-2 s (two engine samples) and there are
+# ~13 containers, so an inline sweep per request took 15-25 s and every
+# concurrent client (ThreadingHTTPServer) triggered its own — N parallel
+# Docker stats streams for one System panel. Same background-sampler pattern
+# as _companion_sampler/_wifi_quality_sampler below: one thread sweeps
+# serially, handlers read the cache. Sleep is BETWEEN sweeps (not a fixed
+# period the sweep could overrun), so effective cadence is ~25-35 s against
+# the webui's 30 s poll and the sampler is single-flight by construction.
+STATS_IDLE_S = 10
+
+_stats_lock = threading.Lock()
+_stats_cache = {}  # container name -> (cpu_pct, mem_mb, mem_limit_mb)
+_stats_sampled_at = None
+
+
+def _container_stats_sampler():
+    global _stats_sampled_at
+    while True:
+        try:
+            fresh = {c.name: _container_stats(c) for c in _containers()}
+        except (docker.errors.APIError, requests.exceptions.RequestException):
+            fresh = None  # keep the previous cache; its age keeps growing
+        if fresh is not None:
+            with _stats_lock:
+                _stats_cache.clear()
+                _stats_cache.update(fresh)
+                _stats_sampled_at = time.time()
+        time.sleep(STATS_IDLE_S)
+
+
 def list_containers():
+    with _stats_lock:
+        cache = dict(_stats_cache)
+        sampled_at = _stats_sampled_at
+    # None before the first sweep finishes; the webui shows the age so a
+    # cached zero is distinguishable from a fresh measurement.
+    stats_age_s = round(time.time() - sampled_at, 1) if sampled_at else None
     out = []
     for c in _containers():
-        cpu_pct, mem_mb, mem_limit_mb = _container_stats(c)
+        cpu_pct, mem_mb, mem_limit_mb = cache.get(c.name, (0.0, 0, 0))
         out.append({
             "name": c.name,
             "service": _service_name(c),
@@ -117,6 +161,7 @@ def list_containers():
             "cpu_percent": cpu_pct,
             "mem_mb": mem_mb,
             "mem_limit_mb": mem_limit_mb,
+            "stats_age_s": stats_age_s,
             "self": _service_name(c) == SELF_SERVICE,
         })
     out.sort(key=lambda r: r["service"])
@@ -411,24 +456,90 @@ def _active_site():
         return None
 
 
+# Schema duplicated from scout.core.sites (ADR-0011: no scout import here).
+# v2 (ADR-0029): a site holds multiple labeled maps; active_map is the one
+# slam/amcl runs on. v1 files (default_map + top-level map_start_pose) are
+# normalized on read and write-upgraded on the next write.
+_MAP_DEFAULTS = {"label": "", "floor": None, "map_start_pose": [0.0, 0.0, 0.0]}
+
+
+def _norm_map_entry(name, entry):
+    m = dict(_MAP_DEFAULTS)
+    if isinstance(entry, dict):
+        for key in m:
+            if key in entry and entry[key] is not None:
+                m[key] = entry[key]
+    if not m["label"]:
+        m["label"] = name
+    return m
+
+
+def _normalize_site(data):
+    """v1 or v2 site.json dict -> normalized v2 dict (mirror of
+    scout.core.sites.load_site, minus the raise-on-invalid strictness —
+    an HTTP status API shouldn't crash-loop on a bad file)."""
+    site = {"version": 2, "display_name": "", "active_map": None,
+            "slam_mode": "auto", "maps": {}}
+    if not isinstance(data, dict):
+        return site
+    for key in ("display_name", "slam_mode"):
+        if data.get(key) is not None:
+            site[key] = data[key]
+    if "created" in data:
+        site["created"] = data["created"]
+    if isinstance(data.get("maps"), dict):
+        site["maps"] = {n: _norm_map_entry(n, e)
+                        for n, e in data["maps"].items()}
+        if data.get("active_map") in site["maps"]:
+            site["active_map"] = data["active_map"]
+    elif data.get("default_map"):
+        name = data["default_map"]
+        site["maps"] = {name: _norm_map_entry(
+            name, {"map_start_pose": data.get("map_start_pose")})}
+        site["active_map"] = name
+    return site
+
+
+def _site_files(site_dir):
+    """{basename: {"posegraph": bool, "grid": bool}} from the maps dir."""
+    maps_dir = os.path.join(site_dir, "maps")
+    files = {}
+    if os.path.isdir(maps_dir):
+        for f in os.listdir(maps_dir):
+            if f.endswith(".posegraph"):
+                files.setdefault(f[:-len(".posegraph")], {})["posegraph"] = True
+            elif f.endswith(".yaml"):
+                # Grid (.yaml/.pgm) availability decides whether localization
+                # mode can start at all (slam.launch.py hard-refuses without
+                # it, ADR-0028); pre-ADR-0028 sites have the posegraph only.
+                files.setdefault(f[:-len(".yaml")], {})["grid"] = True
+    return files
+
+
 def _site_meta(name):
     """site.json contents (Pi scaffold) merged with what's on disk."""
     site_dir = os.path.join(SITES_DIR, name)
     meta = {"name": name}
     try:
         with open(os.path.join(site_dir, "site.json")) as f:
-            data = json.load(f)
-        for key in ("display_name", "default_map", "slam_mode",
-                    "map_start_pose", "created"):
-            if key in data:
-                meta[key] = data[key]
+            site = _normalize_site(json.load(f))
+        meta.update(site)
+        # Legacy mirror for stale webui builds / rollback.
+        meta["default_map"] = site["active_map"]
     except (OSError, json.JSONDecodeError):
-        pass
-    maps_dir = os.path.join(site_dir, "maps")
-    if os.path.isdir(maps_dir):
-        meta["maps"] = sorted(f[:-len(".posegraph")]
-                              for f in os.listdir(maps_dir)
-                              if f.endswith(".posegraph"))
+        meta["maps"] = {}
+    files = _site_files(site_dir)
+    for map_name, entry in meta["maps"].items():
+        entry["posegraph"] = files.get(map_name, {}).get("posegraph", False)
+        entry["grid"] = files.get(map_name, {}).get("grid", False)
+    # Files on disk with no site.json entry (hand-copied, pre-v2 saves) still
+    # show up so nothing saved by hand disappears from the UI.
+    for map_name, present in sorted(files.items()):
+        if map_name not in meta["maps"]:
+            meta["maps"][map_name] = {
+                **_norm_map_entry(map_name, None), "unregistered": True,
+                "posegraph": present.get("posegraph", False),
+                "grid": present.get("grid", False)}
     return meta
 
 
@@ -443,6 +554,27 @@ def list_sites():
     }
 
 
+def apriltags():
+    """Registered AprilTags from the active site's tags.db (read-only) — the
+    webui draws surveyed ones as map markers. scout-skills owns the writes;
+    mode=ro so a mid-write read can't corrupt anything. Rows may predate
+    ADR-0029 (no map_name column) — SELECT * tolerates both schemas."""
+    active = _active_site()
+    if active is None:
+        return {"tags": []}
+    path = os.path.join(SITES_DIR, active, "maps", "tags.db")
+    if not os.path.exists(path):
+        return {"tags": []}
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        db.row_factory = sqlite3.Row
+        rows = [dict(r) for r in db.execute("SELECT * FROM tags")]
+        db.close()
+    except sqlite3.Error as e:
+        return {"tags": [], "error": str(e)}
+    return {"tags": rows}
+
+
 def create_site(name, display_name=""):
     if not _valid_site_name(name):
         return 400, {"error": "invalid site name (a-z0-9_-, max 32, "
@@ -454,11 +586,12 @@ def create_site(name, display_name=""):
         os.makedirs(os.path.join(site_dir, "maps"))
         os.makedirs(os.path.join(site_dir, "captures", "bags"))
         _write_site_json(site_dir, {
-            "version": 1,
+            "version": 2,
             "display_name": display_name or name,
-            "default_map": None,
+            "active_map": None,
+            "default_map": None,  # legacy mirror of active_map
             "slam_mode": "auto",
-            "map_start_pose": [0.0, 0.0, 0.0],
+            "maps": {},
             "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         })
     else:
@@ -482,15 +615,65 @@ def update_active_site(patch):
     site_dir = os.path.join(SITES_DIR, active)
     try:
         with open(os.path.join(site_dir, "site.json")) as f:
-            data = json.load(f)
+            site = _normalize_site(json.load(f))
     except (OSError, json.JSONDecodeError):
-        data = {"version": 1}
-    allowed = ("display_name", "default_map", "slam_mode", "map_start_pose")
-    changed = {k: patch[k] for k in allowed if k in patch}
-    if not changed:
+        site = _normalize_site({})
+    allowed = ("display_name", "slam_mode", "active_map", "maps",
+               "default_map", "map_start_pose")
+    if not any(k in patch for k in allowed):
         return 400, {"error": f'nothing to update (allowed: {", ".join(allowed)})'}
-    data.update(changed)
-    _write_site_json(site_dir, data)
+    # Schema duplicated from scout.core.sites.SLAM_MODES (ADR-0011: no scout
+    # import here). An unknown mode written to site.json makes slam.launch.py
+    # raise at startup -> the slam container crash-loops.
+    slam_modes = ("auto", "new", "localization", "continue")
+    if "slam_mode" in patch and patch["slam_mode"] not in slam_modes:
+        return 400, {"error": f'slam_mode must be one of {", ".join(slam_modes)}'}
+    if "display_name" in patch:
+        site["display_name"] = str(patch["display_name"])
+    if "slam_mode" in patch:
+        site["slam_mode"] = patch["slam_mode"]
+    # Per-map partial merge; null deletes an entry.
+    if isinstance(patch.get("maps"), dict):
+        for name, entry in patch["maps"].items():
+            if not SITE_NAME_RE.match(name or ""):
+                return 400, {"error": f"invalid map name '{name}'"}
+            if entry is None:
+                site["maps"].pop(name, None)
+                if site["active_map"] == name:
+                    site["active_map"] = None
+                continue
+            if not isinstance(entry, dict):
+                return 400, {"error": f"maps['{name}'] must be an object or null"}
+            if "floor" in entry and entry["floor"] is not None \
+                    and not isinstance(entry["floor"], int):
+                return 400, {"error": "floor must be an integer or null"}
+            if "map_start_pose" in entry and (
+                    not isinstance(entry["map_start_pose"], list)
+                    or len(entry["map_start_pose"]) != 3):
+                return 400, {"error": "map_start_pose must be [x, y, theta]"}
+            merged = {**site["maps"].get(name, _norm_map_entry(name, None))}
+            merged.update({k: entry[k] for k in _MAP_DEFAULTS if k in entry})
+            site["maps"][name] = _norm_map_entry(name, merged)
+    # `default_map`/`map_start_pose` are the v1 vocabulary — translated onto
+    # active_map / the active map's entry so an old webui build keeps working.
+    new_active = patch.get("active_map", patch.get("default_map"))
+    if new_active is not None:
+        if not SITE_NAME_RE.match(new_active or ""):
+            return 400, {"error": f"invalid map name '{new_active}'"}
+        # Save Map registers new names this way: a map already on disk (or
+        # just patched in) becomes an entry; anything else is a typo.
+        if new_active not in site["maps"] \
+                and new_active not in _site_files(site_dir):
+            return 400, {"error": f"no such map '{new_active}'"}
+        site["maps"].setdefault(new_active, _norm_map_entry(new_active, None))
+        site["active_map"] = new_active
+    if "map_start_pose" in patch and site["active_map"]:
+        pose = patch["map_start_pose"]
+        if not isinstance(pose, list) or len(pose) != 3:
+            return 400, {"error": "map_start_pose must be [x, y, theta]"}
+        site["maps"][site["active_map"]]["map_start_pose"] = pose
+    site["default_map"] = site["active_map"]  # legacy mirror
+    _write_site_json(site_dir, site)
     return 200, {"ok": True, "site": _site_meta(active)}
 
 
@@ -583,6 +766,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "sites not configured here"})
             else:
                 self._send_json(200, list_sites())
+        elif self.path == "/api/apriltags":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+            else:
+                self._send_json(200, apriltags())
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -678,6 +866,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_container_stats_sampler, daemon=True).start()
     threading.Thread(target=_wifi_quality_sampler, daemon=True).start()
     if COMPANION_HOST:
         threading.Thread(target=_companion_sampler, daemon=True).start()

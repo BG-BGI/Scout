@@ -67,6 +67,32 @@ Repo settings (once, admin):
   in a `push`/`pull_request` workflow hands the robot to anyone who can get
   a workflow to run.
 
+## Dev / troubleshooting mode (boot pulse gate)
+
+Every power-on plays a **blue LED pulse, 5 cycles over ~5 s, before any
+container starts** (`scout-bootpulse.service`, `Before=docker.service` —
+it delays docker by ~6 s, that is the arm window). Cutting power during
+the pulse leaves a flag on disk → **the next boot is dev mode**: the whole
+stack stays down except `webui` + `fleet_status`, so the web UI's System
+panel works as the recovery console (start/stop/restart services, reboot
+the host) when the full stack would peg the CPU and SSH never comes up.
+
+- Dev mode is **one-shot**: the flag is consumed at the dev-mode boot, so
+  the following power-on pulses and boots normally again. To re-enter,
+  interrupt the pulse again.
+- Persistent dev: create `scout_dev` on the SD card's FAT partition
+  (`/boot/firmware/` on Bookworm, `/boot/` on older) from any laptop —
+  dev mode every boot until the file is removed.
+- Over SSH: `scripts/devmode.sh on|off|status` (re-execs under sudo).
+  `on` drops to dev immediately, no reboot needed.
+- State: `/var/lib/scout-bootmode/` — `interrupted` (armed during the
+  pulse; a leftover means the pulse was cut) and `dev_next` (consumed at
+  apply). A crashed pulse script leaves `interrupted` armed → dev next
+  boot, the safe direction.
+- Install/refresh: `sudo scripts/install-bootmode.sh` once; deploy-pi.sh
+  re-runs it opportunistically (`sudo -n`) and only warns if the runner
+  lacks passwordless sudo.
+
 ## Fallbacks
 
 - `scripts/deploy-pi.sh <branch>` by hand over ssh — same path the workflow

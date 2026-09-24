@@ -73,7 +73,13 @@ def test_flipper_levels():
     assert lvl == h.WARN and 'unplugged' in msg
 
 
-def test_cliff_levels():
-    assert h.cliff_level(0)[0] == h.OK
-    lvl, msg = h.cliff_level(5)
-    assert lvl == h.WARN and 'ledge' in msg
+def test_uhf_levels():
+    assert h.uhf_level(True, True, False, '') == (h.OK, 'uhf: scanning')
+    assert h.uhf_level(True, False, False, '') == (h.OK, 'uhf: idle')
+    lvl, msg = h.uhf_level(True, True, True, '')      # throttled while in use
+    assert lvl == h.WARN and 'THROTTLED' in msg
+    assert h.uhf_level(True, False, True, '')[0] == h.OK  # throttle flag idle
+    assert h.uhf_level(False, False, False, '')[0] == h.OK  # absent = normal
+    lvl, msg = h.uhf_level(False, False, False, 'serial: unplugged')
+    assert lvl == h.WARN and 'unplugged' in msg
+

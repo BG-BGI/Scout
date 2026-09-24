@@ -25,9 +25,6 @@ collision_monitor:
     PolygonSlow:
       points: [0.28, 0.175, 0.28, -0.175, -0.28, -0.175, -0.28, 0.175]
       slowdown_ratio: 0.5
-    # This profile disables the realsense pointcloud, so cliff_detector never
-    # launches (robot.launch.py skips it) and its CM source must go too —
-    # otherwise source_timeout would read the missing /cliff/stop_points as a
-    # fault and freeze autonomy permanently (ADR-0024). Lists REPLACE in
-    # merged_params, so this drops the base file's `cliff` entry wholesale.
+    # observation_sources now matches the base file (cliff detection removed
+    # repo-wide, ADR-0037); kept so this overlay stays self-describing.
     observation_sources: ["scan"]

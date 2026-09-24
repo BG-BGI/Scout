@@ -1,0 +1,33 @@
+# uhf_node — SparkFun M7E Hecto UHF RFID reader over USB CH340C (ADR-0032).
+#
+# by-id path: the CH340 and the lidar's CP2102 share /dev/ttyUSB* and probe
+# order flips between boots (measured 2026-09-17: CH340 took ttyUSB0 from the
+# lidar). The robot service bind-mounts /dev/serial from the host, so the
+# udev farm resolves in-container — see rplidar.yaml and docker-compose.yaml.
+# ⚠ This CH340 exposes no serial number ("usb-1a86_USB_Serial"), so a SECOND
+# CH340 device would collide on this name — identify from the host with
+# `ls -l /dev/serial/by-id/` if one is ever added. The node's version
+# handshake refuses a mispinned non-Mercury device either way.
+uhf_node:
+  ros__parameters:
+    port: "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    # Module boots at 115200 (hardware serial convention for the M7E).
+    baud: 115200
+    # Poll timer rate — the sole serial reader/writer. 30 Hz drains the
+    # module's ~150 tags/s continuous stream comfortably.
+    poll_hz: 30.0
+    # Reopen attempt cadence while the reader is absent/unplugged.
+    reconnect_period_s: 5.0
+    # Bound for each handshake command's response (version/region/power…).
+    handshake_timeout_s: 2.0
+    # Read-batch window: pending tag records flush as ONE /uhf/reads message
+    # with ONE map pose per window. 0.1 s = <=10 msg/s at any tag rate and
+    # ~5 cm pose smear at 0.5 m/s. Stage-2 phase work may lower this — it is
+    # a config change, not a schema change (ADR-0032).
+    batch_period_s: 0.1
+    # Read TX power, hundredths of a dBm. 2000 = 20.00 dBm is the ADR-0032
+    # USB-power-budget cap and also the hard clamp in core/uhf.py — raising
+    # this above 2000 does nothing until the reader gets its own 5 V feed.
+    read_power_cdbm: 2000
+    # The module keepalives 1/s while scanning; silence this long = wedged.
+    keepalive_timeout_s: 3.0

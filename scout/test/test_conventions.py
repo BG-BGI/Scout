@@ -9,6 +9,7 @@ visible). A bare entry with an empty reason fails.
 
 import ast
 import pathlib
+import re
 
 REPO = pathlib.Path(__file__).resolve().parent.parent.parent
 PKG = REPO / 'scout' / 'scout'
@@ -257,7 +258,11 @@ def test_sc4_twist_publishers_are_allowlisted():
 # owner and no freeze (the ADR-0012 drift, reintroduced in JSON). A node never
 # serializes a wire payload itself — it calls a scout.core.status formatter.
 
-SC9_ALLOW = {}
+SC9_ALLOW = {
+    'scout/scout/tag_relocalizer.py':
+        'HTTP POST body to fleet_status (active_map persist, ADR-0029) — '
+        'an HTTP API payload, not a ROS wire format',
+}
 
 
 def test_sc9_no_inline_json_wire_payloads():
@@ -347,3 +352,80 @@ def test_sc6_bind_path_only_in_robot_profile():
         'Hardcoded bind-mount config path — use resolve_config/'
         'resolve_config_dir from scout.robot_profile (ADR-0013):\n'
         + '\n'.join(offenders))
+
+
+# --- SC12: zenoh allowlists mirror + carry no control surface -----------------
+# The two bridge configs are the ADR-0001 enforcement surface: Pi
+# `publishers` must equal companion `subscribers` and vice versa — the files
+# say "must mirror" in comments, but comments don't catch drift (a topic
+# added on one side silently dies in that direction). And no allowlisted
+# pattern may match a motion/action path: the bridge is telemetry-only, so
+# /cmd_vel_*, goal topics and action wire paths stay absent on both ends.
+
+_BRIDGE_SECTIONS = (
+    'publishers', 'subscribers',
+    'service_servers', 'service_clients',
+    'action_servers', 'action_clients',
+)
+
+
+def _zenoh_allow(path):
+    """Extract the allow lists without a json5 dependency: every section is
+    a flat list of anchored "^/topic$" strings, so a line scan suffices."""
+    allow = {k: [] for k in _BRIDGE_SECTIONS}
+    section = None
+    for raw in path.read_text().splitlines():
+        line = raw.split('//')[0]
+        if section is None:
+            m = re.match(r'\s*(%s)\s*:\s*\[' % '|'.join(_BRIDGE_SECTIONS),
+                         line)
+            if m:
+                section = m.group(1)
+        if section is not None:
+            allow[section] += re.findall(r'"([^"]+)"', line)
+            if ']' in line:
+                section = None
+    return allow
+
+
+def test_sc12_zenoh_allowlists_mirror():
+    pi = _zenoh_allow(REPO / 'scout/config/zenoh_bridge.json5')
+    comp = _zenoh_allow(REPO / 'companion/config/zenoh_bridge.json5')
+    out_drift = set(pi['publishers']) ^ set(comp['subscribers'])
+    assert not out_drift, (
+        'Pi->companion topics drifted — every Pi `publishers` pattern needs '
+        'the identical entry in companion `subscribers` (ADR-0022):\n'
+        + '\n'.join(sorted(out_drift)))
+    in_drift = set(pi['subscribers']) ^ set(comp['publishers'])
+    assert not in_drift, (
+        'Companion->Pi topics drifted — every Pi `subscribers` pattern needs '
+        'the identical entry in companion `publishers` (ADR-0022):\n'
+        + '\n'.join(sorted(in_drift)))
+    for side, allow in (('Pi', pi), ('companion', comp)):
+        for key in ('service_servers', 'service_clients',
+                    'action_servers', 'action_clients'):
+            assert not allow[key], (
+                '%s bridge allowlists %s: %s — the bridge carries topics '
+                'only, no service/action paths (ADR-0001)' % (
+                    side, key, allow[key]))
+
+
+def test_sc12_zenoh_no_control_surface():
+    # Any allowlisted pattern matching one of these pokes a motion hole in
+    # the read-only bridge — the audit boundary the config exists to enforce.
+    control = ('/cmd_vel', '/cmd_vel_nav', '/cmd_vel_teleop', '/cmd_vel_joy',
+               '/cmd_vel_smoothed', '/goal_pose', '/initialpose',
+               '/navigate_to_pose/_action/send_goal',
+               '/navigate_through_poses/_action/send_goal')
+    for cfg in ('scout/config/zenoh_bridge.json5',
+                'companion/config/zenoh_bridge.json5'):
+        allow = _zenoh_allow(REPO / cfg)
+        for pat in allow['publishers'] + allow['subscribers']:
+            assert pat.startswith('^') and pat.endswith('$'), (
+                '%s: unanchored allowlist pattern %r — every entry must be a '
+                'full "^/topic$" match, never a wildcard stem' % (cfg, pat))
+            for topic in control:
+                assert not re.match(pat, topic), (
+                    '%s: pattern %r admits control topic %s — motion/action '
+                    'paths are deliberately unbridgeable (ADR-0001)' % (
+                        cfg, pat, topic))

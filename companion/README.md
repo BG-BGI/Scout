@@ -63,7 +63,7 @@ stop rtabmap, delete that file, start rtabmap.
 
 Record a teleop bag on the Pi (ADR-0017 tooling) with:
 `/camera/camera/color/image_raw/compressed`,
-`/camera/camera/aligned_depth_to_color/image_raw/compressedDepth`,
+`/camera/camera/aligned_depth_to_color/image_raw` (raw, since ADR-0033),
 `/camera/camera/color/camera_info`, `/odom`, `/tf`, `/tf_static`, `/scan`.
 Copy it to this box and:
 

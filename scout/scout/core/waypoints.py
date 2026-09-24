@@ -69,12 +69,16 @@ def save(path, store):
     os.replace(tmp, path)
 
 
-def set_waypoint(store, name, pose, source, saved=None):
-    """Insert/replace a named waypoint (pure; caller reloads+saves around it)."""
+def set_waypoint(store, name, pose, source, saved=None, map=None):
+    """Insert/replace a named waypoint (pure; caller reloads+saves around it).
+    `map` stamps which site map the pose belongs to (ADR-0029); absent =
+    legacy = assume the active map."""
     wp = {'x': round(float(pose[0]), 3), 'y': round(float(pose[1]), 3),
           'yaw': round(float(pose[2]), 3), 'source': source}
     if saved is not None:
         wp['saved'] = saved
+    if map is not None:
+        wp['map'] = map
     store['waypoints'][name] = wp
 
 

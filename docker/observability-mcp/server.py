@@ -11,8 +11,12 @@ Same standalone-image, LAN-trust-only, host-networking pattern as
 ros_mcp/scout_skills: this talks to the docker socket (mounted rw, unlike
 the read-only mount on observability_exporter) and to the rosbridge
 websocket on 127.0.0.1:9090. No ROS/DDS underlay of its own — `ros2` CLI
-calls run via `docker exec` into the already-running `robot` container,
-which is the only place in the stack with a live ROS/DDS environment.
+calls run via `docker exec` into ROS_EXEC_SERVICE (default foxglove_bridge:
+same image, same overlay volumes, same loopback DDS domain, but its 0.3-cpu
+cgroup can only ever degrade the Foxglove UI — never the control path in
+`robot`, which is what this used to exec into). Falls back to `robot` when
+the preferred target is absent. Every exec is bounded by coreutils
+`timeout` so a hung CLI can't wedge a tool call.
 """
 
 import os
@@ -29,9 +33,14 @@ COMPOSE_PROJECT = os.environ.get("COMPOSE_PROJECT", "scout")
 # see module docstring. Nothing else in the stack drives an actuator.
 MOTION_SERVICES = {"robot"}
 
-# Sourced before every `ros2` exec into `robot` -- must match &base's
-# environment in docker-compose.yaml (simple discovery on loopback, ADR-0022;
-# the discovery-server/SUPER_CLIENT era is over).
+# Which compose service carries the ROS environment `ros2` CLI execs run in.
+ROS_EXEC_SERVICE = os.environ.get("ROS_EXEC_SERVICE", "foxglove_bridge")
+# Seconds a single `ros2` CLI exec may take before coreutils timeout kills it.
+ROS_EXEC_TIMEOUT_S = int(os.environ.get("ROS_EXEC_TIMEOUT_S", "15"))
+
+# Sourced before every `ros2` exec -- must match &base's environment in
+# docker-compose.yaml (simple discovery on loopback, ADR-0022; the
+# discovery-server/SUPER_CLIENT era is over).
 ROS_EXEC_PREFIX = (
     "source /opt/ros/humble/setup.bash && "
     "source /opt/overlay/install/setup.bash && "
@@ -52,7 +61,9 @@ KNOWN_TOPIC_TYPES = {
     "/goal_pose": "geometry_msgs/msg/PoseStamped",
 }
 
-docker_client = docker.from_env()
+# timeout=20 bounds every blocking docker API call (stats/exec/restart) so a
+# wedged dockerd surfaces as a ToolError instead of a hung tool call.
+docker_client = docker.from_env(timeout=20)
 mcp = FastMCP("scout-observability")
 
 
@@ -77,14 +88,34 @@ def _find_service(service: str):
     )
 
 
-def _find_robot():
-    try:
-        c = _find_service("robot")
-    except ToolError:
-        raise
-    if c.status != "running":
-        raise ToolError("`robot` container is not running -- no ROS/DDS environment to exec into")
-    return c
+def _find_exec_target():
+    """ROS_EXEC_SERVICE if running, else `robot` -- see module docstring."""
+    for service in (ROS_EXEC_SERVICE, "robot"):
+        try:
+            c = _find_service(service)
+        except ToolError:
+            continue
+        if c.status == "running":
+            return c
+    raise ToolError(
+        f"neither {ROS_EXEC_SERVICE!r} nor 'robot' is running -- "
+        "no ROS/DDS environment to exec into"
+    )
+
+
+def _ros_exec(target, command: str) -> str:
+    """One bounded `ros2` CLI exec; raises ToolError on nonzero exit or
+    timeout (coreutils timeout exits 124)."""
+    rc, out = target.exec_run(
+        ["timeout", str(ROS_EXEC_TIMEOUT_S), "bash", "-lc", ROS_EXEC_PREFIX + command]
+    )
+    text = (out or b"").decode(errors="replace")
+    if rc == 124:
+        raise ToolError(f"{command!r} timed out after {ROS_EXEC_TIMEOUT_S}s in "
+                        f"{_service_name(target)!r}")
+    if rc != 0:
+        raise ToolError(f"{command!r} exited {rc}: {text}")
+    return text
 
 
 def _cpu_percent(stats: dict) -> float:
@@ -194,30 +225,23 @@ async def ros2_topic_hz(topic: str, msg_type: str | None = None, window_s: float
 
 @mcp.tool
 def ros2_topic_info(topic: str) -> str:
-    """Raw `ros2 topic info -v` for `topic`, exec'd inside the `robot`
-    container -- publisher/subscriber counts AND their QoS profiles (reuse/
+    """Raw `ros2 topic info -v` for `topic`, exec'd inside a ROS-carrying
+    container (foxglove_bridge by default, never charged to `robot`'s quota)
+    -- publisher/subscriber counts AND their QoS profiles (reuse/
     durability/reliability), which is what actually catches a QoS mismatch
     (e.g. a subscriber demanding RELIABLE against a BEST_EFFORT publisher --
     those two just never exchange data, with no error on either side)."""
-    robot = _find_robot()
-    rc, out = robot.exec_run(["bash", "-lc", ROS_EXEC_PREFIX + f"ros2 topic info {topic} -v"])
-    text = (out or b"").decode(errors="replace")
-    if rc != 0:
-        raise ToolError(f"ros2 topic info {topic} exited {rc}: {text}")
-    return text
+    return _ros_exec(_find_exec_target(), f"ros2 topic info {topic} -v")
 
 
 @mcp.tool
 def ros2_node_list() -> list[str]:
-    """`ros2 node list` exec'd inside the `robot` container -- every DDS
-    participant currently visible on the loopback graph. A node missing here
-    that should be up is a discovery problem, not necessarily a dead
+    """`ros2 node list` exec'd inside a ROS-carrying container
+    (foxglove_bridge by default, never charged to `robot`'s quota) -- every
+    DDS participant currently visible on the loopback graph. A node missing
+    here that should be up is a discovery problem, not necessarily a dead
     process."""
-    robot = _find_robot()
-    rc, out = robot.exec_run(["bash", "-lc", ROS_EXEC_PREFIX + "ros2 node list"])
-    text = (out or b"").decode(errors="replace")
-    if rc != 0:
-        raise ToolError(f"ros2 node list exited {rc}: {text}")
+    text = _ros_exec(_find_exec_target(), "ros2 node list")
     return [ln for ln in text.splitlines() if ln.strip()]
 
 

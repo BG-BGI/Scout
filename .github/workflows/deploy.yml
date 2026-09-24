@@ -91,6 +91,7 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.outputs.deploy_pi == 'true' }}
     uses: ./.github/workflows/pi-images.yml
+    secrets: inherit
     with:
       ref: ${{ needs.resolve.outputs.pi_sha }}
       branch: ${{ needs.resolve.outputs.pi_branch }}
@@ -98,6 +99,7 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.outputs.deploy_pi == 'true' }}
     uses: ./.github/workflows/fleet-status-image.yml
+    secrets: inherit
     with:
       ref: ${{ needs.resolve.outputs.pi_sha }}
       branch: ${{ needs.resolve.outputs.pi_branch }}
@@ -105,6 +107,7 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.outputs.deploy_companion == 'true' }}
     uses: ./.github/workflows/companion-images.yml
+    secrets: inherit
     with:
       ref: ${{ needs.resolve.outputs.companion_sha }}
       branch: ${{ needs.resolve.outputs.companion_branch }}
@@ -112,6 +115,7 @@ jobs:
     needs: resolve
     if: ${{ needs.resolve.outputs.deploy_companion == 'true' }}
     uses: ./.github/workflows/fleet-status-image.yml
+    secrets: inherit
     with:
       ref: ${{ needs.resolve.outputs.companion_sha }}
       branch: ${{ needs.resolve.outputs.companion_branch }}

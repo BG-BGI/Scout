@@ -370,10 +370,11 @@ local_costmap:
       update_frequency: 10.0
       # Only for Foxglove; the controller reads the costmap directly, not the topic.
       publish_frequency: 2.0
-      # True for Foxglove testing (full OccupancyGrid each publish). Foxglove does not
-      # apply /costmap_updates, so False looks like an empty map. TODO: set False again
-      # once viz is sorted — saves DDS/CPU; controller never reads this topic.
-      always_send_full_costmap: True
+      # False (ADR-0033): full-grid publishes every cycle were pure DDS/CPU
+      # tax — the controller never reads the topic. Cost: Foxglove's costmap
+      # panel shows empty (it ignores /costmap_updates); flip back for a
+      # debugging session.
+      always_send_full_costmap: False
       # Deliberately still 0.2 where the controller and global costmap are 0.5: this
       # costmap's global_frame is odom, so it never touches the bursty map->odom. Its
       # chain is the EKF's odom->base_link, which is fast and steady, and holding a
@@ -465,7 +466,9 @@ local_costmap:
         publish_voxel_map: false
         transform_tolerance: 0.3
         mapping_mode: false
-        observation_sources: depth cliff
+        # cliff source removed with cliff detection (ADR-0037) — no negative-
+        # obstacle marking remains anywhere in the stack.
+        observation_sources: depth
         depth:
           data_type: PointCloud2
           topic: /camera/camera/depth/color/points
@@ -482,22 +485,6 @@ local_costmap:
           vertical_fov_angle: 1.012
           horizontal_fov_angle: 1.518
           decay_acceleration: 5.0
-          model_type: 0
-        # Negative obstacles (ADR-0024): cliff_detector's odom-latched ledge
-        # marks, published at z=0.12 (inside the band above) so a down-stair
-        # reads as a lethal wall. Marking-only — nothing may clear a ledge;
-        # the node republishes its whole memory at ~5 Hz, so re-marking
-        # outruns both voxel_decay and the depth source's frustum decay.
-        cliff:
-          data_type: PointCloud2
-          topic: /cliff/points
-          marking: true
-          clearing: false
-          min_obstacle_height: 0.05
-          max_obstacle_height: 0.22
-          expected_update_rate: 0.0
-          observation_persistence: 0.0
-          filter: "passthrough"   # node already binned + voted the cells
           model_type: 0
 
       inflation_layer:
@@ -527,8 +514,10 @@ global_costmap:
       # one cost that scales with map AREA rather than with motion.
       update_frequency: 1.0
       publish_frequency: 1.0
-      # True with local for Foxglove; TODO: False again for CPU (see local_costmap note).
-      always_send_full_costmap: True
+      # False with local (ADR-0033) — same DDS/CPU reasoning; the global grid
+      # is map-sized, so this publish was the expensive one. Same Foxglove
+      # trade as the local costmap.
+      always_send_full_costmap: False
       # 0.5 for the same reason as the controller above: global_frame is map, so every
       # pose lookup here inherits slam_toolbox's bursty map->odom.
       transform_tolerance: 0.5
@@ -606,7 +595,8 @@ global_costmap:
         publish_voxel_map: false
         transform_tolerance: 0.5
         mapping_mode: false
-        observation_sources: depth cliff
+        # cliff source removed with cliff detection (ADR-0037).
+        observation_sources: depth
         depth:
           data_type: PointCloud2
           topic: /camera/camera/depth/color/points
@@ -624,20 +614,6 @@ global_costmap:
           # High acceleration: inside the live frustum the 4 h decay collapses
           # to ~a second, so seen-empty space clears immediately.
           decay_acceleration: 10.0
-          model_type: 0
-        # Negative obstacles (ADR-0024) — same source as the local costmap;
-        # see the note there. Marking-only so the planner never routes over a
-        # remembered ledge, even hours later (4 h voxel_decay above applies).
-        cliff:
-          data_type: PointCloud2
-          topic: /cliff/points
-          marking: true
-          clearing: false
-          min_obstacle_height: 0.05
-          max_obstacle_height: 0.22
-          expected_update_rate: 0.0
-          observation_persistence: 0.0
-          filter: "passthrough"
           model_type: 0
 
       inflation_layer:

@@ -53,10 +53,16 @@ This file names the concepts and maps the running system.
 - **tag registry vs detection coverage** — the AprilTag *meaning* (names, roles,
   home) lives in scout-skills' sqlite; *which family/size is detected* lives in
   `apriltag.yaml`. See ADR-0006.
-- **RFID read / registry** — flipper_node's pose-stamped card reads
-  (`/rfid/reads`, JSON, latched depth-50) crossing zenoh to the companion's
-  sqlite; the deduped `/rfid/registry` crosses back. Human-gated by
-  `/flipper/rfid_enable`. See ADR-0025.
+- **RFID (LF, Flipper)** — the 125 kHz pipeline (ADR-0025): flipper_node's
+  pose-stamped card reads (`/rfid/reads`, latched depth-50) → companion
+  sqlite → `/rfid/registry`. Gated by `/flipper/rfid_enable`. **Being
+  replaced by UHF (ADR-0032)** — removal lands once UHF is proven on-robot;
+  the Flipper then serves NFC only (ADR-0026).
+- **UHF read / registry** — uhf_node's BATCHED pose-stamped EPC Gen2 reads
+  from the M7E Hecto (`/uhf/reads`, one message + one pose per 100 ms window,
+  rssi/phase/freq raw per read) crossing zenoh to the companion's uhf.db; the
+  per-EPC `/uhf/registry` (RSSI-weighted centroid `est_pose` + `spread_m`)
+  crosses back. Human-gated by `/uhf/enable`. See ADR-0032.
 - **profile (default / tight_tunnel)** — a named set of nav2/slam/realsense
   parameter deltas for a scenario. See ADR-0010.
 - **robot profile (robot_profile.yaml)** — the cross-surface SSOT for velocity
@@ -69,6 +75,24 @@ This file names the concepts and maps the running system.
   (test_status.py). Nodes may not `json.dumps` a status inline.
 - **overlay volume** — the `ros_overlay_install` named volume holding the built
   workspace; seeds once from the image. See ADR-0005.
+- **elevator call / callStatus** — one Schindler RBL trip: POST /calls →
+  `Enter` (door open, elevator waits on the robot) → confirm → ride → `Exit` →
+  confirm → `Done`. Door-open windows are elevator-timed; PORT aborts lapsed
+  calls. Cancel = DELETE (→ `Aborted`); a robot inside the car must POST a new
+  call. See ADR-0030.
+- **ride** — the orchestrated elevator trip run by `elevator_ride`
+  (schindler-rbl SDK state machine + scout-skills rosbridge adapter), phases
+  `nav_to_door → calling → wait_car → board → confirm_enter → riding →
+  exit_move → confirm_exit`. Board/exit are dead-reckoned `run_move` — the car
+  interior is unmapped.
+- **floorNumber vs floorLabel** — RBL floorNumber is the 1-based index among
+  SERVED stops, NOT the displayed label: sandbox floorNumber 2 = label "0"
+  (Lobby). The off-by-lobby bug. Map via `elevator_floors`; elevator.json
+  floor keys are floorNumbers.
+- **PORT Gateway / sandbox** — the on-site RBL endpoint (mTLS client cert,
+  private CA) and its shared cloud twin sandbox.schindler.com (full-chain PEM
+  required, `identity` required on calls, constant sim traffic = `Busy`
+  rejections are normal).
 
 ## System map (nodes → topics/services)
 
@@ -93,10 +117,11 @@ Core stack (`robot.launch.py`, compose `robot`):
 | link_watchdog | `/goal_pose`,`/route_poses`, action status | `/goal_pose`, cancels | — |
 | tilt_monitor | `/imu/data` | `/tilt_alarm`,`/explore/resume`, cancels | — |
 | cliff_detector | depth cloud, TF | `/cliff/points`,`/cliff/stop_points` | — |
-| flipper_node | Flipper USB CDC | `/flipper/status` (latched),`/rfid/reads` (latched-50) | `/flipper/{rfid_enable,cli}` |
+| flipper_node | Flipper USB CDC | `/flipper/status` (latched),`/rfid/reads`,`/nfc/reads` (latched-50) | `/flipper/{rfid_enable,nfc_enable,cli}` |
+| uhf_node | M7E USB serial | `/uhf/status` (latched),`/uhf/reads` (batched, latched-50) | `/uhf/enable` |
 | apriltag (+throttle/relay) | 2 Hz color | `/detections` + tag TF | — |
 | nav_manager | both actions' status+feedback | `/nav_state` (latched), `/explore/resume` | `/nav/cancel` |
-| health_monitor | `/battery`,`/tilt_alarm`,`/roboclaw_status`,`/traction/status`,`/collision_monitor/*`,`/flipper/status`,`/cliff/stop_points` | `/diagnostics` | — |
+| health_monitor | `/battery`,`/tilt_alarm`,`/roboclaw_status`,`/traction/status`,`/collision_monitor/*`,`/flipper/status`,`/uhf/status`,`/cliff/stop_points` | `/diagnostics` | — |
 | bag_recorder | — | `/record/active`,`/record/path` (latched) | `/record/{start,stop}` |
 | wheel_joint_relay | `/joint_states` | wheel TF | — |
 
@@ -111,22 +136,34 @@ Other stacks: `slam` (slam_toolbox → `/map`, map→odom), `nav2`
 `foxglove_bridge`, `rosbridge`, `webui`, `ros_mcp`, `scout_skills` (MCP over
 rosbridge :9001), `fleet_status`. Companion (over zenoh, ADR-0022): `rtabmap`,
 `detector` (YOLO world model), `inspection_recorder`, `rfid_recorder`
-(primary RFID DB), `captioner`, its own `fleet_status`.
+(primary RFID DB), `nfc_recorder`, `uhf_recorder` (primary UHF DB + centroid
+solver, ADR-0032), `captioner`, its own `fleet_status`.
 
 ## Files on the Pi (bind-mounted `./` into the container)
 
 All per-location state lives in `sites/<name>/` behind the `sites/active`
 symlink (ADR-0023); switch sites from the webui Site panel. Per site:
 
-- `sites/<name>/site.json` — display name, default_map, slam_mode policy.
-- `sites/<name>/maps/waypoints.json` — named waypoints + routes (ADR-0011).
-- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite).
+- `sites/<name>/site.json` — v2 (ADR-0029): display name, slam_mode policy,
+  `maps` dict of labeled maps (label/floor/map_start_pose) + `active_map`.
+  v1 (`default_map`) is normalized on read, upgraded on the next write.
+- `sites/<name>/maps/waypoints.json` — named waypoints + routes (ADR-0011);
+  waypoints carry the map they were saved on (ADR-0029).
+- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite); surveys are
+  stamped with their home map — the floor-transit anchor (ADR-0029).
 - `sites/<name>/maps/*.posegraph`,`*.data` — slam_toolbox serialized maps.
 - `sites/<name>/maps/zones.json` — keepout/speed zone polygons (ADR-0019;
   currently no manager node regenerates the derived masks).
-- `sites/<name>/rfid.db` — RFID read log + registry (companion, ADR-0025).
+- `sites/<name>/rfid.db`, `nfc.db` — LF/NFC read logs (companion, ADR-0025/0026).
+- `sites/<name>/uhf.db` — UHF read log incl. rssi/phase/freq per read + the
+  centroid registry source (companion, ADR-0032).
 - `sites/<name>/captures/<runstamp>/` — patrol photos + manifest.
 - `sites/<name>/captures/bags/<UTC>/` — rosbags from bag_recorder (ADR-0017).
+- `sites/<name>/elevator.json` — Schindler RBL building topology: equipment
+  numbers, floorNumber→door-waypoint mapping, sides, board/exit distances
+  (ADR-0030; hand-authored, schema in docker/scout-skills/elevator_config.py).
+  Deployment identity lives in `.env` + gitignored `secrets/schindler/`, not
+  here.
 
 All gitignored; migrate a pre-sites checkout once with
 `python3 scripts/migrate_sites.py`.
@@ -139,12 +176,14 @@ Pipe grammars (split on `|`):
 - `/nav_state`: `idle` | `<status_name>|<dist 2dp or empty>|<recoveries>`
   (ADR-0018). `NAV_BUSY_STATES = (accepted, driving, canceling)` is the
   "goal in flight" set; app.js carries a frozen literal copy.
-- `/traction/status`, `/flipper/status`, `/rfid/reads`: JSON, serialized
-  with sort_keys by `core.status` formatters (exact strings frozen).
+- `/traction/status`, `/flipper/status`, `/rfid/reads`, `/nfc/reads`,
+  `/uhf/status`, `/uhf/reads`: JSON, serialized with sort_keys by
+  `core.status` formatters (exact strings frozen).
 - `/roboclaw_status` (driver-owned JSON): envelope parsed only via
   `core.status.parse_roboclaw_status`.
-- `/rfid/registry`, `/world/objects`, `/world/registry`: JSON produced on the
-  companion (cannot import core.status); consumers parse defensively.
+- `/rfid/registry`, `/nfc/registry`, `/uhf/registry`, `/world/objects`,
+  `/world/registry`: JSON produced on the companion (cannot import
+  core.status); consumers parse defensively.
 
 Kept as strings deliberately (ADR-0012); consumers on both sides of the
 rosbridge/zenoh boundaries parse them, so the formats are frozen by tests —

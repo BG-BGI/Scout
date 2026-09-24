@@ -47,3 +47,7 @@ companion/*.tar.gz
 scout/traction_logs/
 
 *.tar.gz
+
+# Schindler mTLS client cert/key + any other credentials — never committed (ADR-0030)
+secrets/*
+!secrets/.gitkeep

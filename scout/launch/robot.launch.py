@@ -77,7 +77,12 @@ def _safety_setup(context, *args, **kwargs):
         name='lifecycle_manager_safety',
         output='screen',
         parameters=[{'autostart': True,
-                     'node_names': ['collision_monitor']}],
+                     'node_names': ['collision_monitor'],
+                     # Bonds off (ADR-0033): a starved heartbeat would
+                     # deactivate CM and freeze the autonomous cmd_vel path —
+                     # the "crash that isn't a crash". Health is judged from
+                     # /cmd_vel_safe liveness instead; matches amcl.yaml.
+                     'bond_timeout': 0.0}],
     )
     return [
         collision_monitor,
@@ -91,49 +96,25 @@ def _safety_setup(context, *args, **kwargs):
     ]
 
 
-def _cliff_setup(context, *args, **kwargs):
-    # Negative-obstacle detector (ADR-0024). Profile-coupled three ways:
-    # the node needs the realsense pointcloud, and the collision monitor's
-    # `cliff` source needs the node (its silence reads as a fault and stops
-    # autonomy via source_timeout — that is the fail-safe, but only when
-    # deliberate). So: pointcloud off -> skip the node AND require the
-    # profile's collision_monitor overlay to have stripped the source.
-    # Mirror of nav2.launch.py's ADR-0002 stvl<->pointcloud guard.
+def _cliff_guard(context, *args, **kwargs):
+    # Cliff detection REMOVED (ADR-0037, operator directive 2026-09-24):
+    # bump-pitch false positives (static camera TF + 300 s odom memory)
+    # blocked navigation. This guard is what remains — it fail-louds if any
+    # profile's collision_monitor ever lists a `cliff` source again, because
+    # with no detector that source starves and source_timeout freezes
+    # autonomy permanently.
     profile = LaunchConfiguration('profile').perform(context)
-    with open(merged_params('realsense.yaml', profile)) as f:
-        cam = yaml.safe_load(f) or {}
-    pointcloud_off = cam.get('pointcloud.enable') is False
     with open(merged_params('collision_monitor.yaml', profile)) as f:
         cm = yaml.safe_load(f) or {}
     cm_sources = (cm.get('collision_monitor', {})
                     .get('ros__parameters', {})
                     .get('observation_sources') or [])
-    if pointcloud_off:
-        if 'cliff' in cm_sources:
-            raise RuntimeError(
-                'profile %r disables the realsense pointcloud but its '
-                'collision_monitor still lists the `cliff` source — with '
-                'cliff_detector unlaunched that source starves and '
-                'source_timeout freezes autonomy permanently (ADR-0024)'
-                % profile)
-        return []
-    cliff = Node(
-        package='scout',
-        executable='cliff_detector',
-        output='screen',
-        parameters=[os.path.join(resolve_config_dir(), 'cliff.yaml')],
-        remappings=[
-            ('points_in', '/camera/camera/depth/color/points'),
-            ('cliff_points', '/cliff/points'),
-            ('cliff_stop_points', '/cliff/stop_points'),
-        ],
-        # Tier 2 (ADR-0015): a crash loses ledge protection, not motion —
-        # and while it is down the CM cliff source times out and stops
-        # autonomy anyway, so the 2 s respawn gap fails safe.
-        respawn=True,
-        respawn_delay=2.0,
-    )
-    return [cliff]
+    if 'cliff' in cm_sources:
+        raise RuntimeError(
+            'profile %r lists a collision_monitor `cliff` source but cliff '
+            'detection was removed (ADR-0037) — that source would starve '
+            'and source_timeout would freeze autonomy permanently' % profile)
+    return []
 
 
 def generate_launch_description():
@@ -300,7 +281,7 @@ def generate_launch_description():
 
         OpaqueFunction(function=_safety_setup),
 
-        OpaqueFunction(function=_cliff_setup),
+        OpaqueFunction(function=_cliff_guard),
 
         # Direction-aware stop zone (narrow sides while driving straight,
         # wide while turning — a plain `polygon` STOP shape is direction-
@@ -385,53 +366,35 @@ def generate_launch_description():
             output='screen',
         ),
 
-        # 2 Hz color feed for apriltag (2026-08-24): the detector was running
-        # on every 15 fps frame at ~16% of a core, and tag refresh (passive
-        # tag_watch, register_tag) needs nothing faster than ~2 Hz. C++
-        # throttle, so the 15 Hz subscription costs ~nothing. camera_info is
-        # NOT throttled — apriltag's exact-time sync matches the 2 Hz images
-        # against the full-rate info stream by identical RealSense stamps.
-        Node(
-            package='topic_tools',
-            executable='throttle',
-            name='apriltag_color_throttle',
-            output='screen',
-            arguments=['messages', '/camera/camera/color/image_raw', '2.0',
-                       '/apriltag_color_throttled/image_raw'],
-        ),
-
-        # ⚠ image_transport's CameraSubscriber derives the camera_info topic
-        # from the image topic's namespace and IGNORES a camera_info remap —
-        # so the info stream must exist INSIDE the throttled namespace. Full
-        # rate relay (info messages are tiny): every 2 Hz image then finds an
-        # exactly-stamped partner.
+        # AprilTag detection runs on the COMPANION (ADR-0034) — the Pi shed
+        # the throttle + info relay + apriltag_node trio; the companion
+        # detects on the bridged 5 fps JPEG stream and its /detections cross
+        # back over zenoh under the same topic name. Tag TF frames arrive on
+        # /tf_tags (a dedicated topic: reverse-bridging /tf itself would
+        # carry the companion rtabmap's map->odom into this graph), and this
+        # relay folds them into /tf so tag_relocalizer's and scout-skills'
+        # lookups are byte-identical to the Pi-local era. Companion down =
+        # no tag refresh AND no tag boot-relocalization (ADR-0034 trade);
+        # scout/config/apriltag.yaml is retired to companion/config/.
         Node(
             package='topic_tools',
             executable='relay',
-            name='apriltag_info_relay',
+            name='tag_tf_relay',
             output='screen',
-            arguments=['/camera/camera/color/camera_info',
-                       '/apriltag_color_throttled/camera_info'],
+            arguments=['/tf_tags', '/tf'],
         ),
 
-        # Official AprilTag detector (apriltag_ros), single family — see
-        # apriltag.yaml for why the all-families fan-out was reverted.
-        # /detections + a TF frame per tag off the D455 color stream (2 Hz
-        # throttled — see above). Tag MEANING (names/roles/home) lives in
-        # scout-skills' registry.
-        # respawn: vision-only feature; a crash loses tag refresh, not motion
-        # (ADR-0015 tier 2).
+        # Boot relocalization off the portable home base (2026-08-27): first
+        # sighting of a registered tag solves the robot's map pose from the
+        # tag's surveyed registry pose and seeds /initialpose (slam runs in
+        # localization mode via site policy, so a cold boot anywhere the tag
+        # is visible localizes without a human /initialpose click). One seed
+        # per boot; /tag_relocalizer/reseed re-arms. respawn: vision-only,
+        # same tier as apriltag (ADR-0015 tier 2).
         Node(
-            package='apriltag_ros',
-            executable='apriltag_node',
-            name='apriltag',
+            package='scout',
+            executable='tag_relocalizer',
             output='screen',
-            parameters=[os.path.join(config, 'apriltag.yaml')],
-            remappings=[
-                ('image_rect', '/apriltag_color_throttled/image_raw'),
-                ('camera_info', '/camera/camera/color/camera_info'),
-                ('detections', '/detections'),
-            ],
             respawn=True,
             respawn_delay=2.0,
         ),
@@ -454,6 +417,26 @@ def generate_launch_description():
                 ('flipper/cli', '/flipper/cli'),
                 ('rfid/reads', '/rfid/reads'),
                 ('nfc/reads', '/nfc/reads'),
+            ],
+            respawn=True,
+            respawn_delay=2.0,
+        ),
+
+        # M7E Hecto UHF reader bridge (ADR-0032): enable-gated continuous EPC
+        # Gen2 inventory (/uhf/enable from the webui UHF panel), batched
+        # pose-stamped reads on /uhf/reads -> zenoh -> companion uhf_recorder.
+        # Reader absent is normal — the node idles and retries. respawn: USB
+        # unplug/replug is recoverable; loss degrades UHF only, the robot
+        # stays drivable (ADR-0015 tier 2).
+        Node(
+            package='scout',
+            executable='uhf_node',
+            output='screen',
+            parameters=[os.path.join(config, 'uhf.yaml')],
+            remappings=[
+                ('uhf/status', '/uhf/status'),
+                ('uhf/enable', '/uhf/enable'),
+                ('uhf/reads', '/uhf/reads'),
             ],
             respawn=True,
             respawn_delay=2.0,

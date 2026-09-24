@@ -456,6 +456,11 @@ async def save_waypoint(name: str) -> dict:
         "saved": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
         "source": "operator",
     }
+    # Stamp the map the pose belongs to (ADR-0029). Absent = legacy = assume
+    # the active map.
+    active = tagdb.active_map_name()
+    if active:
+        pts[name]["map"] = active
     _store_waypoints(store)
     return {"saved": {name: pts[name]}, "waypoint_count": len(pts)}
 
@@ -491,8 +496,131 @@ async def go_to_waypoint(name: str) -> dict:
     if name not in pts:
         raise ToolError(f"no waypoint {name!r} — have: {sorted(pts) or 'none'}")
     target = pts[name]
+    wp_map, active = target.get("map"), tagdb.active_map_name()
+    if wp_map and active and wp_map != active:
+        raise ToolError(
+            f"waypoint {name!r} belongs to map {wp_map!r} (active: {active!r})"
+            " — switch maps first (switch_map / webui Site panel)"
+        )
     result = await _dispatch_goal(target["x"], target["y"], target["yaw"])
     return {"waypoint": name} | result
+
+
+# --- site maps (ADR-0029) ------------------------------------------------------
+#
+# A site holds multiple labeled maps (one per floor); site.json's active_map
+# is the one slam/amcl runs on. In localization mode the grid can be swapped
+# live through map_server's LoadMap; mapping modes bind the map at slam launch,
+# so switching there restarts the slam container (~20 s, via fleet_status).
+
+# The slam container's view of the same maps dir — LoadMap runs THERE, so the
+# path must be its, not ours (same hardcode as the webui Save Map button).
+SLAM_MAPS_DIR = "/ros_ws/src/sites/active/maps"
+
+
+def _load_site() -> dict:
+    """site.json normalized to {slam_mode, active_map, maps:{name: entry}}.
+    Tolerates v1 (default_map + top-level map_start_pose) and v2 (ADR-0029)."""
+    try:
+        with open(tagdb.SITE_JSON) as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    site = {
+        "slam_mode": data.get("slam_mode") or "auto",
+        "active_map": data.get("active_map") or data.get("default_map"),
+        "maps": data.get("maps") if isinstance(data.get("maps"), dict) else {},
+    }
+    if not site["maps"] and site["active_map"]:
+        site["maps"] = {site["active_map"]: {
+            "map_start_pose": data.get("map_start_pose") or [0.0, 0.0, 0.0]}}
+    return site
+
+
+@mcp.tool
+async def switch_map(name: str) -> dict:
+    """Switch the active site's map (e.g. to another floor). In localization
+    mode the grid swaps live (~1 s) and the pose is re-seeded at the map's
+    start pose — reseed via a registered AprilTag (or the webui) if the robot
+    isn't there. In mapping modes this RESTARTS the slam container (~20 s of
+    no /map and no map->odom). Refused mid-drive."""
+    site = _load_site()
+    if name not in site["maps"]:
+        raise ToolError(
+            f"no map {name!r} in the active site — have: "
+            f"{sorted(site['maps']) or 'none'}"
+        )
+    if name == site["active_map"]:
+        return {"active_map": name, "note": "already active"}
+    await _require_motion_idle()
+
+    mode = site["slam_mode"]
+    out: dict = {"active_map": name, "previous": site["active_map"],
+                 "slam_mode": mode}
+    if mode == "localization":
+        # Our view of the grid file; LoadMap gets the slam container's path.
+        local = os.path.join(os.path.dirname(tagdb.SITE_JSON), "maps",
+                             f"{name}.yaml")
+        if not os.path.exists(local):
+            raise ToolError(
+                f"map {name!r} has no grid (.yaml/.pgm) — re-save it from a "
+                "mapping session (webui Save Map) before localizing on it"
+            )
+        async with RosBridge() as rb:
+            values = await rb.call_service(
+                "/map_server/load_map",
+                "nav2_msgs/srv/LoadMap",
+                {"map_url": f"{SLAM_MAPS_DIR}/{name}.yaml"},
+            )
+            if values.get("result", 255) != 0:
+                raise ToolError(
+                    f"map_server LoadMap failed (result={values.get('result')})"
+                )
+            pose = (site["maps"][name].get("map_start_pose")
+                    or [0.0, 0.0, 0.0])
+            msg = _stamped_pose(float(pose[0]), float(pose[1]), float(pose[2]))
+            cov = [0.0] * 36
+            cov[0] = cov[7] = 0.25
+            cov[35] = math.radians(15.0) ** 2
+            await rb.publish(
+                "/initialpose",
+                "geometry_msgs/msg/PoseWithCovarianceStamped",
+                {"header": msg["header"],
+                 "pose": {"pose": msg["pose"], "covariance": cov}},
+            )
+            # Re-arm the tag relocalizer so the next registered-tag sighting
+            # refines the coarse start pose on the new map.
+            try:
+                await rb.call_service(
+                    "/tag_relocalizer/reseed", "std_srvs/srv/Trigger")
+            except RosBridgeError:
+                pass
+        out["switched"] = "live (map_server LoadMap)"
+        out["note"] = ("pose seeded at the map's start pose — show the robot "
+                       "a registered tag (or set /initialpose) to refine")
+    else:
+        out["switched"] = "slam restart pending (~20 s)"
+
+    # Persist active_map — fleet_status owns site.json writes.
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            resp = await http.post(
+                f"{FLEET_STATUS_URL}/api/sites/active",
+                json={"active_map": name},
+            )
+            resp.raise_for_status()
+            if mode != "localization":
+                for svc in ("slam", "behaviors"):
+                    await http.post(
+                        f"{FLEET_STATUS_URL}/api/containers/{svc}/restart")
+    except httpx.HTTPError as e:
+        raise ToolError(
+            f"map loaded but active_map not persisted ({e!r}) — the next slam "
+            "restart will revert; retry switch_map or set it in the webui"
+        ) from e
+    return out
 
 
 # --- relative motion (bypasses Nav2) -----------------------------------------
@@ -585,6 +713,10 @@ async def nav_status() -> dict:
 COLOR_TOPIC = "/camera/camera/color/image_raw"
 DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"
 CAMERA_INFO_TOPIC = "/camera/camera/color/camera_info"
+# Per-frame boxes + distance/map enrichment from the companion world
+# detector (ADR-0033): the primary source for detect_objects so YOLO no
+# longer runs on the Pi. Silent => companion down => local inference.
+WORLD_DETECTIONS_TOPIC = "/world/detections"
 
 
 def _img_to_np(msg: dict) -> np.ndarray:
@@ -634,7 +766,9 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
     world_query once. Each detection here gets a camera distance and, when
     depth + TF cooperate, a map-frame position usable with go_to. For objects
     outside the COCO label set, use camera_snapshot and read the frame
-    visually."""
+    visually. Detections come from the companion world model (boxes may lag
+    the frame ~1 s — fine when stationary); Pi-local inference is the
+    companion-down fallback and is reported in `notes.source`."""
     async with RosBridge() as rb:
         color = await rb.subscribe_once(
             COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=5.0
@@ -643,34 +777,78 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
             raise ToolError(
                 f"no frame on {COLOR_TOPIC} within 5 s — is the robot service up?"
             )
-        info = await rb.subscribe_once(
-            CAMERA_INFO_TOPIC, "sensor_msgs/msg/CameraInfo", timeout=3.0
+        # Companion detections first (ADR-0033): the world detector already
+        # runs YOLO on this same stream, so the Pi doesn't. Boxes arrive
+        # already carrying distance_m/position_map — no depth or TF fetch
+        # needed. Silent topic => companion down => local inference below.
+        det_msg = await rb.subscribe_once(
+            WORLD_DETECTIONS_TOPIC, "std_msgs/msg/String", timeout=2.5
         )
-        # Aligned depth + TF are enrichment: detection still works without
-        # them, the objects just come back with null distance/position.
-        depth_msg = await rb.subscribe_once(
-            DEPTH_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
-        )
-        tree = TfTree()
-        # Collect, don't subscribe_once: /tf_static has multiple latched
-        # publishers (camera internals + URDF chain) and one message is not
-        # the whole tree — the cause of silently missing map positions.
-        for m in await rb.subscribe_collect(
-            "/tf_static", "tf2_msgs/msg/TFMessage", duration=1.0
-        ):
-            tree.add_message(m)
-        for m in await rb.subscribe_collect(
-            "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
-        ):
-            tree.add_message(m)
+        info = depth_msg = None
+        tree = None
+        if det_msg is None:
+            info = await rb.subscribe_once(
+                CAMERA_INFO_TOPIC, "sensor_msgs/msg/CameraInfo", timeout=3.0
+            )
+            # Aligned depth + TF are enrichment: detection still works
+            # without them, the objects just come back with null
+            # distance/position.
+            depth_msg = await rb.subscribe_once(
+                DEPTH_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
+            )
+            tree = TfTree()
+            # Collect, don't subscribe_once: /tf_static has multiple latched
+            # publishers (camera internals + URDF chain) and one message is
+            # not the whole tree — the cause of silently missing map
+            # positions.
+            for m in await rb.subscribe_collect(
+                "/tf_static", "tf2_msgs/msg/TFMessage", duration=1.0
+            ):
+                tree.add_message(m)
+            for m in await rb.subscribe_collect(
+                "/tf", "tf2_msgs/msg/TFMessage", duration=0.8
+            ):
+                tree.add_message(m)
 
     rgb = _img_to_np(color)
+
+    if det_msg is not None:
+        try:
+            payload = json.loads(det_msg["data"])
+        except (KeyError, ValueError) as e:
+            raise ToolError(f"malformed /world/detections payload: {e}") from e
+        dets = [d for d in payload.get("objects", [])
+                if d.get("confidence", 0.0) >= min_confidence]
+        notes: list[str] = ["source: companion world model"]
+        # Boxes were computed on the companion's last processed frame, which
+        # lags the frame just grabbed by up to ~1 s — fine on a stationary
+        # robot; flag it when the gap is bigger.
+        dstamp = payload.get("stamp")
+        h = color.get("header", {}).get("stamp", {})
+        if dstamp and h:
+            age = (h.get("sec", 0) + h.get("nanosec", 0) * 1e-9) - dstamp
+            if age > 1.5:
+                notes.append(
+                    f"detections are {age:.1f} s older than the frame — "
+                    "boxes may not line up if the robot moved")
+        png = await asyncio.to_thread(annotate, rgb, dets)
+        meta = {
+            "objects": dets,
+            "count": len(dets),
+            "min_confidence": min_confidence,
+            "notes": notes,
+        }
+        return [json.dumps(meta),
+                Image(data=png, format="png").to_image_content()]
+
+    # --- companion-down fallback: local YOLO (the pre-ADR-0033 path) -------
     # ~0.5–1 s of CPU on the Pi — off the event loop so nav/status calls
     # keep answering.
     dets = await asyncio.to_thread(detect, rgb, min_confidence)
 
     depth = _img_to_np(depth_msg) if depth_msg is not None else None
-    notes: list[str] = []
+    notes: list[str] = [
+        "source: Pi-local inference (companion world model offline)"]
     if depth is None:
         notes.append(
             f"no aligned depth on {DEPTH_TOPIC} — distances/positions omitted "
@@ -1020,6 +1198,103 @@ async def list_nfc_tags() -> dict:
     return {"count": len(tags), "tags": tags}
 
 
+# --- UHF RFID (M7E Hecto, ADR-0032) --------------------------------------------
+#
+# uhf_node (robot service) owns the M7E's serial port and runs a continuous
+# EPC Gen2 inventory ONLY while a human has enabled scanning in the webui UHF
+# panel (/uhf/enable). Reads land BATCHED and pose-stamped on /uhf/reads; the
+# companion's uhf_recorder is the primary DB and republishes /uhf/registry
+# (per-EPC RSSI-weighted centroid position + spread) back across the bridge.
+
+UHF_STATUS_TOPIC = "/uhf/status"
+UHF_READS_TOPIC = "/uhf/reads"
+UHF_REGISTRY_TOPIC = "/uhf/registry"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def wait_uhf_read(timeout_s: float = 30.0) -> dict:
+    """Wait for the NEXT batch of UHF tag reads from the M7E reader and return
+    it (a batch = every EPC heard in one ~100 ms window, each with RSSI, raw
+    phase, frequency, plus ONE map pose for the window — filter the reads list
+    by epc yourself). Does NOT start scanning — the inventory loop is enabled
+    by a human in the webui UHF panel, never by tools; if scanning is disabled
+    this fails immediately with instructions instead of waiting. UHF reads at
+    range (~1.5-2.5 m at the capped power), so driving PAST tags is enough.
+    Returns within timeout_s or reports that nothing was read."""
+    timeout_s = max(1.0, min(timeout_s, 120.0))
+    async with RosBridge() as rb:
+        status_msg = await rb.subscribe_once(
+            UHF_STATUS_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+        if status_msg is None:
+            raise ToolError(
+                "uhf_node silent (/uhf/status) — robot service down or node "
+                "not launched"
+            )
+        status = json.loads(status_msg["data"])
+        if not status.get("connected"):
+            raise ToolError("UHF reader not connected (USB)")
+        if not status.get("enabled"):
+            raise ToolError(
+                "UHF scanning is disabled — enable it in the webui UHF panel "
+                "first (manual gate, ADR-0032)"
+            )
+        # The latched depth-50 window replays PAST batches on subscribe;
+        # swallow that backlog first, then wait for a new batch_id.
+        await rb.subscribe(UHF_READS_TOPIC, "std_msgs/msg/String")
+        seen: set = set()
+        deadline = asyncio.get_event_loop().time() + timeout_s
+        settling = True
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                return {
+                    "status": "no tags read within %.0f s (scanning stays "
+                    "enabled)" % timeout_s,
+                    "batch": None,
+                }
+            msg = await rb.recv_msg(
+                UHF_READS_TOPIC, timeout=0.5 if settling else remaining
+            )
+            if msg is None:
+                settling = False  # replay backlog drained; now block for new
+                continue
+            batch = json.loads(msg["data"])
+            if settling:
+                seen.add(batch.get("batch_id"))
+                continue
+            if batch.get("batch_id") not in seen:
+                return {"status": "read", "batch": batch}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_uhf_tags() -> dict:
+    """Every UHF (EPC Gen2) tag Scout has ever read at this site, one row per
+    EPC with hit count, last-seen time, last RSSI, and est_pose — the
+    RSSI-weighted centroid of all localized read positions (stage-1 accuracy
+    1-3 m; spread_m is the weighted RMS scatter, a rough confidence; hand
+    est_pose to go_to to drive to a tag). Served from the companion's
+    persistent per-site DB via the latched /uhf/registry; empty with a note
+    when the companion is offline or no reads exist yet."""
+    async with RosBridge() as rb:
+        msg = await rb.subscribe_once(
+            UHF_REGISTRY_TOPIC, "std_msgs/msg/String", timeout=3.0
+        )
+    if msg is None:
+        return {
+            "status": "uhf registry offline (companion down, /uhf/registry "
+            "not bridged, or no reads recorded yet)",
+            "count": 0,
+            "tags": [],
+        }
+    try:
+        payload = json.loads(msg["data"])
+    except (KeyError, ValueError) as e:
+        raise ToolError(f"malformed /uhf/registry payload: {e}") from e
+    tags = payload.get("tags", [])
+    return {"count": len(tags), "tags": tags}
+
+
 # --- AprilTags ---------------------------------------------------------------
 #
 # Registry (sqlite, /maps/tags.db) + standoff geometry live in tags.py;
@@ -1104,11 +1379,13 @@ async def _scan_tags(update_waypoints: bool = True):
                 if entry["role"] == "home":
                     out["home"] = True
             pose = out.get("standoff")
+            active = tagdb.active_map_name()
             tagdb.record_sighting(
                 family, tag_id,
                 tuple(out["position_map"]) + (pose["yaw"],)
                 if pose and "position_map" in out
                 else None,
+                map_name=active,
             )
             if update_waypoints and pose:
                 store = _load_waypoints()
@@ -1118,6 +1395,8 @@ async def _scan_tags(update_waypoints: bool = True):
                     ),
                     "source": "tag",
                 }
+                if active:
+                    store["waypoints"][entry["name"]]["map"] = active
                 _store_waypoints(store)
                 out["waypoint_refreshed"] = entry["name"]
         out["_box"] = [
@@ -1191,9 +1470,12 @@ async def register_tag(
     """Register (or update) an AprilTag's MEANING: name it ("doghouse"), give
     it a role ("home" marks the robot's home), record its printed size.
     ⚠ Detection coverage is separate: the apriltag_ros node detects the
-    family/size configured in scout/config/apriltag.yaml (robot-service
-    restart to change) — registering here names tags that node can already
-    see."""
+    family/size configured in companion/config/apriltag.yaml (companion
+    apriltag service restart to change, ADR-0034) — registering here names
+    tags that node can already see.
+    A tag's surveyed pose is stamped with the map it was seen on
+    (ADR-0029) — one surveyed pose per tag ID, so use a DISTINCT physical tag
+    per floor/map."""
     if not (0.01 <= size_m <= 2.0):
         raise ToolError("size_m implausible — meters, black square edge only")
     return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}
@@ -1201,9 +1483,9 @@ async def register_tag(
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def list_tags() -> dict:
-    """Registered AprilTags with last-seen info, plus the passive watcher
-    state (scans every 2 s and refreshes tag waypoints when the camera is
-    up)."""
+    """Registered AprilTags with last-seen info (incl. map_name — the map each
+    tag's pose was surveyed on), plus the passive watcher state (scans every
+    2 s and refreshes tag waypoints when the camera is up)."""
     return {
         "tags": tagdb.all_tags(),
         "watcher": {"enabled": _tag_watch_enabled, "last_scan": _tag_watch_last},
@@ -1398,7 +1680,7 @@ async def recording_status() -> dict:
 # The container is profile-gated and pre-created (Created state, never
 # started) by scout-switch at deploy time; `explore_start` below brings a
 # Created/STOPPED container up through fleet_status's container API
-# (http://127.0.0.1:9002, docker socket lives THERE, scoped to this compose
+# (http://127.0.0.1:9003, docker socket lives THERE, scoped to this compose
 # project) — mounting the docker socket into this no-auth LAN MCP container
 # directly would let anyone on the LAN root the Pi, so lifecycle goes through
 # that narrower API instead. Pause/resume of a RUNNING explorer stays a ROS
@@ -1406,7 +1688,9 @@ async def recording_status() -> dict:
 # rosbridge_websocket) tells us whether the node is up at all.
 
 EXPLORE_RESUME_TOPIC = "/explore/resume"
-FLEET_STATUS_URL = os.environ.get("FLEET_STATUS_URL", "http://127.0.0.1:9002")
+# 9003 = fleet_status (9002 is observability_mcp — a former wrong default
+# here silently broke explore_start).
+FLEET_STATUS_URL = os.environ.get("FLEET_STATUS_URL", "http://127.0.0.1:9003")
 # explore_lite takes a few seconds to boot + subscribe /explore/resume.
 EXPLORE_NODE_WAIT_S = 25.0  # profile-exempt: a boot wait, not publish_hz
 
@@ -1589,6 +1873,403 @@ async def explore_status() -> dict:
         "auto_pause_remaining_min": remaining,
         "nav": status or "no recent status traffic",
         "robot": robot or "unknown (/pose silent)",
+    }
+
+
+# --- elevator (Schindler RBL, ADR-0030) ----------------------------------------
+#
+# Scout rides Schindler PORT elevators through the RBL Robot API. The HTTP
+# client + ride state machine live in the schindler-rbl SDK (private
+# BG-BGI/schindler-rbl, SHA-pinned in this image's Dockerfile); this section
+# owns config, the rosbridge motion adapter, and the tool surface.
+# Deployment identity/gateway = env (SCHINDLER_*, read once per container
+# start); building topology = sites/active/elevator.json, opened per call so
+# a site switch applies live (ADR-0023). ⚠ floorNumber everywhere here is the
+# API's 1-based index among SERVED stops, NOT the displayed label — sandbox
+# floorNumber 2 is label "0" (Lobby). Map labels via elevator_floors.
+
+from elevator_config import load_elevator_config, resolve_elevator  # noqa: E402
+from schindler_rbl import (  # noqa: E402
+    ElevatorRide,
+    RobotAdapter,
+    SchindlerClient,
+    SchindlerError,
+    identity_from_env,
+)
+
+ELEVATOR_CONFIG_PATH = os.environ.get(
+    "ELEVATOR_CONFIG_PATH", "/sites/active/elevator.json"
+)
+ELEV_NAV_POLL_S = 2.0  # profile-exempt: API/nav poll cadence, not publish_hz
+ELEV_NAV_WAIT_S = 180.0  # profile-exempt: wait ceiling
+ELEV_ENTER_WAIT_S = 300.0  # profile-exempt: wait ceiling (POST → door open)
+ELEV_EXIT_WAIT_S = 600.0  # profile-exempt: wait ceiling (ride → door open)
+ELEV_BOARD_SPEED = 0.25  # profile-exempt: boarding creep, clamped by motion floors
+
+_schindler: SchindlerClient | None = None
+_ride_obj: ElevatorRide | None = None
+_ride_task: asyncio.Task | None = None
+_active_call: dict | None = None  # {"call_id", "equipment", "elevator"}
+
+
+def _schindler_client() -> SchindlerClient:
+    """Lazy singleton — the mTLS handshake is expensive, unlike the plain-HTTP
+    fleet_status calls. Env (the SDK's SCHINDLER_* contract) is read once;
+    changing it needs a container restart (matches every other env-configured
+    sidecar)."""
+    global _schindler
+    if _schindler is None:
+        try:
+            _schindler = SchindlerClient.from_env()
+        except ValueError as e:
+            raise ToolError(
+                f"elevator tools not configured: {e} — fill the Schindler "
+                "block in .env and check the ./secrets mount (ADR-0030)"
+            ) from e
+    return _schindler
+
+
+async def _elev(coro):
+    """Run one SDK call, mapping failures to actionable ToolErrors."""
+    global _active_call
+    try:
+        return await coro
+    except SchindlerError as e:
+        if e.status_code == 401:
+            raise ToolError(
+                f"RBL auth failed ({e}) — check the client cert/key in "
+                "secrets/schindler/ and SCHINDLER_BEARER"
+            ) from e
+        if e.status_code == 404 and _active_call:
+            stale, _active_call = _active_call, None
+            raise ToolError(
+                f"call {stale['call_id']} unknown to the gateway ({e}) — "
+                "stale state cleared, elevator_call to start fresh"
+            ) from e
+        raise ToolError(str(e)) from e
+    except httpx.HTTPError as e:
+        raise ToolError(
+            f"PORT gateway unreachable ({e!r}) — check SCHINDLER_BASE_URL, "
+            "the secrets mount, and the network path (env is read once per "
+            "container start)"
+        ) from e
+
+
+def _load_elevator_cfg() -> dict:
+    try:
+        with open(ELEVATOR_CONFIG_PATH) as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        raise ToolError(
+            "no elevator.json for the active site — author "
+            "sites/<active>/elevator.json (schema in "
+            "docker/scout-skills/elevator_config.py, ADR-0030)"
+        ) from None
+    except json.JSONDecodeError as e:
+        raise ToolError(f"elevator.json is not valid JSON: {e}") from e
+    try:
+        return load_elevator_config(data)
+    except ValueError as e:
+        raise ToolError(f"elevator.json invalid: {e}") from e
+
+
+def _identity_for(entry: dict) -> dict | None:
+    """Per-elevator identity, else the deployment default (SCHINDLER_IDENTITY).
+    The sandbox (and PORT access management generally) REQUIRES identity on
+    POST /calls."""
+    return entry.get("identity") or identity_from_env()
+
+
+class _RosbridgeAdapter(RobotAdapter):
+    """Motion primitives over rosbridge. nav_to_door drives Nav2 to the
+    floor's door waypoint; board/exit are dead-reckoned run_move — the car
+    interior is unmapped, so Nav2 has no business in there."""
+
+    def __init__(self, floors_cfg: dict):
+        self._floors = floors_cfg
+
+    async def nav_to_door(self, floor_number: int) -> None:
+        wp_name = (self._floors.get(floor_number) or {}).get("door_waypoint")
+        if not wp_name:
+            raise RuntimeError(
+                f"floor {floor_number} has no door_waypoint in elevator.json"
+            )
+        pts = _load_waypoints()["waypoints"]
+        if wp_name not in pts:
+            raise RuntimeError(
+                f"door_waypoint {wp_name!r} not in waypoints — save_waypoint first"
+            )
+        target = pts[wp_name]
+        result = await _dispatch_goal(target["x"], target["y"], target["yaw"])
+        if not result["accepted"]:
+            raise RuntimeError(f"nav goal to {wp_name!r} not accepted: {result['nav']}")
+        while True:  # ceiling enforced by ElevatorRide's wait_for
+            await asyncio.sleep(ELEV_NAV_POLL_S)
+            async with RosBridge() as rb:
+                status = await _nav_status(rb)
+            if status is None:
+                continue
+            if status["status"] == "arrived":
+                return
+            if status["status"] in ("aborted", "canceled"):
+                raise RuntimeError(f"nav to {wp_name!r} ended {status['status']}")
+
+    async def board(self, depth_m: float) -> float:
+        await _require_motion_idle()
+        result = await run_move(depth_m, ELEV_BOARD_SPEED)
+        return abs(result["achieved_m"])
+
+    async def exit_move(self, distance_m: float) -> float:
+        await _require_motion_idle()
+        result = await run_move(distance_m, ELEV_BOARD_SPEED)
+        return result["achieved_m"]
+
+
+async def _refresh_active_call() -> dict | None:
+    """GET the active call if any; clears state on gateway 404. A running
+    ride's call counts as active even before _active_call is registered."""
+    global _active_call
+    call_id = (_active_call or {}).get("call_id")
+    if not call_id and _ride_obj and _ride_task and not _ride_task.done():
+        call_id = _ride_obj.call_id
+    if not call_id:
+        return None
+    try:
+        return await _schindler_client().get_call(call_id)
+    except SchindlerError as e:
+        if e.status_code == 404:
+            _active_call = None
+            return None
+        raise
+
+
+def _floor_report(cfg_floors: dict, api_floors: list[dict]) -> list[dict]:
+    """Merge GET /floors with elevator.json coverage."""
+    out = []
+    for fl in api_floors:
+        num = fl.get("floorNumber")
+        cfg = cfg_floors.get(num) or {}
+        out.append(
+            fl
+            | {
+                "door_waypoint": cfg.get("door_waypoint"),
+                "configured": num in cfg_floors,
+            }
+        )
+    return out
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def elevator_floors(elevator: str | None = None) -> dict:
+    """Served floors of an elevator (GET /floors) merged with this site's
+    elevator.json coverage — which floorNumbers have a door waypoint and can
+    be boarded from. ⚠ floorNumber is the 1-based index among served stops,
+    NOT the displayed label (floorLabel): boarding the lobby usually means
+    floorNumber 2, not 0."""
+    cfg = _load_elevator_cfg()
+    try:
+        name, entry = resolve_elevator(cfg, elevator)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    api_floors = await _elev(_schindler_client().floors(entry["equipment_number"]))
+    return {
+        "elevator": name,
+        "equipment_number": entry["equipment_number"],
+        "floors": _floor_report(entry["floors"], api_floors),
+    }
+
+
+@mcp.tool
+async def elevator_call(
+    entry_floor: int,
+    exit_floor: int,
+    elevator: str | None = None,
+    evaluate: bool = False,
+) -> dict:
+    """Call the elevator (POST /calls) WITHOUT moving the robot — the manual
+    counterpart of elevator_ride, for bench tests and recovery (e.g. robot
+    already inside after a cancel: call again, then elevator_confirm).
+    evaluate=True checks availability only (no call is entered). Floors are
+    API floorNumbers (see elevator_floors). One active call at a time; the
+    door opens only while the call is held, and PORT aborts it if the Enter
+    window lapses. 'Elevator is busy' rejections are normal traffic — retry."""
+    global _active_call
+    cfg = _load_elevator_cfg()
+    try:
+        name, entry = resolve_elevator(cfg, elevator)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    current = await _elev(_refresh_active_call())
+    if current and not evaluate:
+        raise ToolError(
+            f"call {_active_call['call_id']} is still {current.get('callStatus')} — "
+            "elevator_cancel first (one active call at a time)"
+        )
+    side_entry = (entry["floors"].get(entry_floor) or {}).get("entrance_side", "Front")
+    side_exit = (entry["floors"].get(exit_floor) or {}).get("entrance_side", "Front")
+    state = await _elev(
+        _schindler_client().create_call(
+            entry["equipment_number"],
+            entry_floor,
+            exit_floor,
+            side_entry,
+            side_exit,
+            "Evaluate" if evaluate else "Request",
+            _identity_for(entry),
+        )
+    )
+    if not evaluate and state.get("callId"):
+        _active_call = {
+            "call_id": state["callId"],
+            "equipment": entry["equipment_number"],
+            "elevator": name,
+        }
+        state["note"] = "call active — poll elevator_status; confirm with elevator_confirm"
+    return state
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def elevator_status() -> dict:
+    """Single polling surface for elevator work: the active call's CallState
+    (GET /calls) and the ride task's phase, if elevator_ride is running.
+    callStatus Enter/Exit = door open, the elevator is waiting on the robot's
+    confirm — those windows are elevator-timed, don't dawdle."""
+    call = await _elev(_refresh_active_call())
+    ride = _ride_obj.snapshot() if _ride_obj else None
+    if ride and _ride_task and not _ride_task.done():
+        ride["running"] = True
+    return {"call": call, "ride": ride}
+
+
+@mcp.tool
+async def elevator_confirm(state: str) -> dict:
+    """Manually confirm the active call's door transition (PATCH
+    callerState): 'Enter' = robot finished boarding (elevator departs),
+    'Exit' = robot finished exiting (call completes). Only for driving the
+    sequence by hand — elevator_ride confirms automatically."""
+    global _active_call
+    if state not in ("Enter", "Exit"):
+        raise ToolError("state must be 'Enter' or 'Exit'")
+    if not _active_call:
+        raise ToolError("no active call — elevator_call first")
+    result = await _elev(_schindler_client().confirm(_active_call["call_id"], state))
+    if state == "Exit":
+        _active_call = None
+    return result
+
+
+@mcp.tool
+async def elevator_cancel() -> dict:
+    """Cancel elevator work: stops a running elevator_ride task, DELETEs the
+    active call (→ Aborted), and reminds what it does NOT stop. ⚠ A nav goal
+    already dispatched keeps driving — nav_cancel stops the robot. ⚠ If the
+    robot is inside the car, per the RBL spec it must POST a NEW call
+    (elevator_call from the car's current floor) to finish the trip."""
+    global _active_call, _ride_task
+    notes = []
+    inside = False
+    if _ride_task and not _ride_task.done():
+        inside = _ride_obj is not None and _ride_obj.snapshot()["maybe_inside_car"]
+        _ride_task.cancel()
+        notes.append("ride task cancelled")
+    if _active_call:
+        await _elev(_schindler_client().cancel(_active_call["call_id"]))
+        notes.append(f"call {_active_call['call_id']} deleted (→ Aborted)")
+        _active_call = None
+    if not notes:
+        return {"cancelled": False, "note": "nothing active"}
+    notes.append("a dispatched nav goal keeps driving — nav_cancel to stop the robot")
+    if inside:
+        notes.append(
+            "robot may be INSIDE the car — elevator_call a new trip to complete travel"
+        )
+    return {"cancelled": True, "notes": notes}
+
+
+@mcp.tool
+async def elevator_ride(
+    entry_floor: int, exit_floor: int, elevator: str | None = None
+) -> dict:
+    """⚠ AUTONOMOUS MULTI-STEP MOTION: drives to the door waypoint, calls the
+    elevator, BOARDS when the door opens, rides, and drives out at the
+    destination — all unattended after this returns. Poll elevator_status
+    (phases: nav_to_door → calling → wait_car → board → confirm_enter →
+    riding → exit_move → confirm_exit → done). Abort with elevator_cancel
+    (+ nav_cancel if it was still driving to the door). ⚠ v1 has no
+    multi-floor maps: after exiting on another floor the robot is OFF-MAP and
+    localization is invalid until it returns to the mapped floor. If this
+    server dies mid-ride the PORT system times the call out server-side and
+    the motion loop zero-bursts to a stop."""
+    global _ride_obj, _ride_task
+    cfg = _load_elevator_cfg()
+    try:
+        name, entry = resolve_elevator(cfg, elevator)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
+    if _ride_task and not _ride_task.done():
+        raise ToolError(
+            f"a ride is already {_ride_obj.snapshot()['phase']} — elevator_cancel first"
+        )
+    if await _elev(_refresh_active_call()):
+        raise ToolError(
+            f"call {_active_call['call_id']} is still open — elevator_cancel first"
+        )
+    floor_entry = entry["floors"].get(entry_floor)
+    if not floor_entry:
+        raise ToolError(
+            f"entry floor {entry_floor} not configured for {name!r} — "
+            f"have: {sorted(entry['floors'])} (API floorNumbers, see elevator_floors)"
+        )
+    if not floor_entry.get("door_waypoint"):
+        raise ToolError(
+            f"entry floor {entry_floor} has no door_waypoint — save_waypoint at the "
+            "boarding position, then add it to elevator.json"
+        )
+    floor_exit = entry["floors"].get(exit_floor) or {}
+    await _require_motion_idle()
+
+    client = _schindler_client()
+    ride = ElevatorRide(
+        client,
+        _RosbridgeAdapter(entry["floors"]),
+        entry["equipment_number"],
+        entry_floor,
+        exit_floor,
+        entry_side=floor_entry["entrance_side"],
+        exit_side=floor_exit.get("entrance_side", "Front"),
+        identity=_identity_for(entry),
+        board_depth_m=floor_entry["board_depth_m"],
+        exit_move_m=floor_exit.get("exit_move_m", floor_entry["exit_move_m"]),
+        exit_direction=floor_exit.get("exit", floor_entry["exit"]),
+        poll_s=ELEV_NAV_POLL_S,
+        nav_wait_s=ELEV_NAV_WAIT_S,
+        enter_wait_s=ELEV_ENTER_WAIT_S,
+        exit_wait_s=ELEV_EXIT_WAIT_S,
+    )
+    _ride_obj = ride
+    _ride_task = asyncio.create_task(ride.run())
+
+    def _register_call(task: asyncio.Task) -> None:
+        global _active_call
+        if ride.call_id and ride.phase not in ("done", "aborted"):
+            _active_call = {
+                "call_id": ride.call_id,
+                "equipment": ride.equipment_number,
+                "elevator": name,
+            }
+
+    _ride_task.add_done_callback(_register_call)
+    return {
+        "accepted": True,
+        "plan": {
+            "elevator": name,
+            "equipment_number": entry["equipment_number"],
+            "entry_floor": entry_floor,
+            "exit_floor": exit_floor,
+            "door_waypoint": floor_entry["door_waypoint"],
+            "board_depth_m": floor_entry["board_depth_m"],
+        },
+        "note": "riding autonomously — poll elevator_status, abort with elevator_cancel",
     }
 
 

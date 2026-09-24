@@ -26,7 +26,7 @@
     "Image!depth": {
       "cameraState": {},
       "imageMode": {
-        "imageTopic": "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth"
+        "imageTopic": "/camera/camera/aligned_depth_to_color/image_raw"
       }
     },
     "RawMessages!registry": {

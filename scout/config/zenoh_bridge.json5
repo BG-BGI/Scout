@@ -18,7 +18,11 @@
         // Local DDS publishers routed OUT to the companion.
         publishers: [
           "^/camera/camera/color/image_raw/compressed$",
-          "^/camera/camera/aligned_depth_to_color/image_raw/compressedDepth$",
+          // Raw aligned depth, NOT compressedDepth (ADR-0033): the PNG
+          // encode was the most expensive per-frame cost this bridge forced
+          // on the Pi (~20-40 ms @5 Hz). Raw is ~3 MB/s on the wire —
+          // nothing on a LAN — and the companion decodes 16UC1 directly.
+          "^/camera/camera/aligned_depth_to_color/image_raw$",
           "^/camera/camera/color/camera_info$",
           "^/odom$",
           "^/scan$",
@@ -34,6 +38,8 @@
           "^/rfid/reads$",
           // Same, for NFC reads -> companion nfc_recorder (ADR-0026).
           "^/nfc/reads$",
+          // Batched pose-stamped UHF reads -> companion uhf_recorder (ADR-0032).
+          "^/uhf/reads$",
         ],
         // Read-only world-model telemetry INTO the Pi (WORLDMODEL.md gate 2).
         // First-ever inbound. Anchored, telemetry only — NOT a control topic;
@@ -41,11 +47,27 @@
         subscribers: [
           "^/world/objects$",
           "^/world/registry$",
+          // Per-frame detection boxes (+ distance/map pos) from the
+          // companion detector — feeds scout_skills' detect_objects so YOLO
+          // no longer runs on the Pi (ADR-0033). Read-only telemetry class.
+          "^/world/detections$",
           // Deduped RFID tag registry back from the companion recorder —
           // same read-only telemetry class as /world/registry (ADR-0025).
           "^/rfid/registry$",
           // Same, deduped NFC tag registry from nfc_recorder (ADR-0026).
           "^/nfc/registry$",
+          // UHF tag registry (per-EPC centroid) from uhf_recorder (ADR-0032).
+          "^/uhf/registry$",
+          // AprilTag detections from the companion apriltag node (ADR-0034) —
+          // feeds tag_relocalizer and scout-skills exactly as the Pi-local
+          // detector did. Read-only perception telemetry; it influences
+          // localization only through tag_relocalizer's own /initialpose
+          // logic on THIS side of the bridge, same as before the move.
+          "^/detections$",
+          // Tag TF frames from the companion apriltag, on a dedicated topic
+          // (never ^/tf$ inbound — that would admit rtabmap's map->odom).
+          // tag_tf_relay in robot.launch.py folds them into the Pi's /tf.
+          "^/tf_tags$",
         ],
         service_servers: [],
         service_clients: [],

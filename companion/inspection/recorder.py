@@ -44,7 +44,8 @@ from std_srvs.srv import Trigger
 
 RECORD_TOPICS = [
     "/camera/camera/color/image_raw/compressed",
-    "/camera/camera/aligned_depth_to_color/image_raw/compressedDepth",
+    # Raw aligned depth since ADR-0033 (PNG encode moved off the Pi).
+    "/camera/camera/aligned_depth_to_color/image_raw",
     "/camera/camera/color/camera_info",
     "/scan",
     "/odom",

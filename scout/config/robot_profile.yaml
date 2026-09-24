@@ -79,7 +79,10 @@ robot_profile:
   # Cross-surface: skills MCP + webui trigger recordings; the default topic
   # set is the diagnosis kit (odom chain, scan, cmd_vel, health). Override per
   # run with `ros2 param set /bag_recorder topics "[...]"` before /record/start.
-  record_topics: ["/odom", "/wheel_odom", "/imu/data", "/scan", "/cmd_vel_out", "/cmd_vel_trac", "/traction/status", "/roboclaw_status", "/battery", "/diagnostics", "/tf", "/tf_static"]
+  # /cmd_vel_auto + /cmd_vel_safe + the CM zone/sync wires + /stop_reason are
+  # the incident timeline (ADR-0036): one bag replay separates nav-idle, a CM
+  # polygon stop, a dead CM, an unacked zone push, and a mux override.
+  record_topics: ["/odom", "/wheel_odom", "/imu/data", "/scan", "/cmd_vel_auto", "/cmd_vel_safe", "/cmd_vel_out", "/cmd_vel_trac", "/collision_monitor/zone_mode", "/collision_monitor/bypassed", "/collision_monitor/zone_sync", "/stop_reason", "/traction/status", "/roboclaw_status", "/battery", "/diagnostics", "/tf", "/tf_static"]
   # Auto-stop guard: bag splitting is banned (Humble split-playback bug), so
   # the node SIGINTs the recorder itself after this long. Raise deliberately
   # for long captures.

@@ -95,12 +95,14 @@ def flipper_level(connected, rfid_enabled, last_error, nfc_enabled=False):
     return OK, 'flipper: not attached'
 
 
-def cliff_level(stop_points):
-    """cliff_detector's /cliff/stop_points width. Nonzero means a remembered
-    ledge sits in the forward stop corridor and the CM is holding the robot —
-    WARN so the operator sees WHY it stopped. The freshness gate above this is
-    the real safeguard: cliff_detector goes deliberately silent on camera/TF
-    loss, so STALE here means driving blind toward ledges (ADR-0024)."""
-    if stop_points:
-        return WARN, 'cliff: ledge in stop corridor (%d pts)' % stop_points
-    return OK, 'cliff: clear'
+def uhf_level(connected, enabled, throttled, last_error):
+    """uhf_node's latched /uhf/status (ADR-0032). No reader attached is NORMAL
+    (tier-2 peripheral) — only a fault while one was in use, or a thermal /
+    return-loss throttle while scanning, is WARN."""
+    if connected:
+        if enabled and throttled:
+            return WARN, 'uhf: scanning THROTTLED (temp or antenna return loss)'
+        return OK, ('uhf: scanning' if enabled else 'uhf: idle')
+    if last_error:
+        return WARN, 'uhf: disconnected (%s)' % last_error
+    return OK, 'uhf: not attached'

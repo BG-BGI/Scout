@@ -29,6 +29,7 @@ main() {
   # Pre-checkout branch, for the stale-build-cache decision below. The deploy
   # workflow checks out before calling us, so it passes the real value in.
   PREV_BRANCH="${SCOUT_PREV_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+  PREV_SHA=$(git rev-parse HEAD)
 
   git fetch origin "$BRANCH"
   git checkout -q "$BRANCH"
@@ -39,6 +40,15 @@ main() {
   if [ "$SHA" != "$(git rev-parse HEAD)" ]; then
     echo "checkout is at $(git rev-parse HEAD) but images were built for $SHA — refusing code/image mismatch" >&2
     exit 1
+  fi
+
+  # Boot-mode gate (LED pulse arm-window -> dev mode; docs/deploy.md):
+  # refresh the systemd units so the mechanism self-propagates. Needs root —
+  # sudo -n skips silently where the runner lacks passwordless sudo; a warn
+  # surfaces that the one-time manual install is still pending.
+  if [ -f scripts/install-bootmode.sh ]; then
+    sudo -n --preserve-env=SCOUT_REPO bash scripts/install-bootmode.sh 2>/dev/null \
+      || echo "::warning::bootmode units not installed (needs root once: sudo scripts/install-bootmode.sh)"
   fi
 
   # Every profile, so pull/down see the whole stack (explore, observability,
@@ -64,9 +74,17 @@ main() {
   if [ -n "$VOL" ]; then
     VOL_ID=$(docker run --rm -v "$VOL":/stamp --entrypoint cat "ghcr.io/bg-bgi/scout:$SHA" /stamp/.image_build_id 2>/dev/null || echo none)
   fi
+  # Deleted scout/ files leave dangling symlinks in the colcon build dir
+  # (symlink-install), and the next build_package dies on `can't copy ...
+  # doesn't exist` (2026-09-24: deleted cliff.yaml failed the deploy while
+  # the job kept running the old code). Wipe on any deletion in the range.
+  DELETED=""
+  if git cat-file -e "$PREV_SHA" 2>/dev/null; then
+    DELETED=$(git diff --diff-filter=D --name-only "$PREV_SHA" "$SHA" -- scout/ || true)
+  fi
   WIPED=0
-  if [ "$PREV_BRANCH" != "$BRANCH" ] || [ "$IMG_ID" != "$VOL_ID" ]; then
-    echo "== wiping build+install volumes (branch $PREV_BRANCH -> $BRANCH, stamp $VOL_ID -> $IMG_ID)"
+  if [ "$PREV_BRANCH" != "$BRANCH" ] || [ "$IMG_ID" != "$VOL_ID" ] || [ -n "$DELETED" ]; then
+    echo "== wiping build+install volumes (branch $PREV_BRANCH -> $BRANCH, stamp $VOL_ID -> $IMG_ID, deletions: ${DELETED:-none})"
     docker compose $ALL down -v --remove-orphans
     WIPED=1
   fi
@@ -85,6 +103,23 @@ main() {
   # the session. Block until synced before starting sensor-driving containers.
   echo "waiting for NTP time sync..."
   until [ "$(timedatectl show -p NTPSynchronized --value)" = "yes" ]; do sleep 1; done
+
+  # Stale-project sweep: containers running OUR services under a different
+  # compose project name (a pre-`name:`-pin checkout, a runner workdir) are
+  # invisible to this project's down/--remove-orphans, duplicate workload and
+  # squat on host-network ports (2026-08-27 companion incident: a retired
+  # project's foxglove_bridge held :8766 while the real one crash-looped).
+  # Removes exactly: same compose service name, different project. PROJECT
+  # must match the `name:` pinned in docker-compose.yaml.
+  PROJECT=scout
+  OURS=$(docker compose $ALL config --services)
+  docker ps -a --format '{{.ID}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}' \
+  | while IFS="$(printf '\t')" read -r id proj svc; do
+      { [ -n "$proj" ] && [ "$proj" != "$PROJECT" ]; } || continue
+      grep -qx "$svc" <<< "$OURS" || continue
+      echo "== removing stale container from retired project '$proj' (service $svc)"
+      docker rm -f "$id"
+    done
 
   # Start everything ungated plus the `full` profile — exactly what this
   # branch's compose defines, no hardcoded service list to drift. explore and
@@ -115,7 +150,9 @@ main() {
   FAIL=0
   for s in $EXPECTED; do
     [ "$s" = build_package ] && continue
-    echo "$RUNNING" | grep -qx "$s" || { echo "NOT RUNNING: $s" >&2; FAIL=1; }
+    # Herestring, not a pipe: grep -q exits on first match, and under
+    # pipefail echo's SIGPIPE made the pipeline "fail" → false NOT RUNNING.
+    grep -qx "$s" <<< "$RUNNING" || { echo "NOT RUNNING: $s" >&2; FAIL=1; }
   done
   echo "-- robot log errors (excluding the known startup serial burst):"
   docker compose logs --tail 100 robot 2>/dev/null | grep -iE "error|fatal" | grep -viE "RETRY COUNT EXCEEDED|crc" || echo "   none"

@@ -273,13 +273,15 @@ Sensitivity is the highest point rate, the lidar's own reported *typical* mode, 
 
 Mapping rides on the *fused* `/odom`, so the flat tire does not corrupt the map — expect commanded pivots to under-rotate, not the map to be wrong.
 
-**Three modes, selected by launch argument** (`mode:=new` default / `localization` / `continue`). Operating recipes are in NOTES.md.
+**Three modes, selected by launch argument** (`mode:=new` default / `localization` / `continue`). Operating recipes are in NOTES.md. **⚠ Since ADR-0028 (2026-08-27), `localization` no longer runs slam_toolbox at all — it brings up nav2_amcl + nav2_map_server + a lifecycle manager (`scout/config/amcl.yaml`) on the grid map `<name>.yaml`/`.pgm`.** The webui Save Map writes both formats (`serialize_map` + `save_map`); the launch guard demands the grid, so pre-ADR sites must re-save from a `continue` session. tag_relocalizer's `/initialpose` seed is amcl-native. The slam_toolbox localization traps below (silent `serialize_map` SUCCESS, local-only lock, `map_start_at_dock` warning) are kept as history of *why*.
 
 | Mode | Executable | Extra params | Behaviour |
 |---|---|---|---|
 | `new` | `async_slam_toolbox_node` | none | Fresh map |
 | `continue` | `async_slam_toolbox_node` | `map_file_name`, `map_start_at_dock: true` | Loads a graph, keeps extending it |
-| `localization` | `localization_slam_toolbox_node` | `map_file_name`, `map_start_pose`, `scan_buffer_size: 3` | Loads a graph, adds nothing |
+| `localization` | amcl + map_server (ADR-0028) | `yaml_filename`, `initial_pose.*` | Loads a grid, adds nothing |
+
+**Multi-map sites (ADR-0029, 2026-09-01):** `site.json` v2 holds a `maps` dict (label/floor/`map_start_pose` per map) + `active_map` (v1 `default_map` normalized on read, upgraded on fleet_status's next write). Map files stay flat in `sites/<name>/maps/`. tags.db surveys are stamped with their home map; tag_relocalizer auto-switches floors in localization mode (N-sighting hysteresis + cooldown, no nav goal, `/map_server/load_map` live swap + tag-solved `/initialpose`, then POSTs `active_map` to fleet_status). One surveyed pose per tag ID → **distinct physical tag per floor**. Manual switch: webui Site panel map list or scout-skills `switch_map`. Waypoints carry a `map` key; `go_to_waypoint` refuses cross-map.
 
 **⚠ THE `mode` PARAMETER IS DEAD — every upstream config and tutorial sets it and it does nothing.** There is no `declare_parameter("mode", ...)` anywhere in `slam_toolbox_common.cpp`, `slam_mapper.cpp` or karto's `Mapper.cpp`. It is a comment with a colon in it. **The real switch is which executable runs:** `async_slam_toolbox_node` leaves `processor_type_` at `PROCESS`, while `localization_slam_toolbox_node`'s constructor sets `PROCESS_LOCALIZATION` (and kills the map saver, and forces `enable_interactive_mode_ = false`). So `slam.yaml` carries no `mode` key at all — copying a tutorial's params file gives a node that silently keeps mapping while called "localization".
 
@@ -304,7 +306,7 @@ Mapping rides on the *fused* `/odom`, so the flat tire does not corrupt the map 
 
 ## Nav2 — path planning and following (built 2026-08-03)
 
-Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `robot.launch.py` reuses `rs_launch.py` for the camera). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section** — slam_toolbox fills both roles.
+Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, running upstream's `nav2_bringup/navigation_launch.py` directly (as `robot.launch.py` reuses `rs_launch.py` for the camera). Eight lifecycle nodes: controller, smoother, planner, behavior, bt_navigator, waypoint_follower, velocity_smoother, lifecycle manager. **No `amcl` or `map_server` section in `nav2.yaml`** — the `slam` service owns `/map` and `map→odom` (slam_toolbox when mapping; amcl + map_server in localization mode, ADR-0028).
 
 **Topic and TF ownership:**
 - `navigation_launch.py` remaps controller_server's output to **`/cmd_vel_nav`** and velocity_smoother's `cmd_vel_smoothed` back to **`/cmd_vel`**, so `roboclaw_driver` needs no change and no launch file of our own is required
@@ -372,6 +374,10 @@ Nav2 **1.1.20** (apt), config `scout/config/nav2.yaml`, compose service `nav2`, 
 **⚠ All bench and calibration tooling was DELETED on request (2026-07-30), along with the compose `test` profile.** Every measurement in this file came from tools that no longer exist — treat the numbers as the record and expect to rebuild the instrument before extending them. Removed: `spin_diagnostic.py` (spin and straight-line sweeps with duty/current/encoder/voltage logging), `tune_velocity_pid.py` (packet-serial client + PID autotune), `wheel_radius_calibrator.py`, `motor_test.py` (raw-UART open-loop duty + breakaway ramp), `led_test.py`, `pivot_check.py`. Three were untracked, so there is no git history to restore from. Only `gyro_calibrator.py` was kept, being a runtime node.
 
 **Exception (2026-08-12): `scripts/camera_health.py` and `scripts/camera_selfcal.py` are KEEPERS**, not bench rigs — recurring camera maintenance instruments (stereo calibration drifts with temperature and knocks), same class as the kept `gyro_calibrator`. `camera_health.py --plane` is the plane-fit RMS check (subpixel <0.1 good, >0.2 recalibrate); `--watch` is the MinZ/MaxZ instrument for the disparity-shift bench. Both need the robot service stopped first (device claim). **IMU flash recalibration is deliberately not provided** — online `gyro_calibrator` bias estimation is the only IMU path the EKF consumes, `rs-imu-calibration` corrects bias-not-scale anyway, and flash writes sit next to the Motion-Module wedge hazard. Do not re-litigate.
+
+## Boot / dev mode (LED pulse gate)
+
+Every power-on: `scout-bootpulse.service` (Before=docker.service) breathes the strip **blue ×5 over ~5 s** before any container starts. **Cutting power mid-pulse = next boot is dev mode** — everything down except `webui` + `fleet_status` (the web UI System panel is the recovery console). One-shot: the flag is consumed at the dev boot, so the next power-on boots normal. Persistent dev: `scout_dev` file on the SD FAT partition. SSH toggle: `sudo scripts/devmode.sh on|off|status`. Units: `systemd/scout-*.service`, state `/var/lib/scout-bootmode/`, installed once via `sudo scripts/install-bootmode.sh` (deploy-pi.sh refreshes opportunistically). Details: docs/deploy.md.
 
 ## Pi-side control notes
 

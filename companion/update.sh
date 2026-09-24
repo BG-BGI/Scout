@@ -53,6 +53,23 @@ main() {
     echo "  docker volume rm scout-companion_rtabmap_db)"
   fi
 
+  # Stale-project sweep: containers running OUR services under a different
+  # compose project name (a pre-`name:`-pin checkout, a runner workdir) are
+  # invisible to this project's down/--remove-orphans, duplicate workload and
+  # squat on host-network ports — 2026-08-27: retired companion-foxglove_bridge-1
+  # held :8766 for hours while the real one crash-looped on the bind. Removes
+  # exactly: same compose service name, different project. PROJECT must match
+  # the `name:` pinned in docker-compose.yaml.
+  PROJECT=scout-companion
+  OURS=$(docker compose config --services)
+  docker ps -a --format '{{.ID}}\t{{.Label "com.docker.compose.project"}}\t{{.Label "com.docker.compose.service"}}' \
+  | while IFS="$(printf '\t')" read -r id proj svc; do
+      { [ -n "$proj" ] && [ "$proj" != "$PROJECT" ]; } || continue
+      echo "$OURS" | grep -qx "$svc" || continue
+      echo "== removing stale container from retired project '$proj' (service $svc)"
+      docker rm -f "$id"
+    done
+
   docker compose pull
   docker compose up -d --remove-orphans
   docker image prune -f

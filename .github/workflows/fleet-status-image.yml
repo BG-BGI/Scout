@@ -50,7 +50,29 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Same skip as pi-images.yml: :<sha> is immutable, so an existing image
+      # means nothing to build; refresh the mutable tags server-side and stop.
+      # (imagetools create copies the whole manifest LIST, so both arches
+      # survive the retag.)
+      - name: Skip if :<sha> already in GHCR
+        id: exists
+        env:
+          SHA: ${{ inputs.ref || github.sha }}
+          BRANCH: ${{ inputs.branch || github.ref_name }}
+        run: |
+          repo=ghcr.io/bg-bgi/scout-fleet-status
+          if docker buildx imagetools inspect "$repo:$SHA" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            docker buildx imagetools create -t "$repo:${BRANCH//\//-}" "$repo:$SHA"
+            if [ "$BRANCH" = "main" ]; then
+              docker buildx imagetools create -t "$repo:latest" "$repo:$SHA"
+            fi
+            echo "== $repo:$SHA exists — skipped rebuild, refreshed mutable tags"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: docker/build-push-action@v6
+        if: ${{ steps.exists.outputs.found != 'true' }}
         with:
           context: docker/fleet-status
           platforms: linux/amd64,linux/arm64

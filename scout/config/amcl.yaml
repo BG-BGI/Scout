@@ -1,0 +1,100 @@
+# amcl + map_server: localization-mode replacement for localization_slam_toolbox_node
+# (ADR-0028). Launched by scout/launch/slam.launch.py when mode resolves to
+# `localization`; mapping (`new`) and `continue` still run slam_toolbox.
+#
+# Why amcl over the scan-matcher: slam_toolbox's localization node only searches
+# locally, so a wrong start pose locks in silently and "small correction" cannot be
+# told apart from "stuck" (CLAUDE.md trap). amcl's particle cloud carries real
+# confidence, accepts /initialpose natively (tag_relocalizer's seed), and exposes
+# reinitialize_global_localization for a true lost-robot recovery.
+#
+# ⚠ This stack loads the GRID map (<name>.yaml + .pgm from /slam_toolbox/save_map),
+# not the .posegraph pair. The webui Save Map button writes both (app.js).
+#
+# yaml_filename and initial_pose.* are mode-specific and injected by the launch
+# file, same policy as slam.yaml's map-loading keys.
+
+map_server:
+  ros__parameters:
+    # Set by slam.launch.py to the active site's <map>.yaml (absolute; the node's
+    # CWD is /ros_ws). Empty here so a bare `ros2 run` fails loudly instead of
+    # loading something stale.
+    yaml_filename: ""
+
+amcl:
+  ros__parameters:
+    global_frame_id: map
+    odom_frame_id: odom
+    # NOT the upstream default base_footprint — does not exist in this URDF
+    # (same trap as slam.yaml).
+    base_frame_id: base_link
+    scan_topic: /scan
+    tf_broadcast: true
+
+    # Same future-dating as slam.yaml's transform_timeout 0.8: map->odom stamps
+    # were measured up to -0.606 s behind the receiving clock under Pi load, and a
+    # stale correction is nearly the current one (map->odom varies slowly).
+    transform_tolerance: 0.8
+
+    # --- lidar (measured limits, matches slam.yaml) --------------------------------
+    laser_model_type: likelihood_field
+    laser_min_range: 0.15
+    laser_max_range: 16.0
+    # 60 of the ~1590 beams per rev; likelihood-field quality saturates well below
+    # full resolution and this is the main per-update CPU knob.
+    max_beams: 60
+    z_hit: 0.5
+    z_rand: 0.5
+    z_short: 0.05
+    z_max: 0.05
+    sigma_hit: 0.2
+    lambda_short: 0.1
+    do_beamskip: false
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+
+    # --- motion model ---------------------------------------------------------------
+    # Differential model over the EKF's fused odom. Yaw is gyro-fused (0.07 deg/min
+    # drift), so rotation odometry is trusted more than a stock skid-steer would be:
+    # alpha1 (rot noise from rot) low. Translation during pivots is the real error —
+    # pivot walk ~2.5-10 cm/rev (CLAUDE.md tire state) — so alpha4 (trans noise from
+    # rot) is the elevated one.
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+    alpha1: 0.1
+    alpha2: 0.05
+    alpha3: 0.1
+    alpha4: 0.3
+    alpha5: 0.2
+
+    # --- filter ---------------------------------------------------------------------
+    min_particles: 500
+    max_particles: 2000
+    kld_err: 0.05
+    kld_z: 0.99
+    # Update gates: below slam.yaml's 0.3/0.3 keyframe gating so localization stays
+    # fresher than mapping keyframes were.
+    update_min_d: 0.15
+    update_min_a: 0.2
+    resample_interval: 1
+    recovery_alpha_slow: 0.001
+    recovery_alpha_fast: 0.1
+    pf_err: 0.05
+    pf_z: 0.99
+
+    # Launch injects initial_pose.{x,y,yaw} from the site's map_start_pose, and
+    # tag_relocalizer refines via /initialpose on first registered-tag sighting.
+    set_initial_pose: true
+    always_reset_initial_pose: false
+
+lifecycle_manager_localization:
+  ros__parameters:
+    autostart: true
+    node_names:
+      - map_server
+      - amcl
+    # Bonds disabled: the boot clock step (+hours after containers start) silently
+    # kills nav2 bonds; wait-clock-sane.sh guards the common case but a mid-session
+    # step would still take localization down for nothing. amcl/map_server health is
+    # judged from /amcl_pose and /map liveness instead.
+    bond_timeout: 0.0

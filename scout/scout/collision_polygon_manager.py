@@ -60,7 +60,20 @@ separate nodes:
 
 `/collision_monitor/bypassed` (latched Bool) and `/collision_monitor/zone_mode`
 (latched String: "forward"|"reverse"|"turn") are the status surfaces — webui/skills
-should show both prominently, not bury them.
+should show both prominently, not bury them. `/collision_monitor/zone_sync`
+(latched Bool) says whether collision_monitor has explicitly ACKED the current
+desired zone state — False during ack windows, pushes that time out, and
+collision_monitor restarts (health_monitor folds it into the stop-reason
+timeline).
+
+Push discipline (ADR-0036): requests go through scout.core.zonepush — single-
+flight (at most one set_parameters outstanding), coalescing (the latest
+desired state overwrites, never queues), and bounded (an unacked request
+expires after `push_timeout_s`, its pending future is dropped via
+remove_pending_request, and the 1 Hz tick retries). The original scheme
+issued one call_async per /cmd_vel_auto message (20-50 Hz) for the whole ack
+window and never timed out or cancelled anything, so a slow or restarting
+collision_monitor amplified pending work without bound.
 """
 
 import time
@@ -74,6 +87,7 @@ from std_srvs.srv import Trigger
 
 from scout.core.collision import desired_zone_state, zone_mode
 from scout.core.latch import Latch
+from scout.core.zonepush import Expire, Send, ZonePush
 from scout.node_util import run_node
 from scout.qos import LATCHED_QOS
 
@@ -119,6 +133,9 @@ class CollisionPolygonManager(Node):
         self._rev_enter = float(p('reverse_enter_m_s', 0.03).value)
         self._rev_exit = float(p('reverse_exit_m_s', 0.01).value)
         self._rev_exit_dwell = float(p('reverse_exit_dwell_s', 0.3).value)
+        # How long one set_parameters request may go unacked before its
+        # future is dropped and the 1 Hz tick retries (core.zonepush).
+        self._push_timeout = float(p('push_timeout_s', 2.0).value)
 
         self._bypassed = False
         self._engaged_at = None
@@ -128,13 +145,19 @@ class CollisionPolygonManager(Node):
         # core.collision's job.
         self._turn = Latch(off_dwell=self._turn_exit_dwell)
         self._reverse = Latch(off_dwell=self._rev_exit_dwell)
-        self._pushed = None            # last (front, rear, turn) enabled sent
+        # Single-flight/coalescing push state machine (core.zonepush); the
+        # pending rclpy future rides alongside so an Expire can drop it.
+        self._push = ZonePush(timeout_s=self._push_timeout)
+        self._inflight_future = None
+        self._sync_published = None    # last zone_sync value published
 
         self._client = self.create_client(SetParameters, SET_PARAMS_SERVICE)
         self._bypassed_pub = self.create_publisher(
             Bool, '/collision_monitor/bypassed', LATCHED_QOS)
         self._mode_pub = self.create_publisher(
             String, '/collision_monitor/zone_mode', LATCHED_QOS)
+        self._sync_pub = self.create_publisher(
+            Bool, '/collision_monitor/zone_sync', LATCHED_QOS)
         # collision_monitor's INPUT (the autonomous stream). Teleop bypasses
         # the CM, so only autonomous commands drive the direction-aware zones.
         self.create_subscription(Twist, '/cmd_vel_auto', self._on_cmd_vel, 10)
@@ -144,6 +167,11 @@ class CollisionPolygonManager(Node):
             Trigger, '/collision_monitor/bypass_release', self._on_release)
         self.create_timer(1.0, self._tick)
         self._publish_status()
+        self._publish_sync()
+        # Seed the desired state now (forward, latches at rest) so the first
+        # tick pushes and acks it — zone_sync is then True at boot idle
+        # instead of ambiguously False until the first /cmd_vel_auto.
+        self._set_desired(time.monotonic())
         self.get_logger().info(
             'collision_polygon_manager up: turn >%.2f/<%.2f rad/s '
             '(%.1fs dwell), bypass auto-release %.0f s'
@@ -158,33 +186,49 @@ class CollisionPolygonManager(Node):
         now = time.monotonic()
         self._turn.update(w > self._turn_enter, w <= self._turn_exit, now)
         self._reverse.update(vx < -self._rev_enter, vx >= -self._rev_exit, now)
-        self._push_zone_state()
+        self._set_desired(now)
 
-    def _push_zone_state(self):
+    def _set_desired(self, now):
+        """Feed the current desired zone state into the coalescer; dispatch
+        only what it emits (at most one request in flight, ever)."""
         state = desired_zone_state(self._bypassed, self._turn.state,
                                    self._reverse.state)
-        if state == self._pushed:
-            return
-        if not self._client.service_is_ready():
-            return  # collision_monitor not up yet; next change retries
+        send = self._push.set_desired(
+            state, now, self._client.service_is_ready())
+        if send is not None:
+            self._dispatch(send)
+        self._publish_sync()
+
+    def _dispatch(self, send: Send):
         req = SetParameters.Request()
         req.parameters = [
-            _bool_param(FRONT_PARAM, state[0]),
-            _bool_param(REAR_PARAM, state[1]),
-            _bool_param(TURN_PARAM, state[2]),
+            _bool_param(FRONT_PARAM, send.state[0]),
+            _bool_param(REAR_PARAM, send.state[1]),
+            _bool_param(TURN_PARAM, send.state[2]),
         ]
+        fut = self._client.call_async(req)
+        self._inflight_future = fut
+        fut.add_done_callback(
+            lambda f, seq=send.seq, state=send.state:
+            self._on_push_done(seq, state, f))
 
-        def done(fut):
+    def _on_push_done(self, seq, state, fut):
+        try:
             res = fut.result()
-            ok = bool(res and all(r.successful for r in res.results))
-            if ok:
-                self._pushed = state
-                self._mode_pub.publish(String(
-                    data=zone_mode(self._turn.state, self._reverse.state)))
-            else:
-                self.get_logger().error(
-                    'zone-state push failed (front=%s rear=%s turn=%s)' % state)
-        self._client.call_async(req).add_done_callback(done)
+        except Exception as e:  # noqa: BLE001 — a failed service future must feed on_ack, not kill the executor
+            res = None
+            self.get_logger().error('zone-state push raised: %s' % e)
+        ok = bool(res and all(r.successful for r in res.results))
+        if ok:
+            self._mode_pub.publish(String(
+                data=zone_mode(self._turn.state, self._reverse.state)))
+        else:
+            self.get_logger().error(
+                'zone-state push failed (front=%s rear=%s turn=%s)' % state)
+        follow = self._push.on_ack(seq, ok, time.monotonic())
+        if follow is not None:
+            self._dispatch(follow)
+        self._publish_sync()
 
     # --- bounded bypass --------------------------------------------------------
 
@@ -196,7 +240,7 @@ class CollisionPolygonManager(Node):
         self._bypassed = True
         self._engaged_at = time.monotonic()
         self._publish_status()
-        self._push_zone_state()
+        self._set_desired(time.monotonic())
         self.get_logger().warn(
             'COLLISION MONITOR STOP ZONES BYPASSED — auto-release in %.0f s'
             % self._max_duration)
@@ -218,13 +262,28 @@ class CollisionPolygonManager(Node):
         self._bypassed = False
         self._engaged_at = None
         self._publish_status()
-        self._push_zone_state()
+        self._set_desired(time.monotonic())
         self.get_logger().info('collision monitor stop zones RESTORED (%s)' % why)
 
     def _tick(self):
+        now = time.monotonic()
+        # Push maintenance: expire a stuck request (drop its future), re-push
+        # after a collision_monitor restart, retry an unsynced state.
+        for action in self._push.on_tick(now, self._client.service_is_ready()):
+            if isinstance(action, Expire):
+                if self._inflight_future is not None:
+                    self._client.remove_pending_request(self._inflight_future)
+                    self._inflight_future = None
+                self.get_logger().warn(
+                    'zone-state push unacked for %.1f s — dropped, retrying'
+                    % self._push.timeout_s)
+            elif isinstance(action, Send):
+                self._dispatch(action)
+        self._publish_sync()
+
         if not self._bypassed:
             return
-        elapsed = time.monotonic() - self._engaged_at
+        elapsed = now - self._engaged_at
         if elapsed > self._max_duration:
             self.get_logger().warn('bypass auto-release after %.0f s' % elapsed)
             self._release('auto-release timeout')
@@ -235,6 +294,12 @@ class CollisionPolygonManager(Node):
 
     def _publish_status(self):
         self._bypassed_pub.publish(Bool(data=self._bypassed))
+
+    def _publish_sync(self):
+        synced = self._push.synced
+        if synced != self._sync_published:
+            self._sync_published = synced
+            self._sync_pub.publish(Bool(data=synced))
 
 
 def main(args=None):

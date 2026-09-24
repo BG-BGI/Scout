@@ -19,9 +19,9 @@ on:
         options: [pi, companion]
         default: pi
       action:
-        description: compose action
+        description: compose action (diag = read-only host diagnostics — port listeners + all containers, for port-conflict hunts)
         type: choice
-        options: [ps, logs, restart, stop, start, up, down]
+        options: [ps, logs, restart, stop, start, up, down, diag, rm, wipe-uhf-reads]
         default: ps
       services:
         description: "space-separated services; blank = all (in the active profiles)"
@@ -69,4 +69,37 @@ jobs:
             start)   docker compose $P start $SERVICES ;;
             up)      docker compose $P up -d --remove-orphans $SERVICES ;;
             down)    docker compose $P down --remove-orphans ;;
+            # Read-only host diagnostics: who listens on the stack's ports, and
+            # every container on the box (compose ps hides other projects — the
+            # 2026-08-27 companion foxglove_bridge port-8766 crash-loop was
+            # invisible to it). SERVICES, if set, greps listeners for it too.
+            diag)
+              echo "--- listeners (ss -ltnp) ---"
+              ss -ltnp | grep -E ':(8765|8766|7447|9003|9090|80) ' || true
+              echo "--- all containers (docker ps -a) ---"
+              docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -40
+              ;;
+            # docker rm -f by CONTAINER NAME (services input) — for stale
+            # containers left by a retired compose project name, which
+            # down/--remove-orphans cannot reach (they only see their own
+            # project). Found via diag; e.g. companion-rtabmap-1 survived the
+            # companion -> scout-companion project rename and held port 8766.
+            rm)
+              [ -n "$SERVICES" ] || { echo "::error::rm needs container names in services"; exit 1; }
+              docker rm -f $SERVICES
+              ;;
+            # Destructive: clear the UHF reads table (stage-1 centroid fuel).
+            # Exists because a mislocalized session writes wrong robot poses
+            # into every read and the centroid never forgets them — the only
+            # recovery is a wipe + re-survey. Companion-only (it owns uhf.db);
+            # the recorder restart republishes the latched /uhf/registry so
+            # stale tag markers clear immediately.
+            wipe-uhf-reads)
+              [ "$TARGET" = companion ] || { echo "::error::uhf.db lives on the companion"; exit 1; }
+              # Inside the container: the db is root-owned (written by the
+              # recorder), so the runner user gets "readonly database" on the
+              # host path.
+              docker compose exec -T uhf_recorder python3 -c 'import sqlite3; db = sqlite3.connect("/sites/active/uhf.db"); print("wiped", db.execute("DELETE FROM reads").rowcount, "reads"); db.commit(); db.execute("VACUUM")'
+              docker compose restart uhf_recorder
+              ;;
           esac

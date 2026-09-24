@@ -95,13 +95,17 @@ RUN git clone --depth 1 -b 4.57.7 https://github.com/IntelRealSense/realsense-ro
 # at "A1/A2/A3/S1/S2/S3/T1" and it ships no rplidar_c1_launch.py, while the ros2 branch
 # does, even though BOTH call themselves 2.1.4 (the deb is just built from an older
 # commit, so the version string cannot distinguish them). That keeps the image valid if
-# the scanner is ever swapped. Pinned to the ros2-branch tip at pin time (ADR-0005;
-# --depth 1 cannot fetch a bare SHA, hence clone-then-detach). Needs no extra apt
+# the scanner is ever swapped. Built from the BG-BGI fork (no upstream build deps,
+# ADR-0005 rule): branch scout-read-coalescing = upstream ros2 tip at pin time
+# (24cc9b6) + one SDK patch batching serial reads to ~5 ms, which cut the RX
+# thread's context switches from ~18k/s to ~700/s on the Pi 5 (system 61k -> 27k)
+# with /scan unchanged. Bump flow: merge to the fork, re-pin the SHA here.
+# (--depth 1 cannot fetch a bare SHA, hence clone-then-detach.) Needs no extra apt
 # packages (std_srvs is already present), so it sits with the other source builds
 # without disturbing the librealsense cache above.
-RUN git clone -b ros2 https://github.com/Slamtec/rplidar_ros.git \
+RUN git clone -b scout-read-coalescing https://github.com/BG-BGI/rplidar_ros.git \
         "$OVERLAY/src/rplidar_ros" \
-    && git -C "$OVERLAY/src/rplidar_ros" checkout --detach 24cc9b6dea97e045bda1408eaa867ce730fd3fc3 \
+    && git -C "$OVERLAY/src/rplidar_ros" checkout --detach c1fdb5473ac0aaad667be454ab4632c9643c2bec \
     && build-overlay --packages-up-to rplidar_ros \
     && rm -rf "$OVERLAY/src/rplidar_ros"
 

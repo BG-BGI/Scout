@@ -35,10 +35,12 @@ ros.on('connection', () => {
   reconnectDelay = 1000;
   connBadge.textContent = 'connected';
   connBadge.className = 'badge connected';
+  document.body.classList.remove('offline');
 });
 ros.on('close', () => {
-  connBadge.textContent = 'disconnected';
+  connBadge.textContent = 'offline';
   connBadge.className = 'badge disconnected';
+  document.body.classList.add('offline');
   setTimeout(connect, reconnectDelay);
   reconnectDelay = Math.min(reconnectDelay * 2, 5000);
 });
@@ -313,6 +315,68 @@ setInterval(() => {
   }
 }, 1000);
 
+// --- RoboClaw panel: /roboclaw_status ---------------------------------------------
+// The driver's JSON String (schema driver-owned; core/status.py owns only the
+// envelope). The driver polls the board over serial regardless of cmd_vel, so a
+// stale/absent status means the SERIAL LINK is dead (board unpowered, UART fault)
+// — the exact failure that otherwise only shows up as "joystick does nothing".
+const rcState = document.getElementById('rc-state');
+const rcVitals = document.getElementById('rc-vitals');
+let rcLastMs = 0;
+let rcLastStatus = null;
+
+function rcRow(label, value, cls) {
+  return `<span class="${cls || ''}">${label} ${value}</span>`;
+}
+
+function renderRoboclaw() {
+  const s = rcLastStatus;
+  const mainV = Number(s.main_battery);
+  // Ladder anchored on the RoboClaw's own 16.0 V Min Main cutoff.
+  const vCls = mainV <= BATT_CRIT_V ? 'bad' : mainV <= BATT_WARN_V ? 'warn' : '';
+  const t1 = Number(s.temperature1), t2 = Number(s.temperature2);
+  const tCls = Math.max(t1, t2) >= 75 ? 'bad' : Math.max(t1, t2) >= 60 ? 'warn' : '';
+  const errNum = Number(s.error_status);
+  const errCls = errNum ? 'bad' : '';
+  rcState.textContent = `${mainV.toFixed(1)} V`;
+  rcState.className = 'badge' + (errNum || vCls === 'bad' ? ' batt-bad'
+    : vCls === 'warn' ? ' batt-warn' : ' connected');
+  rcVitals.innerHTML = [
+    rcRow('Main', mainV.toFixed(2) + ' V', vCls),
+    rcRow('Logic', Number(s.logic_battery).toFixed(2) + ' V'),
+    rcRow('M1', Number(s.m1_current).toFixed(2) + ' A'),
+    rcRow('M2', Number(s.m2_current).toFixed(2) + ' A'),
+    rcRow('Temp', `${t1.toFixed(0)}/${t2.toFixed(0)} °C`, tCls),
+    rcRow('Speed', `${s.m1_speed}/${s.m2_speed} c/s`),
+    rcRow('Enc', `${s.m1_enc_value}/${s.m2_enc_value}`),
+    rcRow('Err', errNum ? (s.decoded_error_status || '0x' + errNum.toString(16)) : 'none', errCls),
+  ].join(' ');
+}
+
+new ROSLIB.Topic({
+  ros, name: '/roboclaw_status', messageType: 'std_msgs/msg/String',
+  throttle_rate: 1000, queue_length: 1,
+}).subscribe((msg) => {
+  let s;
+  try { s = JSON.parse(msg.data); } catch (e) { return; }
+  if (!s || typeof s !== 'object') return;
+  rcLastMs = performance.now();
+  rcLastStatus = s;
+  renderRoboclaw();
+});
+
+// Driver publishes ~30 Hz (throttled to 1 Hz here); >3 s silent = serial link
+// down or driver dead. Distinguish "never heard" (boot/board dark) from "went
+// quiet" so today's dead-board case reads NO LINK at a glance.
+setInterval(() => {
+  if (!rcLastMs) return; // initial "no data" badge stands until first message
+  const age = performance.now() - rcLastMs;
+  if (age > 3000) {
+    rcState.textContent = `NO LINK ${Math.round(age / 1000)}s`;
+    rcState.className = 'badge disconnected';
+  }
+}, 1000);
+
 document.getElementById('stop').addEventListener('click', () => {
   cancelNav();   // a live nav goal would keep driving through the zero burst
   patrolStop();  // a patrol would send the NEXT waypoint after the cancel
@@ -406,7 +470,9 @@ new ROSLIB.Topic({
 // --- map + tap-to-navigate ------------------------------------------------------------
 // Grid drawn cell-per-pixel on an offscreen canvas, blitted flipped (row 0 of an
 // OccupancyGrid is the bottom row in world coords). Robot pose from slam_toolbox's
-// /pose, path overlay from /plan. A tap becomes a map-framed /goal_pose — always
+// /pose while mapping, amcl's /amcl_pose in localization mode (ADR-0028 — same msg
+// type; amcl republishes only after update_min_d/a of motion, so the arrow steps).
+// Path overlay from /plan. A tap becomes a map-framed /goal_pose — always
 // 'map', never the display frame, so the 10 s odom-frame TF trap can't happen.
 const mapCanvas = document.getElementById('map-canvas');
 const mapCtx = mapCanvas.getContext('2d');
@@ -415,6 +481,10 @@ const gridCanvas = document.createElement('canvas');
 let grid = null;      // latest OccupancyGrid info
 let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
+let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
+let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
+let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
+let uhfPopTag = null; // EPC of the marker whose popup is open
 
 const mapTopic = new ROSLIB.Topic({
   ros, name: '/map', messageType: 'nav_msgs/msg/OccupancyGrid',
@@ -440,17 +510,20 @@ mapTopic.subscribe((msg) => {
   drawMap();
 });
 
-const poseTopic = new ROSLIB.Topic({
-  ros, name: '/pose', messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
-  throttle_rate: 500,
-});
-poseTopic.subscribe((msg) => {
+function onPose(msg) {
   const p = msg.pose.pose;
   robotPose = {
     x: p.position.x, y: p.position.y,
     yaw: 2 * Math.atan2(p.orientation.z, p.orientation.w),
   };
   drawMap();
+}
+// Only one of these publishes per session (slam vs localization mode).
+['/pose', '/amcl_pose'].forEach((name) => {
+  new ROSLIB.Topic({
+    ros, name, messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+    throttle_rate: 500,
+  }).subscribe(onPose);
 });
 
 const planTopic = new ROSLIB.Topic({
@@ -458,6 +531,9 @@ const planTopic = new ROSLIB.Topic({
 });
 planTopic.subscribe((msg) => {
   plan = msg.poses.map((ps) => ({ x: ps.pose.position.x, y: ps.pose.position.y }));
+  // Redraw now: in localization mode /map is latched (no periodic republish) and
+  // /amcl_pose is sparse, so without this the plan waits for the next pose update.
+  drawMap();
 });
 
 function worldToCanvas(wx, wy) {
@@ -489,7 +565,7 @@ function drawMap() {
   mapCtx.restore();
 
   if (plan && plan.length > 1) {
-    mapCtx.strokeStyle = '#00c878';
+    mapCtx.strokeStyle = '#F2B200';
     mapCtx.lineWidth = 2;
     mapCtx.beginPath();
     plan.forEach((p, i) => {
@@ -513,9 +589,9 @@ function drawMap() {
       const wp = i + 1;   // status index is 1-based
       let color = '#5a6a7a';                       // pending
       let r = 3;
-      if (patrolProg.active && wp < patrolProg.i) color = '#00c878';   // visited
+      if (patrolProg.active && wp < patrolProg.i) color = '#F2B200';   // visited
       if (patrolProg.active && wp === patrolProg.i) {                  // current
-        color = '#ffa028';
+        color = '#E07020';
         r = 5;
       }
       mapCtx.fillStyle = color;
@@ -546,7 +622,7 @@ function drawMap() {
     mapCtx.save();
     mapCtx.translate(c.x, c.y);
     mapCtx.rotate(-robotPose.yaw);   // canvas y is flipped, so negate yaw
-    mapCtx.fillStyle = '#ff4040';
+    mapCtx.fillStyle = '#E02840';
     mapCtx.beginPath();
     mapCtx.moveTo(10, 0);
     mapCtx.lineTo(-6, 6);
@@ -556,6 +632,89 @@ function drawMap() {
     mapCtx.restore();
   }
 
+  // UHF tag markers (ADR-0032): centroid dot + EPC tail + spread ring — the
+  // ring radius IS the confidence (RSSI-weighted RMS scatter from the
+  // registry), so a wide ring reads as "somewhere around here".
+  if (uhfShowTags && uhfTags.length) {
+    const pxPerM = (mapCanvas.width / grid.width) / grid.resolution;
+    mapCtx.save();
+    mapCtx.font = '10px monospace';
+    mapCtx.textAlign = 'center';
+    for (const t of uhfTags) {
+      const c = worldToCanvas(t.est_pose.x, t.est_pose.y);
+      if (t.spread_m > 0.05) {
+        mapCtx.strokeStyle = 'rgba(225, 0, 225, 0.35)';
+        mapCtx.lineWidth = 1;
+        mapCtx.beginPath();
+        mapCtx.arc(c.x, c.y, t.spread_m * pxPerM, 0, 2 * Math.PI);
+        mapCtx.stroke();
+      }
+      // Magenta on a white halo: the fill pops on black walls, the halo
+      // separates it from white free space — nothing on an occupancy grid
+      // is magenta.
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
+      mapCtx.strokeStyle = '#ffffff';
+      mapCtx.lineWidth = t.epc === uhfPopTag ? 5 : 3;
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#E100E1';
+      mapCtx.strokeStyle = '#3a0030';
+      mapCtx.lineWidth = 1;
+      mapCtx.fill();
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#E100E1';
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+      mapCtx.lineWidth = 3;
+      const label = t.epc.slice(-6);
+      mapCtx.strokeText(label, c.x, c.y - 9);
+      mapCtx.fillText(label, c.x, c.y - 9);
+    }
+    mapCtx.restore();
+  }
+
+  // AprilTag markers: surveyed registry tags (tags.db via fleet_status).
+  // role=home draws a house — the boot-relocalization anchor. Shares the
+  // corner Tags toggle with the UHF markers.
+  if (uhfShowTags && aprilTags.length) {
+    mapCtx.save();
+    mapCtx.textAlign = 'center';
+    for (const t of aprilTags) {
+      const c = worldToCanvas(t.map_x, t.map_y);
+      // Vivid blue on a white halo (an emoji can't be recolored, so home is
+      // a drawn house): fill carries it on black walls, halo on white floor.
+      mapCtx.beginPath();
+      if (t.role === 'home') {
+        mapCtx.moveTo(c.x, c.y - 9);       // roof apex
+        mapCtx.lineTo(c.x + 8, c.y - 1);   // right eave
+        mapCtx.lineTo(c.x + 5, c.y - 1);
+        mapCtx.lineTo(c.x + 5, c.y + 8);   // right wall
+        mapCtx.lineTo(c.x - 5, c.y + 8);   // floor
+        mapCtx.lineTo(c.x - 5, c.y - 1);   // left wall
+        mapCtx.lineTo(c.x - 8, c.y - 1);   // left eave
+      } else {
+        mapCtx.moveTo(c.x, c.y - 7);
+        mapCtx.lineTo(c.x + 7, c.y);
+        mapCtx.lineTo(c.x, c.y + 7);
+        mapCtx.lineTo(c.x - 7, c.y);
+      }
+      mapCtx.closePath();
+      mapCtx.strokeStyle = '#ffffff';
+      mapCtx.lineWidth = 3;
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#2E7BFF';
+      mapCtx.strokeStyle = '#0a1f4d';
+      mapCtx.lineWidth = 1;
+      mapCtx.fill();
+      mapCtx.stroke();
+      mapCtx.font = '10px monospace';
+      mapCtx.fillStyle = '#2E7BFF';
+      mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+      mapCtx.lineWidth = 3;
+      mapCtx.strokeText(t.name, c.x, c.y - (t.role === 'home' ? 13 : 11));
+      mapCtx.fillText(t.name, c.x, c.y - (t.role === 'home' ? 13 : 11));
+    }
+    mapCtx.restore();
+  }
 
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
@@ -585,18 +744,93 @@ function drawMap() {
       mapCtx.fill();
     });
   }
+
+  if (posePin) {
+    // Pose-pin position placed, awaiting the heading tap.
+    const c = worldToCanvas(posePin.x, posePin.y);
+    mapCtx.strokeStyle = '#ff9f40';
+    mapCtx.fillStyle = '#ff9f40';
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath();
+    mapCtx.arc(c.x, c.y, 6, 0, 2 * Math.PI);
+    mapCtx.stroke();
+    mapCtx.beginPath();
+    mapCtx.arc(c.x, c.y, 2, 0, 2 * Math.PI);
+    mapCtx.fill();
+  }
 }
 
 const goalPub = new ROSLIB.Topic({
   ros, name: '/goal_pose', messageType: 'geometry_msgs/msg/PoseStamped',
 });
+
+// --- manual pose pin (amcl /initialpose from the map) -----------------------
+// Two taps, like the coverage polygon (touch drags scroll the page): first
+// places the position, second points the heading (pin -> tap direction).
+// Deliberately does NOT re-arm tag_relocalizer: a tag surveyed while
+// mislocalized would win the bad pose right back — re-survey the tag
+// (detect_tags) after pinning, then reseed.
+const setPoseBtn = document.getElementById('set-pose');
+let poseMode = 0;      // 0 off, 1 awaiting position tap, 2 awaiting heading tap
+let posePin = null;    // {x, y} map frame, set by the first tap
+setPoseBtn.addEventListener('click', () => {
+  poseMode = poseMode ? 0 : 1;
+  posePin = null;
+  setPoseBtn.textContent = poseMode ? 'Tap position…' : 'Set pose';
+  drawMap();
+});
 mapCanvas.addEventListener('click', (ev) => {
   if (!grid) return;
+  if (poseMode === 1) {
+    posePin = canvasToWorld(ev);
+    poseMode = 2;
+    setPoseBtn.textContent = 'Tap heading…';
+    drawMap();
+    return;
+  }
+  if (poseMode === 2) {
+    const h = canvasToWorld(ev);
+    const yaw = Math.atan2(h.y - posePin.y, h.x - posePin.x);
+    const cov = new Array(36).fill(0);
+    cov[0] = 0.25; cov[7] = 0.25; cov[35] = 0.0685; // ~15 deg, same as activateMap
+    initialPosePub.publish(new ROSLIB.Message({
+      header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+      pose: {
+        pose: {
+          position: { x: posePin.x, y: posePin.y, z: 0 },
+          orientation: { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) },
+        },
+        covariance: cov,
+      },
+    }));
+    navState.textContent = 'pose set (' + posePin.x.toFixed(2) + ', '
+      + posePin.y.toFixed(2) + ') yaw ' + (yaw * 180 / Math.PI).toFixed(0) + '°';
+    poseMode = 0;
+    posePin = null;
+    setPoseBtn.textContent = 'Set pose';
+    drawMap();
+    return;
+  }
   if (areaMode) {
     areaPts.push(canvasToWorld(ev));
     areaBtn.textContent = 'Finish (' + areaPts.length + ')';
     drawMap();
     return;
+  }
+  // Tag-marker hit test first: a tap within 12 canvas px of a dot opens the
+  // popup instead of sending a goal (tap empty space to navigate as before).
+  if (uhfShowTags && uhfTags.length) {
+    const rr = mapCanvas.getBoundingClientRect();
+    const px = (ev.clientX - rr.left) * (mapCanvas.width / rr.width);
+    const py = (ev.clientY - rr.top) * (mapCanvas.height / rr.height);
+    for (const t of uhfTags) {
+      const c = worldToCanvas(t.est_pose.x, t.est_pose.y);
+      if ((c.x - px) ** 2 + (c.y - py) ** 2 <= 12 ** 2) {
+        openTagPop(t);
+        return;
+      }
+    }
+    if (uhfPopTag) closeTagPop();   // tap elsewhere dismisses an open popup
   }
   const r = mapCanvas.getBoundingClientRect();
   const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
@@ -854,6 +1088,45 @@ function camStop() {
   camToggle.textContent = 'Show camera';
 }
 camToggle.addEventListener('click', () => (camTopic ? camStop() : camStart()));
+
+// --- map/camera split slider -------------------------------------------------------
+// Drag #stage-split to trade map vs camera width (desktop row layout only).
+// The fraction lives in --stage-split on #stage; localStorage persists it
+// per-browser (a convenience, not state — wrapped per the storage rules).
+const stageEl = document.getElementById('stage');
+const stageSplit = document.getElementById('stage-split');
+const SPLIT_KEY = 'scout.stageSplit';
+const SPLIT_DEFAULT = 62;         // % of the row given to the map
+
+function applySplit(pct) {
+  pct = Math.min(80, Math.max(25, pct));  // profile-exempt: UI split %, not publish_hz
+  stageEl.style.setProperty('--stage-split', pct + '%');
+  return pct;
+}
+try {
+  const saved = parseFloat(localStorage.getItem(SPLIT_KEY));
+  if (!isNaN(saved)) applySplit(saved);
+} catch (e) { /* private mode etc. — default split stands */ }
+
+stageSplit.addEventListener('pointerdown', (ev) => {
+  ev.preventDefault();
+  stageSplit.setPointerCapture(ev.pointerId);
+  stageSplit.classList.add('dragging');
+});
+stageSplit.addEventListener('pointermove', (ev) => {
+  if (!stageSplit.classList.contains('dragging')) return;
+  const r = stageEl.getBoundingClientRect();
+  const pct = applySplit(((ev.clientX - r.left) / r.width) * 100);
+  try { localStorage.setItem(SPLIT_KEY, pct); } catch (e) { /* ignore */ }
+});
+stageSplit.addEventListener('pointerup', (ev) => {
+  stageSplit.releasePointerCapture(ev.pointerId);
+  stageSplit.classList.remove('dragging');
+});
+stageSplit.addEventListener('dblclick', () => {
+  applySplit(SPLIT_DEFAULT);
+  try { localStorage.removeItem(SPLIT_KEY); } catch (e) { /* ignore */ }
+});
 // Coexists with the zeroBurst visibility hook: hidden tab = stop streaming.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) camStop();
@@ -986,6 +1259,121 @@ new ROSLIB.Topic({
   li.textContent = `${r.protocol} ${r.data_hex} · ${where} · ${when}`;
   nfcList.prepend(li);
   while (nfcList.children.length > 20) nfcList.removeChild(nfcList.lastChild);
+});
+
+// --- UHF RFID (M7E Hecto, ADR-0032) -------------------------------------------------
+// Same manual gate as the Flipper radios (/uhf/enable, SetBool). The badge
+// renders from uhf_node's latched /uhf/status; the tag list renders from the
+// companion's /uhf/registry (per-EPC centroid estimate), NOT raw /uhf/reads —
+// at up to 10 batches/s the raw feed is the wrong browser surface, so it only
+// feeds the reads/s counter.
+const uhfState = document.getElementById('uhf-state');
+const uhfList = document.getElementById('uhf-list');
+const uhfRate = document.getElementById('uhf-rate');
+const uhfResult = document.getElementById('uhf-result');
+const uhfEnableSrv = new ROSLIB.Service({
+  ros, name: '/uhf/enable', serviceType: 'std_srvs/srv/SetBool',
+});
+
+function uhfSetEnabled(on) {
+  uhfEnableSrv.callService(new ROSLIB.ServiceRequest({ data: on }),
+    (res) => { uhfResult.textContent = res.message; },
+    (err) => { uhfResult.textContent = 'error: ' + err; });
+}
+document.getElementById('uhf-enable').addEventListener('click', () => uhfSetEnabled(true));
+document.getElementById('uhf-disable').addEventListener('click', () => uhfSetEnabled(false));
+
+new ROSLIB.Topic({
+  ros, name: '/uhf/status', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let s;
+  try { s = JSON.parse(msg.data); } catch (e) { return; }
+  uhfState.textContent = !s.connected ? 'no reader'
+    : !s.enabled ? 'disabled'
+      : s.throttled ? 'THROTTLED' : 'scanning';
+  uhfState.classList.toggle('bad', !s.connected || s.throttled);
+});
+
+// reads/s over a rolling 2 s window, from batch sizes.
+let uhfReadTimes = [];
+new ROSLIB.Topic({
+  ros, name: '/uhf/reads', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let b;
+  try { b = JSON.parse(msg.data); } catch (e) { return; }
+  const now = Date.now();
+  uhfReadTimes.push([now, (b.reads || []).length]);
+  uhfReadTimes = uhfReadTimes.filter(([t]) => now - t < 2000);
+  const n = uhfReadTimes.reduce((acc, [, c]) => acc + c, 0);
+  uhfRate.textContent = n ? `${(n / 2).toFixed(0)} reads/s` : '';
+});
+
+new ROSLIB.Topic({
+  ros, name: '/uhf/registry', messageType: 'std_msgs/msg/String',
+}).subscribe((msg) => {
+  let reg;
+  try { reg = JSON.parse(msg.data); } catch (e) { return; }
+  // Map markers: localized tags only; the corner Tags toggle shows up with them.
+  uhfTags = (reg.tags || []).filter((t) => t.est_pose);
+  document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length);
+  if (uhfPopTag && !uhfTags.some((t) => t.epc === uhfPopTag)) closeTagPop();
+  drawMap();
+  uhfList.innerHTML = '';
+  for (const t of (reg.tags || []).slice(0, 20)) {
+    const li = document.createElement('li');
+    const where = t.est_pose
+      ? `(${t.est_pose.x.toFixed(2)}, ${t.est_pose.y.toFixed(2)}) ±${t.spread_m}m`
+      : 'no position yet';
+    li.textContent = `${t.epc} · x${t.count} · ${where} · ${t.last_rssi_dbm} dBm`;
+    uhfList.appendChild(li);
+  }
+});
+
+// Tag marker popup + the corner Tags layer toggle.
+const tagPop = document.getElementById('tag-pop');
+const tagPopTitle = document.getElementById('tag-pop-title');
+const tagPopMeta = document.getElementById('tag-pop-meta');
+const tagsToggle = document.getElementById('uhf-tags-toggle');
+let tagPopPose = null;   // est_pose of the open popup's tag (Drive here target)
+
+function openTagPop(t) {
+  uhfPopTag = t.epc;
+  tagPopPose = t.est_pose;
+  tagPopTitle.textContent = t.epc;
+  tagPopMeta.textContent =
+    `x${t.count} reads · ±${t.spread_m} m · last ${t.last_rssi_dbm} dBm · ` +
+    (t.last_seen_utc || '').replace(/^.*T/, '').replace(/\..*$/, '') + ' UTC';
+  tagPop.hidden = false;
+  drawMap();
+}
+
+function closeTagPop() {
+  uhfPopTag = null;
+  tagPopPose = null;
+  tagPop.hidden = true;
+  drawMap();
+}
+
+document.getElementById('tag-pop-close').addEventListener('click', closeTagPop);
+document.getElementById('tag-pop-goto').addEventListener('click', () => {
+  if (!tagPopPose) return;
+  const wx = tagPopPose.x, wy = tagPopPose.y;
+  const yaw = robotPose ? Math.atan2(wy - robotPose.y, wx - robotPose.x) : 0;
+  goalPub.publish(new ROSLIB.Message({
+    header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+    pose: {
+      position: { x: wx, y: wy, z: 0 },
+      orientation: { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) },
+    },
+  }));
+  navState.textContent = 'goal sent (' + wx.toFixed(2) + ', ' + wy.toFixed(2) + ')';
+  closeTagPop();
+});
+
+tagsToggle.addEventListener('click', () => {
+  uhfShowTags = !uhfShowTags;
+  tagsToggle.classList.toggle('selected', uhfShowTags);
+  if (!uhfShowTags) closeTagPop(); else drawMap();
 });
 
 // --- system panel: host vitals + per-container controls ---------------------------
@@ -1199,15 +1587,109 @@ new ROSLIB.Topic({
 
 let activeSiteMeta = null;
 
+// Plain-language phrase for each slam mode, shown in the "Active now" card.
+const MODE_PHRASE = {
+  localization: 'Localizing on the saved map',
+  continue: 'Mapping — extending the saved map',
+  new: 'Mapping — building a fresh map',
+  auto: 'Auto — continues a saved map if one exists',
+};
+
+// The map's "NOW" chip (overlay #site-active): which site/map/floor is live and
+// what the robot is doing. Everything comes from activeSiteMeta.
+function renderActiveCard(activeName) {
+  const card = document.getElementById('site-active');
+  if (!activeSiteMeta || !activeName) { card.hidden = true; return; }
+  const map = activeSiteMeta.active_map;
+  const entry = (map && (activeSiteMeta.maps || {})[map]) || {};
+  const mode = activeSiteMeta.slam_mode || 'auto';
+  document.getElementById('active-site-name').textContent =
+    (activeSiteMeta.display_name || activeName) + ' /';
+  document.getElementById('active-map-name').textContent =
+    map ? (entry.label || map) : 'no map yet';
+  const floorEl = document.getElementById('active-map-floor');
+  if (entry.floor !== null && entry.floor !== undefined) {
+    floorEl.textContent = 'F' + entry.floor;
+    floorEl.style.display = '';
+  } else {
+    floorEl.style.display = 'none';
+  }
+  let line = MODE_PHRASE[mode] || mode;
+  document.getElementById('active-mode-line').innerHTML = line;
+  card.hidden = false;
+}
+
+// Map overlay: the Navigate | Map intent toggle (#mo-intent). Two intents map
+// onto the four slam modes — Navigate = localization (finished map, instant
+// floor swaps), Map = auto (build/extend). New/Continue stay in
+// the Site tab's "Advanced" section. Kept in sync with slam_mode.
+function renderIntent() {
+  const wrap = document.getElementById('mo-intent');
+  if (!activeSiteMeta || !activeSiteMeta.active_map) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  const mode = activeSiteMeta.slam_mode || 'auto';
+  const navBtn = wrap.querySelector('[data-intent="nav"]');
+  const mapBtn = wrap.querySelector('[data-intent="map"]');
+  navBtn.classList.toggle('on', mode === 'localization');
+  mapBtn.classList.toggle('on', mode !== 'localization');
+  // Precondition: Navigate (localization) needs a saved grid map.
+  const entry = (activeSiteMeta.maps || {})[activeSiteMeta.active_map] || {};
+  navBtn.disabled = !entry.grid;
+  navBtn.title = entry.grid
+    ? 'Drive the finished map — floors swap instantly'
+    : 'Save a grid map first (switch to Map, drive, then Save)';
+}
+
+// Map overlay: the floor stack (#mo-floors). Floors are maps; tap to swap.
+// Hidden unless the site has more than one map.
+function renderFloorStack() {
+  const wrap = document.getElementById('mo-floors');
+  const maps = (activeSiteMeta && activeSiteMeta.maps) || {};
+  const names = Object.keys(maps);
+  if (names.length < 2) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  wrap.innerHTML = '<span class="fl-label">FLR</span>';
+  const active = activeSiteMeta.active_map;
+  // Top floor at the top; maps without a floor sort by name after.
+  names.sort((a, b) => {
+    const fa = maps[a].floor, fb = maps[b].floor;
+    if (fa != null && fb != null) return fb - fa;
+    if (fa != null) return -1;
+    if (fb != null) return 1;
+    return a.localeCompare(b);
+  });
+  for (const name of names) {
+    const m = maps[name];
+    const btn = document.createElement('button');
+    btn.textContent = (m.floor != null) ? String(m.floor) : name.slice(0, 3);
+    btn.title = m.label || name;
+    if (name === active) btn.classList.add('on');
+    btn.addEventListener('click', () => activateMap(name));
+    wrap.appendChild(btn);
+  }
+}
+
+// Intent toggle click -> the two-way mode switch (setSlamMode confirms + gates).
+document.querySelectorAll('#mo-intent button').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    setSlamMode(btn.dataset.intent === 'nav' ? 'localization' : 'auto');
+  });
+});
+
 function renderSites(data) {
-  siteState.textContent = data.active || 'none';
   activeSiteMeta = (data.sites || []).find((s) => s.name === data.active) || null;
+  const mapCount = Object.keys((activeSiteMeta && activeSiteMeta.maps) || {}).length;
+  siteState.textContent = data.active
+    ? `${mapCount} map${mapCount === 1 ? '' : 's'}`
+    : 'no active site';
+  renderActiveCard(data.active);
+  renderSlamMode();
   siteList.innerHTML = '';
   for (const s of data.sites || []) {
     const row = document.createElement('div');
     row.className = 'svc-row';
     const isActive = s.name === data.active;
-    const mapLabel = s.default_map || 'no map yet';
+    const mapLabel = s.active_map || s.default_map || 'no map yet';
     row.innerHTML = `
       <span class="svc-dot ${isActive ? 'running' : 'exited'}"></span>
       <span class="svc-name">${s.display_name || s.name}</span>
@@ -1220,11 +1702,213 @@ function renderSites(data) {
     if (btn) btn.addEventListener('click', () => switchSite(s.name));
     siteList.appendChild(row);
   }
+  renderSiteMaps();
   const last = data.last_switch;
   if (last && last.restarts && last.restarts.some((r) => !r.ok)) {
     const failed = last.restarts.filter((r) => !r.ok).map((r) => r.service);
     siteResult.textContent = `last switch: ${failed.join(', ')} failed to restart — retry from the System panel.`;
   }
+}
+
+// --- per-site maps (ADR-0029) --------------------------------------------------
+// A site holds multiple labeled maps (one per floor); active_map is the one
+// slam/amcl runs on. Activating in localization mode swaps the grid live via
+// map_server LoadMap (~1 s); any other mode restarts slam (map bound at launch).
+const siteMapsEl = document.getElementById('site-maps');
+
+function renderSiteMaps() {
+  siteMapsEl.innerHTML = '';
+  const maps = (activeSiteMeta && activeSiteMeta.maps) || {};
+  const active = activeSiteMeta && activeSiteMeta.active_map;
+  for (const name of Object.keys(maps).sort()) {
+    const m = maps[name];
+    const row = document.createElement('div');
+    const isActive = name === active;
+    row.className = 'map-row' + (isActive ? ' is-live' : '');
+    // Readable capability chips instead of [graph]/[grid] shorthand.
+    const chips = [];
+    if (isActive) chips.push('<span class="cap live">● running</span>');
+    chips.push(m.grid
+      ? '<span class="cap on">Localize-ready</span>'
+      : '<span class="cap off">Not localizable</span>');
+    if (m.posegraph) chips.push('<span class="cap on">Extendable</span>');
+    if (m.unregistered) chips.push('<span class="cap warn">unregistered</span>');
+    const nameHtml = m.label && m.label !== name
+      ? `${m.label} <span style="color:var(--dim)">(${name})</span>` : name;
+    const floorHtml = (m.floor !== null && m.floor !== undefined)
+      ? `<span class="map-row-floor">Floor ${m.floor}</span>` : '';
+    row.innerHTML = `
+      <div class="map-row-head">
+        <span class="map-row-name">${nameHtml}</span>
+        ${floorHtml}
+        <span class="svc-actions">
+          <button data-map="${name}" ${isActive ? 'disabled' : ''}>${isActive ? 'Live now' : 'Activate'}</button>
+        </span>
+      </div>
+      <div class="caps">${chips.join('')}</div>
+    `;
+    const btn = row.querySelector('button');
+    if (btn) btn.addEventListener('click', () => activateMap(name));
+    siteMapsEl.appendChild(row);
+  }
+  renderFloorStack();                     // map floor stack (#mo-floors)
+}
+
+const loadMapSrv = new ROSLIB.Service({
+  ros, name: '/map_server/load_map',
+  serviceType: 'nav2_msgs/srv/LoadMap',
+});
+const initialPosePub = new ROSLIB.Topic({
+  ros, name: '/initialpose',
+  messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+});
+// Advertise at load (same race as /coverage_box): a publish on a
+// just-advertised topic can be dropped before DDS discovery matches, which
+// would eat the first Set-pose pin after a page load.
+ros.on('connection', () => initialPosePub.advertise());
+const reseedSrv = new ROSLIB.Service({
+  ros, name: '/tag_relocalizer/reseed',
+  serviceType: 'std_srvs/srv/Trigger',
+});
+
+async function postActiveMap(name) {
+  const res = await fetch(`${FLEET_API}/sites/active`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ active_map: name }),
+  });
+  const body = await res.json();
+  if (!res.ok) throw new Error(body.error || res.status);
+}
+
+async function activateMap(name) {
+  if (!activeSiteMeta) return;
+  if (siteNavBusy) { alert('Navigation goal active — cancel it before switching maps.'); return; }
+  if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before switching maps.'); return; }
+  const entry = (activeSiteMeta.maps || {})[name] || {};
+  const mode = activeSiteMeta.slam_mode || 'auto';
+  if (mode === 'localization') {
+    if (!entry.grid) {
+      alert(`"${name}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session first.`);
+      return;
+    }
+    if (!confirm(`Switch to map "${name}" live? The grid swaps in ~1 s and the pose is seeded at the map's start pose — show the robot a registered tag to refine.`)) return;
+    siteResult.textContent = `loading map "${name}"…`;
+    loadMapSrv.callService(
+      new ROSLIB.ServiceRequest({ map_url: `/ros_ws/src/sites/active/maps/${name}.yaml` }),
+      async (res) => {
+        if (res.result !== 0) { siteResult.textContent = `map load failed (result ${res.result})`; return; }
+        try { await postActiveMap(name); } catch (e) {
+          siteResult.textContent = `map "${name}" loaded but not persisted (${e.message}) — the next slam restart reverts.`;
+          return;
+        }
+        // Seed amcl at the map's start pose; a registered-tag sighting refines.
+        const pose = entry.map_start_pose || [0, 0, 0];
+        const cov = new Array(36).fill(0);
+        cov[0] = 0.25; cov[7] = 0.25; cov[35] = 0.0685; // ~15 deg
+        initialPosePub.publish(new ROSLIB.Message({
+          header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+          pose: {
+            pose: {
+              position: { x: pose[0], y: pose[1], z: 0 },
+              orientation: { x: 0, y: 0, z: Math.sin(pose[2] / 2), w: Math.cos(pose[2] / 2) },
+            },
+            covariance: cov,
+          },
+        }));
+        reseedSrv.callService(new ROSLIB.ServiceRequest({}), () => {}, () => {});
+        siteResult.textContent = `now on map "${name}" (live swap) — pose seeded at its start pose.`;
+        refreshSites();
+      },
+      (err) => { siteResult.textContent = 'map load failed: ' + err; },
+    );
+    return;
+  }
+  if (!confirm(`Switch to map "${name}"? slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
+  siteResult.textContent = `switching to map "${name}"…`;
+  try {
+    await postActiveMap(name);
+    await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+    await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+    siteResult.textContent = `map "${name}" — restarting slam + behaviors…`;
+  } catch (e) {
+    siteResult.textContent = 'map switch failed: ' + e.message;
+    return;
+  }
+  setTimeout(refreshSites, 5000);
+  setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
+}
+
+// --- slam mode selector -------------------------------------------------------------
+// Writes site.json's slam_mode (fleet_status validates it) and restarts
+// slam + behaviors so mode:=site re-resolves it — the mode is which
+// executable runs (ADR-0003/0028), so there is no live switch.
+// Vocabulary is the SITE-level one (auto, not the launch-only 'site').
+const SLAM_MODES = [
+  ['auto', 'Continue the default map if it has a saved graph, else start a new one. Never localization.'],
+  ['new', 'Fresh blank map. Save map to keep it and make it the site default.'],
+  ['continue', 'Load the saved graph and keep extending it — the map stays savable.'],
+  ['localization', 'amcl on the saved grid map: map is fixed, nothing savable. Best for repeatable nav on a finished map.'],
+];
+const siteModeEl = document.getElementById('site-mode');
+const siteModeDesc = document.getElementById('site-mode-desc');
+
+function renderSlamMode() {
+  siteModeEl.innerHTML = '';
+  if (!activeSiteMeta) { siteModeDesc.textContent = ''; renderIntent(); return; }
+  const current = activeSiteMeta.slam_mode || 'auto';
+  for (const [mode, desc] of SLAM_MODES) {
+    const btn = document.createElement('button');
+    btn.textContent = mode;
+    btn.title = desc;
+    if (mode === current) btn.classList.add('selected');
+    btn.addEventListener('click', () => setSlamMode(mode));
+    siteModeEl.appendChild(btn);
+  }
+  siteModeDesc.textContent = `${current}: ${SLAM_MODES.find(([m]) => m === current)[1]}`;
+  renderIntent();   // keep the map's Navigate|Map toggle in sync
+}
+
+async function setSlamMode(mode) {
+  if (!activeSiteMeta || mode === (activeSiteMeta.slam_mode || 'auto')) return;
+  if (siteNavBusy) { alert('Navigation goal active — cancel it before changing slam mode.'); return; }
+  if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before changing slam mode.'); return; }
+  const map = activeSiteMeta.active_map || activeSiteMeta.default_map;
+  const entry = ((activeSiteMeta.maps || {})[map]) || {};
+  // Head off the two site.json states that make slam.launch.py refuse to
+  // start (crash-loop under restart: unless-stopped).
+  if ((mode === 'continue' || mode === 'localization') && !map) {
+    alert(`"${mode}" needs an active map — Save map first.`);
+    return;
+  }
+  if (mode === 'continue' && !entry.posegraph) {
+    alert(`"${map}" has no saved graph (.posegraph) in this site — Save map first.`);
+    return;
+  }
+  if (mode === 'localization' && !entry.grid) {
+    alert(`"${map}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session (Save map writes both formats).`);
+    return;
+  }
+  const desc = SLAM_MODES.find(([m]) => m === mode)[1];
+  if (!confirm(`Set slam mode to "${mode}"?\n\n${desc}\n\nslam + behaviors restart (~20 s); driving and camera stay up.`)) return;
+  siteResult.textContent = `setting mode "${mode}"…`;
+  try {
+    const res = await fetch(`${FLEET_API}/sites/active`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slam_mode: mode }),
+    });
+    const body = await res.json();
+    if (!res.ok) { siteResult.textContent = 'mode change failed: ' + (body.error || res.status); return; }
+    await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+    await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+    siteResult.textContent = `slam mode "${mode}" — restarting slam + behaviors…`;
+  } catch (e) {
+    siteResult.textContent = 'fleet_status unreachable';
+    return;
+  }
+  setTimeout(refreshSites, 5000);
+  setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
 }
 
 async function switchSite(name) {
@@ -1276,40 +1960,64 @@ document.getElementById('site-add-form').addEventListener('submit', async (ev) =
 });
 
 // Save the live slam graph into the active site + make it the site's default
-// map. serialize_map appends .posegraph/.data itself. ⚠ In localization mode
-// slam_toolbox silently no-ops AND reports success (CLAUDE.md trap) — mode:=site
-// auto policy never runs localization, so this only guards a hand-set mode.
+// map. Writes BOTH map formats (ADR-0028): serialize_map for the .posegraph/.data
+// pair that continue mode loads, then save_map for the .yaml/.pgm grid that
+// localization mode's amcl + map_server load. Both services append their own
+// extensions. ⚠ In localization mode slam_toolbox is not running at all (amcl
+// stack instead) — mode:=site auto policy never runs localization, so this only
+// guards a hand-set mode.
 const serializeSrv = new ROSLIB.Service({
   ros, name: '/slam_toolbox/serialize_map',
   serviceType: 'slam_toolbox/srv/SerializePoseGraph',
 });
+const saveGridSrv = new ROSLIB.Service({
+  ros, name: '/slam_toolbox/save_map',
+  serviceType: 'slam_toolbox/srv/SaveMap',
+});
 document.getElementById('site-save-map').addEventListener('click', () => {
   if (activeSiteMeta && activeSiteMeta.slam_mode === 'localization') {
-    alert('This site is pinned to localization mode: serialize_map silently saves NOTHING there. Set slam_mode to auto/continue first.');
+    alert('This site is pinned to localization mode: slam_toolbox is not running (amcl localizes instead), so there is nothing to save. Set slam_mode to auto/continue first.');
     return;
   }
   const name = siteMapName.value.trim()
-    || (activeSiteMeta && (activeSiteMeta.default_map || activeSiteMeta.name)) || 'map';
+    || (activeSiteMeta && (activeSiteMeta.active_map || activeSiteMeta.name)) || 'map';
   if (!confirm(`Save the current map as "${name}" in the active site?`)) return;
   siteResult.textContent = 'serializing map…';
   serializeSrv.callService(
     new ROSLIB.ServiceRequest({ filename: '/ros_ws/src/sites/active/maps/' + name }),
-    async () => {
-      try {
-        await fetch(`${FLEET_API}/sites/active`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ default_map: name }),
-        });
-      } catch (e) { /* metadata update is best-effort; the files are saved */ }
-      siteResult.textContent = `map "${name}" saved.`;
-      if (confirm('Map saved. Restart slam + behaviors now to continue on it?')) {
+    () => {
+      siteResult.textContent = 'saving grid map…';
+      const finish = async (gridErr) => {
         try {
-          await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
-          await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
-        } catch (e) { /* ignore */ }
-      }
-      refreshSites();
+          // Register the map entry (label/floor, ADR-0029) + make it active.
+          const label = document.getElementById('site-map-label').value.trim();
+          const floorRaw = document.getElementById('site-map-floor').value.trim();
+          const entry = {};
+          if (label) entry.label = label;
+          if (floorRaw !== '') entry.floor = parseInt(floorRaw, 10);
+          await fetch(`${FLEET_API}/sites/active`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active_map: name, maps: { [name]: entry } }),
+          });
+        } catch (e) { /* metadata update is best-effort; the files are saved */ }
+        siteResult.textContent = gridErr
+          ? `map "${name}" saved (posegraph only — grid save failed: ${gridErr}; localization mode needs the grid)`
+          : `map "${name}" saved (posegraph + grid).`;
+        if (confirm('Map saved. Restart slam + behaviors now to continue on it?')) {
+          try {
+            await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+            await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+          } catch (e) { /* ignore */ }
+        }
+        refreshSites();
+      };
+      saveGridSrv.callService(
+        new ROSLIB.ServiceRequest({ name: { data: '/ros_ws/src/sites/active/maps/' + name } }),
+        // SaveMap reports failure in-band: result 0 = success, 255 = no map yet.
+        (res) => finish(res.result === 0 ? null : `result ${res.result}`),
+        (err) => finish(err),
+      );
     },
     (err) => { siteResult.textContent = 'serialize failed: ' + err; },
   );
@@ -1322,6 +2030,26 @@ async function refreshSites() {
     sitePanel.style.display = '';
     renderSites(await res.json());
   } catch (e) { siteState.textContent = 'offline'; }
+  refreshAprilTags();
+}
+
+// Surveyed AprilTags -> map markers. Rides the sites poll: after renderSites
+// so activeSiteMeta is fresh (markers filter to the active map — a tag
+// surveyed on another floor doesn't draw here).
+async function refreshAprilTags() {
+  try {
+    const res = await fetch(FLEET_API + '/apriltags');
+    if (!res.ok) return;
+    const body = await res.json();
+    const active = activeSiteMeta && activeSiteMeta.active_map;
+    const next = (body.tags || []).filter((t) => t.map_x !== null
+      && (!t.map_name || !active || t.map_name === active));
+    if (JSON.stringify(next) !== JSON.stringify(aprilTags)) {
+      aprilTags = next;
+      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length);
+      drawMap();
+    }
+  } catch (e) { /* fleet_status offline — markers just don't refresh */ }
 }
 refreshSites();
 setInterval(refreshSites, 30000);

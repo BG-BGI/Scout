@@ -117,6 +117,46 @@ def test_nfc_read_null_pose_round_trip():
                  'pose': None, 'stamp_utc': 't'}
 
 
+def test_uhf_status_exact_string():
+    assert s.format_uhf_status('idle', True, False) == (
+        '{"connected": true, "enabled": false, "last_error": "", '
+        '"state": "idle", "throttled": false}')
+
+
+def test_uhf_status_round_trip():
+    d = s.parse_uhf_status(
+        s.format_uhf_status('scanning', True, True, True, 'hot'))
+    assert d == {'state': 'scanning', 'connected': True, 'enabled': True,
+                 'throttled': True, 'last_error': 'hot'}
+
+
+def _uhf_read(read_id='id-1'):
+    # Shape produced by core.uhf.parse_tag_record + the node's read_id.
+    return {'read_id': read_id, 'epc': 'E280', 'rssi_dbm': -60,
+            'freq_khz': 923200, 'phase': 42, 'antenna': 17,
+            'timestamp_ms': 295, 'protocol': 5}
+
+
+def test_uhf_read_batch_exact_string():
+    assert s.format_uhf_read_batch('b-1', [_uhf_read()], (1.5, -0.25, 0.79),
+                                   '2026-09-15T12:00:00Z') == (
+        '{"batch_id": "b-1", "pose": {"x": 1.5, "y": -0.25, "yaw": 0.79}, '
+        '"reads": [{"antenna": 17, "epc": "E280", "freq_khz": 923200, '
+        '"phase": 42, "protocol": 5, "read_id": "id-1", "rssi_dbm": -60, '
+        '"timestamp_ms": 295}], "stamp_utc": "2026-09-15T12:00:00Z"}')
+
+
+def test_uhf_read_batch_null_pose_round_trip():
+    d = s.parse_uhf_read_batch(s.format_uhf_read_batch(
+        'b-2', [_uhf_read(), _uhf_read('id-2')], None, 't'))
+    assert d['pose'] is None
+    assert d['batch_id'] == 'b-2'
+    assert [r['read_id'] for r in d['reads']] == ['id-1', 'id-2']
+    # Stage-2 fields survive the wire untouched.
+    assert d['reads'][0]['phase'] == 42
+    assert d['reads'][0]['freq_khz'] == 923200
+
+
 def test_traction_status_exact_string_and_rounding():
     m1 = {'speed': 2000.04, 'current': 1.23456, 'expected': 1.5004,
           'verdict': 'loaded', 'derate': 1.0}

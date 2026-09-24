@@ -1,0 +1,17 @@
+[Unit]
+Description=Scout boot LED pulse — dev-mode arm window
+# Runs BEFORE docker.service (delays it ~6 s — that is the point): the blue
+# pulse plays before any container starts. A power cut mid-pulse leaves
+# /var/lib/scout-bootmode/interrupted on disk -> next boot is dev mode.
+Before=docker.service
+After=local-fs.target
+Wants=docker.service
+
+[Service]
+Type=oneshot
+Environment=SCOUT_REPO=@REPO@
+ExecStart=@REPO@/scripts/bootmode.sh pulse
+# A mid-pulse kill is the FEATURE: the armed flag survives on disk.
+
+[Install]
+WantedBy=multi-user.target

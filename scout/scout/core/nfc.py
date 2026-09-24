@@ -31,11 +31,15 @@ flipper_node drives that sequence (dump inside the shell, storage read/remove
 at the top level). This module is FIRMWARE-coupled only; the /nfc/reads wire
 format lives with the other wire formats in scout.core.status (format_nfc_read).
 
-⚠ NOT yet bench-captured on real firmware — the shapes below are from firmware
-SOURCE, which is authoritative for the format strings but does not prove the
-end-to-end shell dance on this unit. Recapture on the bench (miniterm
-/dev/ttyACM0 230400: `nfc`, `dump -f /ext/nfc/t.nfc`, present a card, `exit`,
-`storage read /ext/nfc/t.nfc`) and confirm the fixtures before trusting reads.
+Bench-verified on Official firmware 1.4.3 (2026-08-27, /dev/ttyACM0 230400):
+the `nfc` sub-shell is real (banner "Welcome to NFC Command Line Interface!",
+prompt becomes `[nfc]>:` which still contains `>:`), its command set is
+`help exit scanner raw dump apdu emulate mfu field`, and `dump ?` confirms the
+flags `-k/--key -p/--protocol -f/--file -t/--timeout` — so `dump -f <path>` is
+correct. STILL UNPROVEN end to end: a real card dump -> "Dump saved to" ->
+`storage read` -> parse_nfc_file round-trip (no card was on the reader during
+grammar capture). Present a card and confirm the fixtures before trusting the
+parsed UID.
 
 ⚠ `dump` with no `-p` uses a 5 s internal timeout (firmware default) for BOTH
 protocol auto-detect and the card read, so a no-card cycle blocks ~5 s on the

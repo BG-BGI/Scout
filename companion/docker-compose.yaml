@@ -50,11 +50,12 @@ services:
     command: -c /zenoh_bridge.json5 -e tcp/${PI_IP}:7447
 
   # Live 3D capture (spec §2.1). Consumes the bridged topics from the local
-  # graph exactly as if the camera were local. The compressed encoders on the
-  # Pi are per-subscriber lazy — the Pi-side zenoh bridge is that subscriber,
-  # so the Pi pays the JPEG/PNG cost only while this stack is up. Visual
-  # odometry OFF: the EKF's fused /odom (wheel speed + gyro yaw) is the pose
-  # input; rtabmap does appearance-based loop closure on top.
+  # graph exactly as if the camera were local. Depth arrives RAW over the
+  # bridge (ADR-0033): the compressedDepth PNG encode was the Pi's most
+  # expensive per-frame cost; raw 16UC1 is ~3 MB/s on the wire and decodes
+  # for free here. Color still crosses as JPEG (cheap enough at 5 fps).
+  # Visual odometry OFF: the EKF's fused /odom (wheel speed + gyro yaw) is
+  # the pose input; rtabmap does appearance-based loop closure on top.
   rtabmap:
     <<: *companion
     depends_on:
@@ -76,7 +77,7 @@ services:
         depth_topic:=/camera/camera/aligned_depth_to_color/image_raw
         camera_info_topic:=/camera/camera/color/camera_info
         rgb_image_transport:=compressed
-        depth_image_transport:=compressedDepth
+        depth_image_transport:=raw
         visual_odometry:=false
         odom_topic:=/odom
         frame_id:=base_link
@@ -112,6 +113,29 @@ services:
     # parser aborts on the first newline/quote). The positional form loads the
     # file straight into robot_description (Humble-supported).
     command: ros2 run robot_state_publisher robot_state_publisher /urdf/scout_description.urdf
+
+  # AprilTag detection (ADR-0034) — moved off the Pi, where it cost three
+  # processes (throttle + info relay + detector). Subscribes the bridged JPEG
+  # color at 5 fps (image_transport: compressed in apriltag.yaml; camera_info
+  # derives from the image topic's namespace, so the bridged
+  # /camera/camera/color/camera_info pairs by identical stamps — no relay).
+  # /tf is remapped to /tf_tags: blanket reverse-bridging /tf would carry
+  # rtabmap's map->odom into the Pi graph and fight amcl/slam. The Pi's
+  # tag_tf_relay folds /tf_tags back into its /tf, so tag_relocalizer and
+  # scout-skills' TF lookups are unchanged.
+  apriltag:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./config:/companion/config:ro
+    command: >
+      ros2 run apriltag_ros apriltag_node --ros-args
+      -r __node:=apriltag
+      --params-file /companion/config/apriltag.yaml
+      -r image_rect:=/camera/camera/color/image_raw
+      -r detections:=/detections
+      -r /tf:=/tf_tags
 
   # World-model detector (WORLDMODEL.md, gate 1). Continuous YOLO11n on the
   # bridged D455 stream -> map-frame object table on /world/objects (latched
@@ -183,6 +207,22 @@ services:
       -p reads_topic:=/nfc/reads
       -p registry_topic:=/nfc/registry
 
+  # UHF read recorder (ADR-0032) — the PRIMARY UHF DB. Subscribes the bridged
+  # /uhf/reads BATCHES (pose-stamped JSON from the Pi's uhf_node, latched
+  # depth-50 for outage replay) into /sites/active/uhf.db (one transaction per
+  # batch; rssi/freq/phase stored raw as stage-2 fuel) and republishes the
+  # /uhf/registry (per-EPC RSSI-weighted centroid + spread) back across the
+  # bridge for the webui/MCP. Own script, not rfid/recorder.py — batch wire
+  # format, signal columns, and the centroid solver are UHF-only.
+  uhf_recorder:
+    <<: *companion
+    depends_on:
+      - zenoh_bridge
+    volumes:
+      - ./uhf:/uhf:ro
+      - ./data/sites:/sites   # writable — this service owns uhf.db
+    command: python3 /uhf/recorder.py --ros-args -r __node:=uhf_recorder
+
   # Batch anomaly captioner (inspection F2) — run-on-demand, NOT a daemon:
   #   docker compose run --rm captioner /captures/inspection/<UTC>
   # Florence-2-base on CPU over the run's .mcap; writes anomalies.json beside
@@ -214,7 +254,7 @@ services:
       # switch; 'plain' scaffold = bare per-site dirs (just rtabmap.db).
       - SITES_DIR=/sites
       - SITE_SCAFFOLD=plain
-      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder,nfc_recorder
+      - SITE_RESTART_SERVICES=rtabmap,inspection_recorder,rfid_recorder,nfc_recorder,uhf_recorder
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /:/hostfs:ro
