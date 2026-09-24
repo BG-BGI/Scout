@@ -5,6 +5,7 @@ strand this exporter with a dead subscription it thinks is live.
 """
 
 import asyncio
+import contextlib
 import itertools
 import json
 import os
@@ -48,5 +49,11 @@ class RosBridge:
                         msgs.append(frame["msg"])
         except TimeoutError:
             pass
-        await self._ws.send(json.dumps({"op": "unsubscribe", "id": sid, "topic": topic}))
+        # A socket that died mid-window throws on the unsubscribe; the
+        # messages already collected are still a valid sample, and the
+        # per-call socket is closed either way.
+        with contextlib.suppress(websockets.WebSocketException, OSError):
+            await self._ws.send(
+                json.dumps({"op": "unsubscribe", "id": sid, "topic": topic})
+            )
         return msgs

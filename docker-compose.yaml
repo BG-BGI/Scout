@@ -416,6 +416,12 @@ services:
       - COMPOSE_PROJECT=scout
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Observers get bounded too: an uncapped diagnostic service on a live
+    # robot is exactly the contention it exists to measure.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
 
   # Read + safe-restart MCP endpoint for Claude (http://<pi>:9002/mcp,
   # streamable-http). rw docker socket -- restart_container needs it, but the
@@ -431,6 +437,10 @@ services:
       - COMPOSE_PROJECT=scout
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
 
   # Log-streaming agent for the localhost Dozzle UI (dozzle --remote-agent).
   # Read-only socket; agent-mode Dozzle ships no web UI of its own here, so
@@ -445,6 +455,10 @@ services:
       - DOZZLE_AGENT_ADDR=:7007
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
 
   # Backend for the webui System panel (http://<pi>:9003/api/... — 9002 is
   # observability_mcp's): host
