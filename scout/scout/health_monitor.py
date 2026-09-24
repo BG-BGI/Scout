@@ -23,6 +23,18 @@ Subsystems in this version:
                    DELIBERATELY silent on camera/TF loss, so STALE here means
                    the negative-obstacle safeguard is blind (ADR-0024) — this
                    row is why that silence is safe to keep.
+  * cmd_stream   — the autonomy command chain /cmd_vel_auto -> /cmd_vel_safe
+                   -> /cmd_vel_out (scout.core.cmdflow, ADR-0036): one
+                   stop-reason label (auto_idle / cm_dead / cm_stop:<zone> /
+                   bypass / zone_unsynced / mux_override / moving) plus
+                   per-hop ages and worst inter-arrival gaps. Also mirrored
+                   on latched /stop_reason (published on change only) so one
+                   bagged breadcrumb separates bridge congestion, CPU
+                   throttling, a stale sensor stop, and a real collision
+                   stop. cmd_stream is a classifier, not a gate — it never
+                   touches the deadman, mux, or CM timeouts. An idle robot
+                   reads auto_idle, which is OK, not a fault. The three
+                   Twist subscriptions are ~4 float reads at <=50 Hz each.
 
 Streamed subsystems are STALE until their topic delivers and STALE again if it
 stops. LATCHED subsystems (collision, flipper, uhf) publish once per change, so
@@ -30,13 +42,23 @@ only never-seen means STALE for them — age has no meaning on a latched wire.
 See ADR-0014.
 """
 
+import time
+
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState, PointCloud2
 from std_msgs.msg import Bool, String
 
 from scout.core import health
+from scout.core.cmdflow import (
+    CM_DEAD,
+    ZONE_UNSYNCED,
+    TopicFlow,
+    stop_reason,
+    twist_is_zero,
+)
 from scout.core.status import (
     parse_flipper_status,
     parse_roboclaw_status,
@@ -97,12 +119,21 @@ class HealthMonitor(Node):
         self._traction_t = None
         self._bypassed = None          # latched: None until first message
         self._zone_mode = 'forward'
+        self._zone_sync = None         # latched: None until first message
         self._flipper = None           # latched: parsed dict or None
         self._uhf = None               # latched: parsed dict or None
         self._cliff_pts = None
         self._cliff_t = None
+        # Command-chain flow trackers (core.cmdflow) on monotonic time —
+        # arrival measurement only, plain Twists carry no source stamp.
+        self._auto_flow = TopicFlow()
+        self._safe_flow = TopicFlow()
+        self._out_flow = TopicFlow()
+        self._stop_reason_published = None
 
         self._pub = self.create_publisher(DiagnosticArray, '/diagnostics', 10)
+        self._stop_reason_pub = self.create_publisher(
+            String, '/stop_reason', LATCHED_QOS)
         self.create_subscription(BatteryState, 'battery', self._on_battery, 10)
         self.create_subscription(Bool, 'tilt_alarm', self._on_tilt, 10)
         self.create_subscription(String, 'roboclaw_status', self._on_status, 10)
@@ -112,6 +143,22 @@ class HealthMonitor(Node):
                                  self._on_bypassed, LATCHED_QOS)
         self.create_subscription(String, '/collision_monitor/zone_mode',
                                  self._on_zone_mode, LATCHED_QOS)
+        self.create_subscription(Bool, '/collision_monitor/zone_sync',
+                                 self._on_zone_sync, LATCHED_QOS)
+        # cmd_vel chain hops from the profile (SC6 — one owner for topic
+        # names, same keys twist_mux.yaml is kept in step with).
+        self.create_subscription(
+            Twist, prof['topic_cmd_vel_auto'],
+            lambda m: self._auto_flow.on_msg(
+                time.monotonic(), twist_is_zero(m.linear.x, m.angular.z)), 10)
+        self.create_subscription(
+            Twist, prof['topic_cmd_vel_safe'],
+            lambda m: self._safe_flow.on_msg(
+                time.monotonic(), twist_is_zero(m.linear.x, m.angular.z)), 10)
+        self.create_subscription(
+            Twist, prof['topic_cmd_vel_out'],
+            lambda m: self._out_flow.on_msg(
+                time.monotonic(), twist_is_zero(m.linear.x, m.angular.z)), 10)
         self.create_subscription(String, '/flipper/status',
                                  self._on_flipper, LATCHED_QOS)
         self.create_subscription(String, '/uhf/status',
@@ -151,6 +198,9 @@ class HealthMonitor(Node):
 
     def _on_zone_mode(self, msg: String):
         self._zone_mode = msg.data
+
+    def _on_zone_sync(self, msg: Bool):
+        self._zone_sync = msg.data
 
     def _on_flipper(self, msg: String):
         try:
@@ -245,6 +295,35 @@ class HealthMonitor(Node):
             lvl, msg = health.cliff_level(self._cliff_pts)
         return self._status('cliff', lvl, msg, [])
 
+    def _cmd_stream_status(self):
+        now = time.monotonic()
+        # zone_sync None = collision_polygon_manager not seen yet; don't warn
+        # on a wire that hasn't latched (the collision row covers never-seen).
+        reason = stop_reason(
+            now, self._auto_flow, self._safe_flow, self._out_flow,
+            bypassed=bool(self._bypassed), zone_mode=self._zone_mode,
+            zone_synced=self._zone_sync is not False)
+        # cm_stop/bypass/auto_idle are the system working as designed — only
+        # a silent CM or an unacked zone push is a fault of the chain itself.
+        lvl = health.WARN if reason in (
+            CM_DEAD, ZONE_UNSYNCED) else health.OK
+        values = []
+        for name, flow in (('auto', self._auto_flow),
+                           ('safe', self._safe_flow),
+                           ('out', self._out_flow)):
+            age = flow.age(now)
+            gap = flow.max_gap(now)
+            values.append(KeyValue(
+                key='%s_age_s' % name,
+                value='%.2f' % age if age is not None else 'never'))
+            values.append(KeyValue(
+                key='%s_max_gap_s' % name,
+                value='%.2f' % gap if gap is not None else 'n/a'))
+        if reason != self._stop_reason_published:
+            self._stop_reason_published = reason
+            self._stop_reason_pub.publish(String(data=reason))
+        return self._status('cmd_stream', lvl, reason, values)
+
     def _status(self, name, level, message, values):
         s = DiagnosticStatus()
         s.name = name
@@ -258,7 +337,8 @@ class HealthMonitor(Node):
         subs = [self._battery_status(), self._tilt_status(),
                 self._drivetrain_status(), self._traction_status(),
                 self._collision_status(), self._flipper_status(),
-                self._uhf_status(), self._cliff_status()]
+                self._uhf_status(), self._cliff_status(),
+                self._cmd_stream_status()]
         level = health.worst([s.level[0] for s in subs])
         overall = self._status(
             'scout', level, 'OK' if level == health.OK else 'attention', [])
