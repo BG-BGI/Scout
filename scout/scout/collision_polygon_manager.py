@@ -168,6 +168,10 @@ class CollisionPolygonManager(Node):
         self.create_timer(1.0, self._tick)
         self._publish_status()
         self._publish_sync()
+        # Seed the desired state now (forward, latches at rest) so the first
+        # tick pushes and acks it — zone_sync is then True at boot idle
+        # instead of ambiguously False until the first /cmd_vel_auto.
+        self._set_desired(time.monotonic())
         self.get_logger().info(
             'collision_polygon_manager up: turn >%.2f/<%.2f rad/s '
             '(%.1fs dwell), bypass auto-release %.0f s'
