@@ -29,6 +29,7 @@ main() {
   # Pre-checkout branch, for the stale-build-cache decision below. The deploy
   # workflow checks out before calling us, so it passes the real value in.
   PREV_BRANCH="${SCOUT_PREV_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}"
+  PREV_SHA=$(git rev-parse HEAD)
 
   git fetch origin "$BRANCH"
   git checkout -q "$BRANCH"
@@ -73,9 +74,17 @@ main() {
   if [ -n "$VOL" ]; then
     VOL_ID=$(docker run --rm -v "$VOL":/stamp --entrypoint cat "ghcr.io/bg-bgi/scout:$SHA" /stamp/.image_build_id 2>/dev/null || echo none)
   fi
+  # Deleted scout/ files leave dangling symlinks in the colcon build dir
+  # (symlink-install), and the next build_package dies on `can't copy ...
+  # doesn't exist` (2026-09-24: deleted cliff.yaml failed the deploy while
+  # the job kept running the old code). Wipe on any deletion in the range.
+  DELETED=""
+  if git cat-file -e "$PREV_SHA" 2>/dev/null; then
+    DELETED=$(git diff --diff-filter=D --name-only "$PREV_SHA" "$SHA" -- scout/ || true)
+  fi
   WIPED=0
-  if [ "$PREV_BRANCH" != "$BRANCH" ] || [ "$IMG_ID" != "$VOL_ID" ]; then
-    echo "== wiping build+install volumes (branch $PREV_BRANCH -> $BRANCH, stamp $VOL_ID -> $IMG_ID)"
+  if [ "$PREV_BRANCH" != "$BRANCH" ] || [ "$IMG_ID" != "$VOL_ID" ] || [ -n "$DELETED" ]; then
+    echo "== wiping build+install volumes (branch $PREV_BRANCH -> $BRANCH, stamp $VOL_ID -> $IMG_ID, deletions: ${DELETED:-none})"
     docker compose $ALL down -v --remove-orphans
     WIPED=1
   fi
