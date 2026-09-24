@@ -96,49 +96,25 @@ def _safety_setup(context, *args, **kwargs):
     ]
 
 
-def _cliff_setup(context, *args, **kwargs):
-    # Negative-obstacle detector (ADR-0024). Profile-coupled three ways:
-    # the node needs the realsense pointcloud, and the collision monitor's
-    # `cliff` source needs the node (its silence reads as a fault and stops
-    # autonomy via source_timeout — that is the fail-safe, but only when
-    # deliberate). So: pointcloud off -> skip the node AND require the
-    # profile's collision_monitor overlay to have stripped the source.
-    # Mirror of nav2.launch.py's ADR-0002 stvl<->pointcloud guard.
+def _cliff_guard(context, *args, **kwargs):
+    # Cliff detection REMOVED (ADR-0037, operator directive 2026-09-24):
+    # bump-pitch false positives (static camera TF + 300 s odom memory)
+    # blocked navigation. This guard is what remains — it fail-louds if any
+    # profile's collision_monitor ever lists a `cliff` source again, because
+    # with no detector that source starves and source_timeout freezes
+    # autonomy permanently.
     profile = LaunchConfiguration('profile').perform(context)
-    with open(merged_params('realsense.yaml', profile)) as f:
-        cam = yaml.safe_load(f) or {}
-    pointcloud_off = cam.get('pointcloud.enable') is False
     with open(merged_params('collision_monitor.yaml', profile)) as f:
         cm = yaml.safe_load(f) or {}
     cm_sources = (cm.get('collision_monitor', {})
                     .get('ros__parameters', {})
                     .get('observation_sources') or [])
-    if pointcloud_off:
-        if 'cliff' in cm_sources:
-            raise RuntimeError(
-                'profile %r disables the realsense pointcloud but its '
-                'collision_monitor still lists the `cliff` source — with '
-                'cliff_detector unlaunched that source starves and '
-                'source_timeout freezes autonomy permanently (ADR-0024)'
-                % profile)
-        return []
-    cliff = Node(
-        package='scout',
-        executable='cliff_detector',
-        output='screen',
-        parameters=[os.path.join(resolve_config_dir(), 'cliff.yaml')],
-        remappings=[
-            ('points_in', '/camera/camera/depth/color/points'),
-            ('cliff_points', '/cliff/points'),
-            ('cliff_stop_points', '/cliff/stop_points'),
-        ],
-        # Tier 2 (ADR-0015): a crash loses ledge protection, not motion —
-        # and while it is down the CM cliff source times out and stops
-        # autonomy anyway, so the 2 s respawn gap fails safe.
-        respawn=True,
-        respawn_delay=2.0,
-    )
-    return [cliff]
+    if 'cliff' in cm_sources:
+        raise RuntimeError(
+            'profile %r lists a collision_monitor `cliff` source but cliff '
+            'detection was removed (ADR-0037) — that source would starve '
+            'and source_timeout would freeze autonomy permanently' % profile)
+    return []
 
 
 def generate_launch_description():
@@ -305,7 +281,7 @@ def generate_launch_description():
 
         OpaqueFunction(function=_safety_setup),
 
-        OpaqueFunction(function=_cliff_setup),
+        OpaqueFunction(function=_cliff_guard),
 
         # Direction-aware stop zone (narrow sides while driving straight,
         # wide while turning — a plain `polygon` STOP shape is direction-

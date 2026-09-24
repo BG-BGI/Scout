@@ -93,7 +93,7 @@ deltas separately from expectations.
 
 - **Variable:** one node at a time disabled via launch arg/trial branch:
   led_status, health_monitor, traction_monitor idle costs. (uhf/flipper are
-  USB-bound to the robot — excluded; cliff_detector is safety — never.)
+  USB-bound to the robot — excluded.)
 - **Metrics:** robot row in `containers.csv`; ekf/driver thread
   `run_delay_ms_d`.
 - Fixed mission per arm; revalidate launch fail-fast behavior after any

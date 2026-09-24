@@ -83,8 +83,3 @@ def test_uhf_levels():
     lvl, msg = h.uhf_level(False, False, False, 'serial: unplugged')
     assert lvl == h.WARN and 'unplugged' in msg
 
-
-def test_cliff_levels():
-    assert h.cliff_level(0)[0] == h.OK
-    lvl, msg = h.cliff_level(5)
-    assert lvl == h.WARN and 'ledge' in msg

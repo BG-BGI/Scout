@@ -19,10 +19,6 @@ Subsystems in this version:
   * collision    — the CM bypass + zone mode (latched — see below)
   * flipper      — /flipper/status (latched; absent hardware is OK)
   * uhf          — /uhf/status (latched; absent hardware is OK, throttle WARNs)
-  * cliff        — /cliff/stop_points freshness. cliff_detector goes
-                   DELIBERATELY silent on camera/TF loss, so STALE here means
-                   the negative-obstacle safeguard is blind (ADR-0024) — this
-                   row is why that silence is safe to keep.
   * cmd_stream   — the autonomy command chain /cmd_vel_auto -> /cmd_vel_safe
                    -> /cmd_vel_out (scout.core.cmdflow, ADR-0036): one
                    stop-reason label (auto_idle / cm_dead / cm_stop:<zone> /
@@ -47,8 +43,7 @@ import time
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import BatteryState, PointCloud2
+from sensor_msgs.msg import BatteryState
 from std_msgs.msg import Bool, String
 
 from scout.core import health
@@ -103,12 +98,9 @@ class HealthMonitor(Node):
             self.declare_parameter('tilt_timeout_s', 5.0).value)
         self._drive_timeout = float(
             self.declare_parameter('drivetrain_timeout_s', 2.0).value)
-        # traction publishes per driver status tick (~10 Hz); cliff per
-        # processed depth cloud (~5 Hz).
+        # traction publishes per driver status tick (~10 Hz).
         self._traction_timeout = float(
             self.declare_parameter('traction_timeout_s', 3.0).value)
-        self._cliff_timeout = float(
-            self.declare_parameter('cliff_timeout_s', 3.0).value)
 
         self._battery = None
         self._battery_t = None
@@ -122,8 +114,6 @@ class HealthMonitor(Node):
         self._zone_sync = None         # latched: None until first message
         self._flipper = None           # latched: parsed dict or None
         self._uhf = None               # latched: parsed dict or None
-        self._cliff_pts = None
-        self._cliff_t = None
         # Command-chain flow trackers (core.cmdflow) on monotonic time —
         # arrival measurement only, plain Twists carry no source stamp.
         self._auto_flow = TopicFlow()
@@ -163,8 +153,6 @@ class HealthMonitor(Node):
                                  self._on_flipper, LATCHED_QOS)
         self.create_subscription(String, '/uhf/status',
                                  self._on_uhf, LATCHED_QOS)
-        self.create_subscription(PointCloud2, '/cliff/stop_points',
-                                 self._on_cliff, qos_profile_sensor_data)
         self.create_timer(self._publish_period, self._publish)
         self.get_logger().info(
             'health_monitor up: /diagnostics at %.1f Hz' % (1.0 / self._publish_period))
@@ -213,10 +201,6 @@ class HealthMonitor(Node):
             self._uhf = parse_uhf_status(msg.data)
         except ValueError:
             pass
-
-    def _on_cliff(self, msg: PointCloud2):
-        self._cliff_pts = msg.width
-        self._cliff_t = self.get_clock().now()
 
     def _age(self, stamp):
         if stamp is None:
@@ -288,13 +272,6 @@ class HealthMonitor(Node):
                 u.get('throttled', False), u.get('last_error', ''))
         return self._status('uhf', lvl, msg, [])
 
-    def _cliff_status(self):
-        lvl, msg = health.staleness_level(
-            self._age(self._cliff_t), self._cliff_timeout, 'cliff')
-        if lvl == health.OK:
-            lvl, msg = health.cliff_level(self._cliff_pts)
-        return self._status('cliff', lvl, msg, [])
-
     def _cmd_stream_status(self):
         now = time.monotonic()
         # zone_sync None = collision_polygon_manager not seen yet; don't warn
@@ -337,8 +314,7 @@ class HealthMonitor(Node):
         subs = [self._battery_status(), self._tilt_status(),
                 self._drivetrain_status(), self._traction_status(),
                 self._collision_status(), self._flipper_status(),
-                self._uhf_status(), self._cliff_status(),
-                self._cmd_stream_status()]
+                self._uhf_status(), self._cmd_stream_status()]
         level = health.worst([s.level[0] for s in subs])
         overall = self._status(
             'scout', level, 'OK' if level == health.OK else 'attention', [])

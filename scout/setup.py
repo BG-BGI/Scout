@@ -50,7 +50,6 @@ setup(
             'bag_recorder = scout.bag_recorder:main',
             'nav_manager = scout.nav_manager:main',
             'collision_polygon_manager = scout.collision_polygon_manager:main',
-            'cliff_detector = scout.cliff_detector:main',
             'flipper_node = scout.flipper_node:main',
             'uhf_node = scout.uhf_node:main',
             'tag_relocalizer = scout.tag_relocalizer:main',
