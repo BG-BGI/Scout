@@ -31,6 +31,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import requests
 from docker.errors import NotFound
 
 import docker
@@ -73,7 +74,9 @@ SITE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # reflects the Pi's real SD card, not this container's own overlay fs.
 HOST_ROOT = "/hostfs" if os.path.isdir("/hostfs") else "/"
 
-client = docker.from_env()
+# timeout=15 bounds every blocking Docker API call so a wedged dockerd can't
+# hang a request handler or the stats sampler forever.
+client = docker.from_env(timeout=15)
 
 
 def _containers():
@@ -103,14 +106,54 @@ def _container_stats(container):
         mem_bytes = stats["memory_stats"].get("usage", 0)
         mem_limit = stats["memory_stats"].get("limit", 0)
         return round(cpu_pct, 1), mem_bytes // (1024 * 1024), mem_limit // (1024 * 1024)
-    except (KeyError, ZeroDivisionError):
+    except (KeyError, ZeroDivisionError, docker.errors.APIError,
+            requests.exceptions.RequestException):
+        # docker-py raises requests timeouts through (client timeout=15) —
+        # one slow container must not kill the sampler thread.
         return 0.0, 0, 0
 
 
+# --- Cached container stats --------------------------------------------------
+# Each stats(stream=False) blocks ~1-2 s (two engine samples) and there are
+# ~13 containers, so an inline sweep per request took 15-25 s and every
+# concurrent client (ThreadingHTTPServer) triggered its own — N parallel
+# Docker stats streams for one System panel. Same background-sampler pattern
+# as _companion_sampler/_wifi_quality_sampler below: one thread sweeps
+# serially, handlers read the cache. Sleep is BETWEEN sweeps (not a fixed
+# period the sweep could overrun), so effective cadence is ~25-35 s against
+# the webui's 30 s poll and the sampler is single-flight by construction.
+STATS_IDLE_S = 10
+
+_stats_lock = threading.Lock()
+_stats_cache = {}  # container name -> (cpu_pct, mem_mb, mem_limit_mb)
+_stats_sampled_at = None
+
+
+def _container_stats_sampler():
+    global _stats_sampled_at
+    while True:
+        try:
+            fresh = {c.name: _container_stats(c) for c in _containers()}
+        except (docker.errors.APIError, requests.exceptions.RequestException):
+            fresh = None  # keep the previous cache; its age keeps growing
+        if fresh is not None:
+            with _stats_lock:
+                _stats_cache.clear()
+                _stats_cache.update(fresh)
+                _stats_sampled_at = time.time()
+        time.sleep(STATS_IDLE_S)
+
+
 def list_containers():
+    with _stats_lock:
+        cache = dict(_stats_cache)
+        sampled_at = _stats_sampled_at
+    # None before the first sweep finishes; the webui shows the age so a
+    # cached zero is distinguishable from a fresh measurement.
+    stats_age_s = round(time.time() - sampled_at, 1) if sampled_at else None
     out = []
     for c in _containers():
-        cpu_pct, mem_mb, mem_limit_mb = _container_stats(c)
+        cpu_pct, mem_mb, mem_limit_mb = cache.get(c.name, (0.0, 0, 0))
         out.append({
             "name": c.name,
             "service": _service_name(c),
@@ -118,6 +161,7 @@ def list_containers():
             "cpu_percent": cpu_pct,
             "mem_mb": mem_mb,
             "mem_limit_mb": mem_limit_mb,
+            "stats_age_s": stats_age_s,
             "self": _service_name(c) == SELF_SERVICE,
         })
     out.sort(key=lambda r: r["service"])
@@ -822,6 +866,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    threading.Thread(target=_container_stats_sampler, daemon=True).start()
     threading.Thread(target=_wifi_quality_sampler, daemon=True).start()
     if COMPANION_HOST:
         threading.Thread(target=_companion_sampler, daemon=True).start()
