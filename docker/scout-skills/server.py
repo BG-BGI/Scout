@@ -1380,13 +1380,29 @@ async def _scan_tags(update_waypoints: bool = True):
                     out["home"] = True
             pose = out.get("standoff")
             active = tagdb.active_map_name()
+            # The registry is a SURVEY, an independent truth that
+            # tag_relocalizer corrects amcl against. Re-deriving it from the
+            # live robot pose on every sighting is a feedback loop: a wrong pose
+            # rewrites the tag, and the tag then "confirms" the wrong pose
+            # (corrupted doghouse 2026-11-05). So a surveyed tag keeps its
+            # pose; only a never-surveyed tag takes its first pose from a
+            # sighting. Re-survey a moved tag explicitly with register_tag.
+            surveyed = entry.get("map_x") is not None
             tagdb.record_sighting(
                 family, tag_id,
                 tuple(out["position_map"]) + (pose["yaw"],)
-                if pose and "position_map" in out
+                if pose and "position_map" in out and not surveyed
                 else None,
                 map_name=active,
             )
+            if surveyed:
+                # Standoff comes from the surveyed pose, not the live geometry.
+                yaw = entry["map_yaw"]
+                pose = {
+                    "x": round(entry["map_x"] - tagdb.STANDOFF_M * math.cos(yaw), 3),
+                    "y": round(entry["map_y"] - tagdb.STANDOFF_M * math.sin(yaw), 3),
+                    "yaw": round(yaw, 3),
+                }
             if update_waypoints and pose:
                 store = _load_waypoints()
                 store["waypoints"][entry["name"]] = pose | {
@@ -1479,6 +1495,18 @@ async def register_tag(
     if not (0.01 <= size_m <= 2.0):
         raise ToolError("size_m implausible — meters, black square edge only")
     return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}
+
+
+@mcp.tool
+async def resurvey_tag(name: str) -> dict:
+    """Forget a tag's surveyed map pose; the next sighting surveys it afresh.
+    Surveyed poses never change from sightings (the registry is the truth the
+    robot's localization is corrected against), so use this ONLY after the tag
+    was physically moved, and only while the robot is verifiably well
+    localized (scan overlays the map) with the tag in view."""
+    if not tagdb.clear_pose(name):
+        raise ToolError(f"no tag named {name!r}")
+    return {"resurveyed": name, "next": "pose is re-surveyed on the next sighting"}
 
 
 @mcp.tool(annotations={"readOnlyHint": True})

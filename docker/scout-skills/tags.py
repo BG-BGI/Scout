@@ -98,6 +98,17 @@ def upsert(name: str, tag_id: int, family: str, role: str, size_m: float) -> dic
         )
 
 
+def clear_pose(name: str) -> bool:
+    """Forget a tag's surveyed map pose so the next sighting surveys it afresh.
+    Surveyed poses are otherwise immutable from sightings (the registry is the
+    truth tag_relocalizer corrects amcl against)."""
+    with _connect() as db:
+        return db.execute(
+            "UPDATE tags SET map_x=NULL, map_y=NULL, map_yaw=NULL, map_name=NULL"
+            " WHERE name=?", (name,)
+        ).rowcount > 0
+
+
 def delete(name: str) -> bool:
     with _connect() as db:
         return db.execute("DELETE FROM tags WHERE name=?", (name,)).rowcount > 0
