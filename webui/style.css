@@ -109,7 +109,176 @@ header::before {
 .stale        { border-color: var(--dim);    color: var(--dim);    }
 
 /* Offline body state: dim map/pad to signal "view-only" */
-body.offline #map-canvas {
+body.offline #map-canvas { opacity: 0.45; }
+body.offline #pad         { opacity: 0.55; }
+
+/* ── main layout ───────────────────────────────────────────────────── */
+main {
+  display: grid;
+  grid-template-columns: minmax(0,1fr);
+  gap: var(--s3);
+  padding: var(--s3);
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+}
+main > *, aside > * { min-width: 0; }
+#drive { order: 1; }
+#stage { order: 2; }
+aside  { order: 3; }
+
+@media (min-width: 940px) {
+  main {
+    grid-template-columns: minmax(0,1fr) 340px;
+    grid-template-rows: auto minmax(0,1fr);
+    grid-template-areas: "stage drive" "stage aside";
+    overflow: hidden;
+    height: 100%;
+    gap: var(--s3);
+  }
+  /* Map | splitter | camera. --stage-split is the map pane's share of the
+     row (app.js drags it, localStorage persists it); map-first default. */
+  #stage { grid-area: stage; flex-direction: row; min-height: 0; }
+  #stage #nav { flex: 0 1 calc(var(--stage-split, 62%) - 5px); }
+  #stage #camera-panel { flex: 1 1 0; align-self: flex-start; }
+  #stage-split {
+    flex: 0 0 10px;
+    align-self: stretch;
+    cursor: col-resize;
+    border-radius: 2px;
+    background: linear-gradient(var(--border), var(--border)) center / 2px 48px no-repeat;
+    touch-action: none;
+  }
+  #stage-split:hover, #stage-split.dragging {
+    background: linear-gradient(var(--accent), var(--accent)) center / 2px 64px no-repeat;
+  }
+  #drive { grid-area: drive; }
+  aside  { grid-area: aside; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+}
+
+/* ── stage: map + camera ───────────────────────────────────────────── */
+#stage { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
+#stage > * { min-width: 0; }
+#stage-split { display: none; }   /* stacked mobile layout: no splitter */
+@media (min-width: 940px) { #stage-split { display: block; } }
+
+/* ── map panel ─────────────────────────────────────────────────────── */
+#nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: var(--s3);
+  min-height: 0;
+}
+
+.map-head { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.map-head h2 {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+  flex: none;
+}
+.map-head #nav-state { font-size: 0.78rem; color: var(--text); margin-right: auto; }
+
+#map-frame { min-width: 0; position: relative; aspect-ratio: 1 / 1; }
+@media (min-width: 940px) {
+  #map-frame {
+    aspect-ratio: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+}
+
+/* ── map overlays: the map IS the site control surface ───────────────── */
+.mo { position: absolute; z-index: 3; }
+.mo-tl { top: var(--s2); left: var(--s2); }
+.mo-tr { top: var(--s2); right: var(--s2); }
+.mo-bl { bottom: var(--s2); left: var(--s2); }
+.mo-r  { top: 50%; right: var(--s2); transform: translateY(-50%); }
+.mo[hidden] { display: none; }
+
+.mo-card {
+  background: rgba(11,13,15,.80);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* NOW chip — where am I, what am I doing (renderActiveCard fills these IDs) */
+#site-active.mo-now { padding: 6px 9px; display: flex; flex-direction: column; gap: 2px; max-width: 62%; }
+.mo-now-where { display: flex; align-items: baseline; gap: 5px; flex-wrap: wrap; }
+#active-site-name { font-size: 0.62rem; color: var(--dim); }
+#active-map-name  { font-size: 0.82rem; font-weight: 700; color: var(--text); }
+#active-map-floor {
+  font-size: 0.56rem; font-weight: 600; color: var(--accent);
+  border: 1px solid rgba(242,178,0,.4); background: var(--accent-bg);
+  border-radius: 2px; padding: 0 4px;
+}
+#active-mode-line { font-size: 0.6rem; color: var(--dim); }
+#active-mode-line b { color: var(--text); font-weight: 600; }
+
+/* intent segmented control (Navigate | Map) */
+.mo-intent { display: flex; padding: 2px; gap: 2px; }
+.mo-intent button {
+  font-family: var(--mono); font-size: 0.62rem; font-weight: 600; letter-spacing: 0.04em;
+  padding: 4px 9px; border: none; border-radius: 2px; cursor: pointer;
+  color: var(--dim); background: transparent;
+}
+.mo-intent button.on { color: #000; background: var(--accent); }
+.mo-intent button:disabled { opacity: 0.4; cursor: default; }
+
+/* floor stack — floors are maps; tap to swap */
+.mo-floors { display: flex; flex-direction: column; padding: 3px; gap: 3px; }
+.mo-floors .fl-label { font-size: 0.5rem; letter-spacing: 0.1em; color: var(--dim); text-align: center; }
+.mo-floors button {
+  font-family: var(--mono); font-size: 0.72rem; font-weight: 600;
+  min-width: 34px; height: 30px; cursor: pointer; padding: 0 4px;
+  color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 2px;
+}
+.mo-floors button.on { color: #000; background: var(--accent); border-color: var(--accent); }
+
+/* layer toggles — app.js toggles .selected (UHF tag markers, ADR-0032) */
+.mo-layers { display: flex; gap: 4px; padding: 4px; }
+.mo-layers button {
+  font-family: var(--mono); font-size: 0.6rem; padding: 4px 7px; cursor: pointer;
+  color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: 2px;
+  display: flex; align-items: center; gap: 4px;
+}
+.mo-layers button::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%; border: 1px solid var(--dim);
+}
+.mo-layers button.selected { color: var(--accent); border-color: rgba(242,178,0,.5); }
+.mo-layers button.selected::before { background: var(--accent); border-color: var(--accent); }
+
+/* tag marker popup — bottom-center of the map frame */
+#tag-pop {
+  left: 50%; bottom: var(--s2); transform: translateX(-50%);
+  padding: var(--s2) var(--s3); max-width: 90%;
+  font-size: 0.7rem;
+}
+#tag-pop-title { font-family: var(--mono); font-weight: 600; word-break: break-all; }
+#tag-pop-meta { font-size: 0.65rem; margin-top: 2px; }
+.tag-pop-actions { display: flex; gap: var(--s2); margin-top: var(--s2); }
+.tag-pop-actions button {
+  font-family: var(--mono); font-size: 0.65rem; padding: 4px 8px; cursor: pointer;
+  color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: 2px;
+}
+#tag-pop-goto { color: var(--accent); border-color: rgba(242,178,0,.5); }
+.mo-floors button:hover:not(.on) { border-color: var(--dim); }
+
+#map-canvas {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -156,6 +325,7 @@ body.offline #map-canvas {
 #nav.expanded .map-stop { display: inline-block; }
 #nav:not(.expanded) .map-stop { display: none; }
 body.map-expanded { overflow: hidden; }
+
 
 .map-hint { font-size: 0.67rem; color: var(--dim); flex: 0 0 auto; }
 
