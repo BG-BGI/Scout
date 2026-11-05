@@ -34,9 +34,9 @@ sighting. A transit resets the flag itself — arriving on a new floor is a new
 boot as far as seeding is concerned.
 
 Portable-base contract: the registry pose is only as fresh as the last
-detect_tags/tag_watch sighting made while WELL-LOCALIZED. Move the base while
+detect_apriltags/apriltag_watch sighting made while WELL-LOCALIZED. Move the base while
 the robot is off and the seed will be confidently wrong — re-survey the tag
-(drive to it and run detect_tags) after any move, before the next cold boot.
+(drive to it and run detect_apriltags) after any move, before the next cold boot.
 
 Geometry (SE2 — tags are assumed roughly vertical, like the base's face):
 the registry stores map_x/map_y (tag centre) and map_yaw = the standoff
@@ -160,8 +160,8 @@ class TagRelocalizer(Node):
 
     def _registered(self, family, tag_id):
         """Registry row with a surveyed map pose, or None. Read fresh each
-        sighting — the portable base is re-surveyed whenever detect_tags or
-        tag_watch sees it, and this must pick up the newest pose."""
+        sighting — the portable base is re-surveyed whenever detect_apriltags or
+        apriltag_watch sees it, and this must pick up the newest pose."""
         path = self.get_parameter('tags_db').value
         if not os.path.exists(path):
             return None

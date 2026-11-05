@@ -53,6 +53,10 @@ This file names the concepts and maps the running system.
 - **tag registry vs detection coverage** — the AprilTag *meaning* (names, roles,
   home) lives in scout-skills' sqlite; *which family/size is detected* lives in
   `apriltag.yaml`. See ADR-0006.
+- **tag families (ADR-0038)** — three separate registries: **AprilTag**
+  (fiducial, `tags.db`, `*_apriltag` tools), **RFID/NFC/UHF** (read logs,
+  `list_{rfid,nfc,uhf}_tags`), **POI** (operator-marked map point, no physical
+  marker, `pois.db`, `*_poi` tools).
 - **RFID (LF, Flipper)** — the 125 kHz pipeline (ADR-0025): flipper_node's
   pose-stamped card reads (`/rfid/reads`, latched depth-50) → companion
   sqlite → `/rfid/registry`. Gated by `/flipper/rfid_enable`. **Being
@@ -151,6 +155,7 @@ symlink (ADR-0023); switch sites from the webui Site panel. Per site:
   waypoints carry the map they were saved on (ADR-0029).
 - `sites/<name>/maps/tags.db` — AprilTag registry (sqlite); surveys are
   stamped with their home map — the floor-transit anchor (ADR-0029).
+- `sites/<name>/maps/pois.db` — POI registry (sqlite; map-stamped, ADR-0038).
 - `sites/<name>/maps/*.posegraph`,`*.data` — slam_toolbox serialized maps.
 - `sites/<name>/maps/zones.json` — keepout/speed zone polygons (ADR-0019;
   currently no manager node regenerates the derived masks).

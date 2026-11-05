@@ -346,8 +346,8 @@ services:
   # move/rotate (closed-loop relative motion on /odom, streams /cmd_vel
   # directly — BYPASSES Nav2 costmaps, blocks for the drive, refuses while a
   # nav goal is active), explore_for (time-budgeted frontier exploration,
-  # auto-pause timer lives in this server), AprilTags (detect_tags/
-  # register_tag/list_tags/delete_tag/tag_watch — DETECTION runs in the
+  # auto-pause timer lives in this server), AprilTags (detect_apriltags/
+  # register_apriltag/list_apriltags/delete_apriltag/apriltag_watch — DETECTION runs in the
   # apriltag_ros node in the robot service (/detections + TF per tag); this
   # server owns MEANING: sqlite registry in the site's tags.db, passive 2 s
   # watcher, sightings refresh a standoff waypoint named after the tag;
@@ -380,6 +380,7 @@ services:
       # site switch applies live with no restart of this container.
       - WAYPOINTS_PATH=/sites/active/maps/waypoints.json
       - TAGS_DB=/sites/active/maps/tags.db
+      - POIS_DB=/sites/active/maps/pois.db
       # Schindler RBL elevator API (ADR-0030). Empty base URL disables the
       # elevator tools; identity + gateway are deployment facts (.env),
       # building topology lives per-site in elevator.json.

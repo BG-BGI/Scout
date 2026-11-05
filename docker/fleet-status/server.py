@@ -30,12 +30,14 @@ import sqlite3
 import subprocess
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bluetooth as btctl
 import gridstore
 import mapsafe
 import requests
+import poi as poidb
 import tagpose
 from docker.errors import NotFound
 
@@ -583,6 +585,46 @@ def apriltags():
     return {"tags": rows}
 
 
+def _poi_paths():
+    active = _active_site()
+    if active is None:
+        return None, None
+    return (os.path.join(SITES_DIR, active, "maps", "pois.db"),
+            os.path.join(SITES_DIR, active, "site.json"))
+
+
+def poi_api(method, name=None, body=None):
+    """POI registry REST (webui + parity with the scout-skills MCP tools).
+    -> (http_code, payload). Rows carry map_name; the webui filters to the
+    active map. Writes pois.db in the active site (./sites is rw here)."""
+    db, site_json = _poi_paths()
+    if db is None:
+        return 404, {"error": "no active site"}
+    try:
+        if method == "GET":
+            return 200, {"pois": poidb.all_pois(db),
+                         "active_map": poidb.active_map_name(site_json)}
+        if method == "DELETE":
+            if not poidb.delete(name, db):
+                return 404, {"error": f"no POI named {name!r}"}
+            return 200, {"ok": True, "deleted": name}
+        body = body if isinstance(body, dict) else {}
+        if name is None:                              # POST /api/pois  (create/move)
+            row = poidb.upsert(
+                body.get("name"), body.get("x"), body.get("y"),
+                body.get("yaw", 0.0), body.get("category", ""),
+                body.get("notes", ""), db_path=db, site_json=site_json)
+            return 200, {"ok": True, "poi": row}
+        row = poidb.update_fields(name, body, db, site_json)   # POST /api/pois/<name>
+        if row is None:
+            return 404, {"error": f"no POI named {name!r}"}
+        return 200, {"ok": True, "poi": row}
+    except poidb.PoiError as e:
+        return 400, {"error": str(e)}
+    except sqlite3.Error as e:
+        return 500, {"error": f"pois.db: {e}"}
+
+
 def set_tag_pose(name, body):
     """Operator-placed surveyed pose for a tag (webui map). Writes the active
     site's tags.db + waypoints.json — ./sites is mounted rw here."""
@@ -850,6 +892,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 code, payload = map_safety_api("autosave")
                 self._send_json(code, payload)
+        elif self.path == "/api/pois":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+            else:
+                code, payload = poi_api("GET")
+                self._send_json(code, payload)
         elif self.path == "/api/apriltags":
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
@@ -868,6 +916,14 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_DELETE(self):
+        parts = self.path.strip("/").split("/")
+        if parts[:2] == ["api", "pois"] and len(parts) == 3:
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            code, payload = poi_api("DELETE", urllib.parse.unquote(parts[2]))
+            self._send_json(code, payload)
+            return
         if self.path.rstrip("/") == "/api/grid":
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
@@ -928,6 +984,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "sites not configured here"})
                 return
             code, payload = map_safety_api(parts[2], self._read_json_body())
+            self._send_json(code, payload)
+            return
+
+        if parts[:2] == ["api", "pois"] and len(parts) in (2, 3):
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            name = urllib.parse.unquote(parts[2]) if len(parts) == 3 else None
+            code, payload = poi_api("POST", name, self._read_json_body())
             self._send_json(code, payload)
             return
 

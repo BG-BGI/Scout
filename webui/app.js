@@ -484,6 +484,8 @@ let plan = null;      // array of {x, y} in map frame
 let navBusyNow = false; // from /nav_state; the plan is only meaningful while a goal is live
 let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
 let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
+const poiUi = { active: false, sel: null, pt: null };   // POI panel state
+let pois = [];        // POI registry rows on the active map (fleet_status /api/pois)
 let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
 let sgrid = null;     // grid of the active map as saved (fleet_status /api/grid)
 let sgridView = null; // what is drawn/located: sgrid, or for mode 'auto' sgrid grown to the live /map extent
@@ -879,6 +881,41 @@ function drawMap() {
     mapCtx.restore();
   }
 
+  if (uhfShowTags && pois.length) {   // POIs: pink pins, share the Tags toggle
+    mapCtx.save();
+    mapCtx.textAlign = 'center';
+    for (const p of pois) {
+      const c = worldToCanvas(p.map_x, p.map_y);
+      const sel = poiUi.sel === p.name;
+      mapCtx.beginPath();
+      mapCtx.arc(c.x, c.y - 8, sel ? 7 : 5, 0, 2 * Math.PI);
+      mapCtx.moveTo(c.x - 3.5, c.y - 5);
+      mapCtx.lineTo(c.x, c.y);
+      mapCtx.lineTo(c.x + 3.5, c.y - 5);
+      mapCtx.strokeStyle = '#ffffff';
+      mapCtx.lineWidth = 3;
+      mapCtx.stroke();
+      mapCtx.fillStyle = '#e0457b';
+      mapCtx.fill();
+      mapCtx.font = '10px monospace';
+      mapCtx.strokeText(p.name, c.x, c.y - 19);
+      mapCtx.fillText(p.name, c.x, c.y - 19);
+    }
+    mapCtx.restore();
+  }
+  if (poiUi.active && poiUi.pt) {     // pending placement
+    const c = worldToCanvas(poiUi.pt.x, poiUi.pt.y);
+    mapCtx.save();
+    mapCtx.strokeStyle = '#e0457b';
+    mapCtx.lineWidth = 2;
+    mapCtx.beginPath();
+    mapCtx.arc(c.x, c.y, 9, 0, 2 * Math.PI);
+    mapCtx.moveTo(c.x - 12, c.y); mapCtx.lineTo(c.x + 12, c.y);
+    mapCtx.moveTo(c.x, c.y - 12); mapCtx.lineTo(c.x, c.y + 12);
+    mapCtx.stroke();
+    mapCtx.restore();
+  }
+
   drawTagPreview();
 
   drawGridDefPreview();
@@ -1013,6 +1050,7 @@ async function tagSetStart() {
     if (names.includes('doghouse')) tagNameSel.value = 'doghouse';
   } catch (e) { navState.textContent = 'tag list failed: ' + e; return; }
   if (gridDef.active) gridDefExit();
+  if (poiUi.active) poiExit();
   if (poseMode) { poseMode = 0; posePin = null; setPoseBtn.textContent = 'Set pose'; }
   if (areaMode) areaReset();
   tagSet.active = true;
@@ -1053,6 +1091,149 @@ tagConfirmBtn.addEventListener('click', async () => {
     tagConfirmBtn.disabled = false;
   }
 });
+
+
+// --- POIs: operator-marked points (no physical marker) -----------------------
+// Registry sites/<site>/maps/pois.db behind fleet_status /api/pois (same store
+// the scout-skills MCP tools register_poi/list_pois/update_poi/delete_poi/
+// go_to_poi use). Rows are per map; the list/markers show the active map only.
+const poiEl = (id) => document.getElementById(id);
+function poiRender() {
+  const list = poiEl('poi-list');
+  list.innerHTML = '';
+  const cats = new Set();
+  for (const p of pois) {
+    if (p.category) cats.add(p.category);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:1px 0'
+      + (poiUi.sel === p.name ? ';background:rgba(224,69,123,.2)' : '');
+    const lbl = document.createElement('span');
+    lbl.style.cssText = 'flex:1;cursor:pointer';
+    lbl.textContent = p.name + (p.category ? ' [' + p.category + ']' : '')
+      + (p.notes ? ' - ' + p.notes : '');
+    lbl.addEventListener('click', () => poiSelect(p.name));
+    const go = document.createElement('button');
+    go.textContent = 'Drive';
+    go.addEventListener('click', () => poiDrive(p));
+    const del = document.createElement('button');
+    del.textContent = 'Delete';
+    del.addEventListener('click', () => poiDelete(p.name));
+    row.append(lbl, go, del);
+    list.appendChild(row);
+  }
+  if (!pois.length) list.innerHTML = '<span class="dim">no POIs on this map</span>';
+  const dl = poiEl('poi-cats');
+  dl.innerHTML = '';
+  for (const c of cats) { const o = document.createElement('option'); o.value = c; dl.appendChild(o); }
+}
+function poiUpdateUi() {
+  const name = poiEl('poi-name').value.trim();
+  poiEl('poi-step').textContent = poiUi.sel
+    ? 'editing ' + poiUi.sel + ' - tap map to move'
+    : (poiUi.pt ? 'point placed' : 'tap the map to place');
+  poiEl('poi-save').disabled = !name || !(poiUi.pt || poiUi.sel);
+}
+function poiSelect(name) {
+  const p = pois.find((q) => q.name === name);
+  if (!p) return;
+  poiUi.sel = name;
+  poiUi.pt = null;
+  poiEl('poi-name').value = p.name;
+  poiEl('poi-cat').value = p.category;
+  poiEl('poi-notes').value = p.notes;
+  poiUpdateUi(); poiRender(); drawMap();
+}
+function poiNew() {
+  poiUi.sel = null; poiUi.pt = null;
+  for (const id of ['poi-name', 'poi-cat', 'poi-notes']) poiEl(id).value = '';
+  poiUpdateUi(); poiRender(); drawMap();
+}
+function poiTap(w) {
+  poiUi.pt = w;
+  poiUpdateUi(); drawMap();
+}
+function poiExit() {
+  poiUi.active = false; poiUi.sel = null; poiUi.pt = null;
+  poiEl('poi-panel').hidden = true;
+  poiEl('set-poi').classList.remove('selected');
+  drawMap();
+}
+async function poiCall(method, path, body) {
+  const res = await fetch(FLEET_API + path, {
+    method, headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const out = await res.json();
+  if (!res.ok) throw new Error(out.error || res.status);
+  return out;
+}
+async function poiSave() {
+  const name = poiEl('poi-name').value.trim();
+  const category = poiEl('poi-cat').value.trim(), notes = poiEl('poi-notes').value.trim();
+  try {
+    if (poiUi.sel) {                       // edit (rename / fields / move)
+      const f = { category, notes };
+      if (name !== poiUi.sel) f.new_name = name;
+      if (poiUi.pt) { f.x = +poiUi.pt.x.toFixed(3); f.y = +poiUi.pt.y.toFixed(3); }
+      await poiCall('POST', '/pois/' + encodeURIComponent(poiUi.sel), f);
+    } else {                               // create / replace-by-name
+      await poiCall('POST', '/pois', { name, category, notes,
+        x: +poiUi.pt.x.toFixed(3), y: +poiUi.pt.y.toFixed(3), yaw: 0 });
+    }
+    poiEl('poi-result').textContent = 'saved ' + name;
+    poiNew();
+    await refreshPois();
+  } catch (e) { poiEl('poi-result').textContent = 'failed: ' + e.message; }
+}
+async function poiDelete(name) {
+  if (!confirm('Delete POI "' + name + '"?')) return;
+  try {
+    await poiCall('DELETE', '/pois/' + encodeURIComponent(name));
+    if (poiUi.sel === name) poiNew();
+    await refreshPois();
+  } catch (e) { poiEl('poi-result').textContent = 'failed: ' + e.message; }
+}
+function poiDrive(p) {
+  if (!confirm('Drive to POI "' + p.name + '"?')) return;
+  goalPub.publish(new ROSLIB.Message({
+    header: { frame_id: 'map', stamp: { sec: 0, nanosec: 0 } },
+    pose: {
+      position: { x: p.map_x, y: p.map_y, z: 0 },
+      orientation: { x: 0, y: 0, z: Math.sin(p.map_yaw / 2), w: Math.cos(p.map_yaw / 2) },
+    },
+  }));
+  navState.textContent = 'goal sent: ' + p.name;
+}
+async function refreshPois() {
+  try {
+    const res = await fetch(FLEET_API + '/pois');
+    if (!res.ok) return;
+    const body = await res.json();
+    const active = body.active_map;
+    const next = (body.pois || []).filter((p) => !p.map_name || !active || p.map_name === active);
+    if (JSON.stringify(next) !== JSON.stringify(pois)) {
+      pois = next;
+      poiRender();
+      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length || pois.length);
+      drawMap();
+    }
+  } catch (e) { /* fleet_status offline */ }
+}
+poiEl('set-poi').addEventListener('click', () => {
+  if (poiUi.active) { poiExit(); return; }
+  if (tagSet.active) tagSetExit();
+  if (gridDef.active) gridDefExit();
+  if (poseMode) { poseMode = 0; posePin = null; setPoseBtn.textContent = 'Set pose'; }
+  if (areaMode) areaReset();
+  poiUi.active = true;
+  poiEl('poi-panel').hidden = false;
+  poiEl('set-poi').classList.add('selected');
+  refreshPois(); poiNew();
+});
+poiEl('poi-name').addEventListener('input', poiUpdateUi);
+poiEl('poi-save').addEventListener('click', poiSave);
+poiEl('poi-new').addEventListener('click', poiNew);
+poiEl('poi-close').addEventListener('click', poiExit);
 
 
 // --- structural grid (construction-drawing lines over the map) --------------
@@ -1442,6 +1623,7 @@ function gridDefTap(w) {
 }
 function gridDefStart() {
   if (tagSet.active) tagSetExit();
+  if (poiUi.active) poiExit();
   if (poseMode) { poseMode = 0; posePin = null; setPoseBtn.textContent = 'Set pose'; }
   if (areaMode) areaReset();
   gridDef.active = true;
@@ -1514,7 +1696,7 @@ const goalPub = new ROSLIB.Topic({
 // places the position, second points the heading (pin -> tap direction).
 // Deliberately does NOT re-arm tag_relocalizer: a tag surveyed while
 // mislocalized would win the bad pose right back — re-survey the tag
-// (detect_tags) after pinning, then reseed.
+// (detect_apriltags) after pinning, then reseed.
 const setPoseBtn = document.getElementById('set-pose');
 let poseMode = 0;      // 0 off, 1 awaiting position tap, 2 awaiting heading tap
 let posePin = null;    // {x, y} map frame, set by the first tap
@@ -1526,6 +1708,10 @@ setPoseBtn.addEventListener('click', () => {
 });
 function mapTap(ev) {
   if (!grid || !mapView) return;
+  if (poiUi.active) {        // POI placement owns every tap: never a goal
+    poiTap(canvasToWorld(ev));
+    return;
+  }
   if (tagSet.active) {       // tag placement owns every tap: never a goal
     tagSetTap(canvasToWorld(ev));
     return;
@@ -2190,7 +2376,7 @@ new ROSLIB.Topic({
   try { reg = JSON.parse(msg.data); } catch (e) { return; }
   // Map markers: localized tags only; the corner Tags toggle shows up with them.
   uhfTags = (reg.tags || []).filter((t) => t.est_pose);
-  document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length);
+  document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length || pois.length);
   if (uhfPopTag && !uhfTags.some((t) => t.epc === uhfPopTag)) closeTagPop();
   drawMap();
   uhfList.innerHTML = '';
@@ -2999,6 +3185,7 @@ async function refreshSites() {
     renderSites(await res.json());
   } catch (e) { siteState.textContent = 'offline'; }
   refreshAprilTags();
+  refreshPois();
   refreshStructGrid();
 }
 
@@ -3015,7 +3202,7 @@ async function refreshAprilTags() {
       && (!t.map_name || !active || t.map_name === active));
     if (JSON.stringify(next) !== JSON.stringify(aprilTags)) {
       aprilTags = next;
-      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length);
+      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length || pois.length);
       drawMap();
     }
   } catch (e) { /* fleet_status offline — markers just don't refresh */ }

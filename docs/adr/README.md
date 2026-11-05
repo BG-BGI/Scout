@@ -39,3 +39,4 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0030](0030-schindler-elevator-api.md) | Schindler RBL elevator rides — schindler-rbl SDK + scout-skills tools |
 | 0031 | (retired — reverted BIM/OpenSpace integration) |
 | [0032](0032-uhf-rfid-pipeline.md) | UHF RFID (M7E Hecto) — batched pose-stamped reads, companion centroid localization |
+| [0038](0038-poi-registry-and-tag-family-naming.md) | POI registry + AprilTag/RFID/POI tag-family naming |

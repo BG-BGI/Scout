@@ -50,6 +50,7 @@ from robot_profile import load as _load_profile
 from rosbridge import ADVERTISE_SETTLE_S, RosBridge, RosBridgeError
 from tf import TfTree
 
+import poi as poidb
 import tags as tagdb
 
 TAG_WATCH_PERIOD_S = 2.0
@@ -1605,7 +1606,7 @@ async def _scan_tags(update_waypoints: bool = True):
             # rewrites the tag, and the tag then "confirms" the wrong pose
             # (corrupted doghouse 2026-11-05). So a surveyed tag keeps its
             # pose; only a never-surveyed tag takes its first pose from a
-            # sighting. Re-survey a moved tag explicitly with register_tag.
+            # sighting. Re-survey a moved tag explicitly with register_apriltag.
             surveyed = entry.get("map_x") is not None
             tagdb.record_sighting(
                 family, tag_id,
@@ -1662,7 +1663,7 @@ async def _tag_watch_loop():
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
-async def detect_tags() -> list:
+async def detect_apriltags() -> list:
     """Current AprilTag detections (from the apriltag_ros node watching the
     camera). Registered tags come back with their name/role ("doghouse" is
     home), map position, and a standoff pose 0.5 m in front of the tag —
@@ -1695,7 +1696,7 @@ async def detect_tags() -> list:
 
 
 @mcp.tool
-async def register_tag(
+async def register_apriltag(
     name: str,
     tag_id: int,
     family: str = "tag36h11",
@@ -1717,19 +1718,19 @@ async def register_tag(
 
 
 @mcp.tool
-async def resurvey_tag(name: str) -> dict:
+async def resurvey_apriltag(name: str) -> dict:
     """Forget a tag's surveyed map pose; the next sighting surveys it afresh.
     Surveyed poses never change from sightings (the registry is the truth the
     robot's localization is corrected against), so use this ONLY after the tag
     was physically moved, and only while the robot is verifiably well
     localized (scan overlays the map) with the tag in view."""
     if not tagdb.clear_pose(name):
-        raise ToolError(f"no tag named {name!r}")
+        raise ToolError(f"no AprilTag named {name!r}")
     return {"resurveyed": name, "next": "pose is re-surveyed on the next sighting"}
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
-async def list_tags() -> dict:
+async def list_apriltags() -> dict:
     """Registered AprilTags with last-seen info (incl. map_name — the map each
     tag's pose was surveyed on), plus the passive watcher state (scans every
     2 s and refreshes tag waypoints when the camera is up)."""
@@ -1740,22 +1741,127 @@ async def list_tags() -> dict:
 
 
 @mcp.tool
-async def delete_tag(name: str) -> dict:
+async def delete_apriltag(name: str) -> dict:
     """Remove a tag from the registry (its waypoint, if any, stays until
     delete_waypoint)."""
     if not tagdb.delete(name):
-        raise ToolError(f"no tag named {name!r}")
+        raise ToolError(f"no AprilTag named {name!r}")
     return {"deleted": name}
 
 
 @mcp.tool
-async def tag_watch(enabled: bool) -> dict:
+async def apriltag_watch(enabled: bool) -> dict:
     """Turn the passive AprilTag watcher on/off (on by default). Off saves
-    ~2-4% of a core and stops waypoint auto-refresh; detect_tags still works
+    ~2-4% of a core and stops waypoint auto-refresh; detect_apriltags still works
     on demand."""
     global _tag_watch_enabled
     _tag_watch_enabled = enabled
     return {"watcher_enabled": enabled}
+
+
+# --- POIs (operator-marked map points, no physical marker) ---------------------
+#
+# Third tag family: AprilTags (tags.py, fiducials), RFID/NFC/UHF (companion
+# recorders), POIs (poi.py — a named, categorized map pose; nothing detects it).
+# Store: sites/<site>/maps/pois.db. The webui edits the same store through
+# fleet_status /api/pois.
+
+
+@mcp.tool
+async def register_poi(
+    name: str,
+    category: str = "",
+    notes: str = "",
+    x: float | None = None,
+    y: float | None = None,
+    yaw: float | None = None,
+) -> dict:
+    """Mark a point of interest on the current map. No x/y: marks the robot's
+    CURRENT map-frame pose (drive there first). With x/y (map frame, meters):
+    marks that point (yaw defaults to 0). Same name = move/replace. category is
+    free text ("hazard", "charger", "inspect"). Stamped with the active map;
+    POIs have no physical marker and are never detected."""
+    if (x is None) != (y is None):
+        raise ToolError("give both x and y, or neither (= current pose)")
+    if x is None:
+        async with RosBridge() as rb:
+            robot = await _robot_pose(rb)
+        if robot is None:
+            raise ToolError(
+                "robot pose unknown (/pose silent) — pass x/y explicitly or "
+                "start slam/localization"
+            )
+        x, y, yaw = robot["x"], robot["y"], robot["yaw"] if yaw is None else yaw
+    try:
+        row = poidb.upsert(name, x, y, 0.0 if yaw is None else yaw, category, notes)
+    except poidb.PoiError as e:
+        raise ToolError(str(e)) from e
+    return {"registered": row}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def list_pois(category: str = "", all_maps: bool = False) -> dict:
+    """Registered POIs on the active map (all_maps=True: every map), optionally
+    filtered by category. Rows: name, category, notes, map_x/map_y/map_yaw,
+    map_name. Hand a row's pose to go_to, or use go_to_poi(name)."""
+    rows = poidb.all_pois()
+    active = poidb.active_map_name()
+    if not all_maps and active:
+        rows = [r for r in rows if r["map_name"] in (None, active)]
+    if category:
+        rows = [r for r in rows if r["category"] == category]
+    return {"pois": rows, "count": len(rows), "active_map": active}
+
+
+@mcp.tool
+async def update_poi(
+    name: str,
+    new_name: str | None = None,
+    category: str | None = None,
+    notes: str | None = None,
+    x: float | None = None,
+    y: float | None = None,
+    yaw: float | None = None,
+) -> dict:
+    """Edit a POI in place: rename, recategorize, change notes, or move it
+    (x/y/yaw, map frame; re-stamps the active map). Omitted fields are kept."""
+    fields = {k: v for k, v in (
+        ("new_name", new_name), ("category", category), ("notes", notes),
+        ("x", x), ("y", y), ("yaw", yaw)) if v is not None}
+    try:
+        row = poidb.update_fields(name, fields)
+    except poidb.PoiError as e:
+        raise ToolError(str(e)) from e
+    if row is None:
+        raise ToolError(f"no POI named {name!r}")
+    return {"updated": row}
+
+
+@mcp.tool
+async def delete_poi(name: str) -> dict:
+    """Remove a POI from the registry."""
+    if not poidb.delete(name):
+        raise ToolError(f"no POI named {name!r}")
+    return {"deleted": name}
+
+
+@mcp.tool
+async def go_to_poi(name: str) -> dict:
+    """Send Scout driving to a POI's marked pose. Same semantics as go_to:
+    returns immediately, poll nav_status, stop with nav_cancel. Refuses a POI
+    marked on a different map than the active one."""
+    poi = poidb.get(name)
+    if poi is None:
+        have = [r["name"] for r in poidb.all_pois()]
+        raise ToolError(f"no POI named {name!r} — have: {have or 'none'}")
+    active = tagdb.active_map_name()
+    if poi["map_name"] and active and poi["map_name"] != active:
+        raise ToolError(
+            f"POI {name!r} belongs to map {poi['map_name']!r} (active: "
+            f"{active!r}) — switch maps first (switch_map / webui Site panel)"
+        )
+    result = await _dispatch_goal(poi["map_x"], poi["map_y"], poi["map_yaw"])
+    return {"poi": name} | result
 
 
 async def _cancel_all_nav(rb: RosBridge) -> tuple[dict, int]:

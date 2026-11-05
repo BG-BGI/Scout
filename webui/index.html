@@ -32,6 +32,7 @@
         <span id="nav-state" class="dim">no map</span>
         <button id="set-pose">Set pose</button>
         <button id="set-tag">Set tag position</button>
+        <button id="set-poi" title="mark points of interest (no physical marker)">POIs</button>
         <button id="grid-toggle" class="selected" title="structural grid overlay">Grid</button>
         <button id="grid-bays" title="bay labels at bay centers">Bays</button>
         <button id="grid-settings" title="grid cell size / regenerate">Grid &#9881;</button>
@@ -56,6 +57,19 @@
         <button id="tag-confirm" disabled>Confirm</button>
         <button id="tag-cancel">Cancel</button>
         <div id="tag-result" class="dim"></div>
+      </div>
+      <div id="poi-panel" hidden style="padding:6px 8px;border:2px solid #e0457b;margin-bottom:6px">
+        <div style="font-weight:bold;color:#e0457b">POIs - taps place the point, never send goals</div>
+        <input id="poi-name" placeholder="name" maxlength="64" style="width:10em">
+        <input id="poi-cat" placeholder="category" maxlength="32" style="width:8em" list="poi-cats">
+        <datalist id="poi-cats"></datalist>
+        <input id="poi-notes" placeholder="notes" maxlength="1000" style="width:14em">
+        <span id="poi-step" class="dim"></span>
+        <button id="poi-save" disabled>Save</button>
+        <button id="poi-new">New</button>
+        <button id="poi-close">Close</button>
+        <div id="poi-result" class="dim"></div>
+        <div id="poi-list" style="max-height:9em;overflow:auto"></div>
       </div>
       <div id="grid-panel" hidden style="padding:6px 8px;border:1px solid #34c38f;margin-bottom:6px">
         <label>Cell size <input id="gp-cell" type="number" min="5" max="200" step="1" style="width:5em"> ft</label>

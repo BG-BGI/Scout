@@ -17,6 +17,7 @@ maps/*.yaml
 # scout-skills (waypoint store + AprilTag registry) — never committed.
 maps/waypoints.json
 maps/tags.db
+maps/pois.db
 captures/*
 !captures/.gitkeep
 # Companion inspection recordings (.mcap runs + cloud.ply + anomalies.json)
