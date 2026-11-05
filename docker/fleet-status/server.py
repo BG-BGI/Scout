@@ -23,6 +23,7 @@ transit this API even though it has no auth of its own.
 """
 
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -33,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bluetooth as btctl
 import requests
+import tagpose
 from docker.errors import NotFound
 
 import docker
@@ -70,6 +72,7 @@ SITE_RESTART_SERVICES = [s for s in os.environ.get(
     "SITE_RESTART_SERVICES", "").split(",") if s]
 # Shared contract with scout.core.sites.SITE_NAME_RE (schema, not code —
 # ADR-0011 precedent). 'active' is the symlink, never a site name.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 SITE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 # /hostfs is the host's root, bind-mounted read-only (compose) so disk usage
 # reflects the Pi's real SD card, not this container's own overlay fs.
@@ -576,6 +579,19 @@ def apriltags():
     return {"tags": rows}
 
 
+def set_tag_pose(name, body):
+    """Operator-placed surveyed pose for a tag (webui map). Writes the active
+    site's tags.db + waypoints.json — ./sites is mounted rw here."""
+    active = _active_site()
+    if active is None:
+        return 404, {"error": "no active site"}
+    maps = os.path.join(SITES_DIR, active, "maps")
+    return tagpose.set_pose(
+        name, body, os.path.join(maps, "tags.db"),
+        os.path.join(maps, "waypoints.json"),
+        os.path.join(SITES_DIR, active, "site.json"))
+
+
 def create_site(name, display_name=""):
     if not _valid_site_name(name):
         return 400, {"error": "invalid site name (a-z0-9_-, max 32, "
@@ -811,6 +827,15 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 ok, out = wifi_forget(name)
             self._send_json(200 if ok else 400, {"ok": ok, "detail": out})
+            return
+
+        if (parts[:2] == ["api", "apriltags"] and len(parts) == 4
+                and parts[3] == "pose"):
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            code, payload = set_tag_pose(parts[2], self._read_json_body())
+            self._send_json(code, payload)
             return
 
         if parts[:2] == ["api", "sites"]:

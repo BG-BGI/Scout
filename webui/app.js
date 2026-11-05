@@ -550,6 +550,28 @@ function worldToCanvas(wx, wy) {
   };
 }
 
+// Tag facing arrow: map_yaw points robot-in-front -> tag, so the face normal
+// (the side the robot stands on) is map_yaw + pi. Canvas y is flipped.
+function drawTagFacing(c, mapYaw, color) {
+  const a = mapYaw + Math.PI;
+  const ex = c.x + 22 * Math.cos(a), ey = c.y - 22 * Math.sin(a);
+  mapCtx.save();
+  mapCtx.strokeStyle = color || '#2E7BFF';
+  mapCtx.fillStyle = color || '#2E7BFF';
+  mapCtx.lineWidth = 2;
+  mapCtx.beginPath();
+  mapCtx.moveTo(c.x, c.y);
+  mapCtx.lineTo(ex, ey);
+  mapCtx.stroke();
+  const ang = Math.atan2(ey - c.y, ex - c.x);   // canvas-space direction
+  for (const d of [0.45, -0.45]) {
+    mapCtx.moveTo(ex, ey);
+    mapCtx.lineTo(ex - 7 * Math.cos(ang + d), ey - 7 * Math.sin(ang + d));
+  }
+  mapCtx.stroke();
+  mapCtx.restore();
+}
+
 function drawMap() {
   if (!grid) return;
   navState.textContent = robotPose ? 'live' : 'map only';
@@ -716,9 +738,12 @@ function drawMap() {
       mapCtx.lineWidth = 3;
       mapCtx.strokeText(t.name, c.x, c.y - (t.role === 'home' ? 13 : 11));
       mapCtx.fillText(t.name, c.x, c.y - (t.role === 'home' ? 13 : 11));
+      if (t.map_yaw !== null && t.map_yaw !== undefined) drawTagFacing(c, t.map_yaw);
     }
     mapCtx.restore();
   }
+
+  drawTagPreview();
 
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
@@ -764,6 +789,132 @@ function drawMap() {
   }
 }
 
+// --- set a tag's surveyed pose from the map (doghouse placement) ------------
+// Two taps: (1) the tag position, (2) a point where the robot stands in front
+// of it. yaw = atan2(tag - front) = the registry's map_yaw (standoff heading).
+// While active, tap-to-navigate is fully suppressed (see click handler).
+const tagSet = { active: false, tag: null, front: null, yaw: null };
+const TAG_STANDOFF_M = 0.5;   // keep equal to tags.STANDOFF_M
+const tagSetter = document.getElementById('tag-setter');
+const tagNameSel = document.getElementById('tag-name');
+const tagStep = document.getElementById('tag-step');
+const tagConfirmBtn = document.getElementById('tag-confirm');
+const tagResult = document.getElementById('tag-result');
+const setTagBtn = document.getElementById('set-tag');
+
+function tagBannerText() {
+  return 'SETTING ' + tagNameSel.value.toUpperCase() + ' - taps do not send goals';
+}
+function tagSetUpdateUi() {
+  document.getElementById('tag-banner').textContent = tagBannerText();
+  if (!tagSet.tag) tagStep.textContent = 'Tap 1/2: the tag position';
+  else if (!tagSet.front) tagStep.textContent = 'Tap 2/2: where the robot stands in front of the tag';
+  else tagStep.textContent = 'Review the preview, then Confirm';
+  tagConfirmBtn.disabled = !(tagSet.tag && tagSet.front);
+}
+function tagSetExit() {
+  tagSet.active = false;
+  tagSet.tag = tagSet.front = tagSet.yaw = null;
+  tagSetter.hidden = true;
+  setTagBtn.classList.remove('selected');
+  drawMap();
+}
+function tagSetTap(w) {
+  if (!tagSet.tag || (tagSet.tag && tagSet.front)) {
+    tagSet.tag = w; tagSet.front = null; tagSet.yaw = null;   // (re)start
+  } else {
+    if (Math.hypot(w.x - tagSet.tag.x, w.y - tagSet.tag.y) < 0.1) {
+      tagResult.textContent = 'second tap too close to the tag - tap further out';
+      return;
+    }
+    tagSet.front = w;
+    tagSet.yaw = Math.atan2(tagSet.tag.y - w.y, tagSet.tag.x - w.x);
+  }
+  tagSetUpdateUi();
+  drawMap();
+}
+function drawTagPreview() {
+  if (!tagSet.active || !tagSet.tag || !grid) return;
+  const c = worldToCanvas(tagSet.tag.x, tagSet.tag.y);
+  mapCtx.save();
+  mapCtx.strokeStyle = '#ff9f40';
+  mapCtx.fillStyle = '#ff9f40';
+  mapCtx.lineWidth = 2;
+  mapCtx.strokeRect(c.x - 6, c.y - 6, 12, 12);
+  if (tagSet.front) {
+    const f = worldToCanvas(tagSet.front.x, tagSet.front.y);
+    drawTagFacing(c, tagSet.yaw, '#ff9f40');
+    // 0.5 m standoff point (where go_to_waypoint will park the robot)
+    const sx = tagSet.tag.x - TAG_STANDOFF_M * Math.cos(tagSet.yaw);
+    const sy = tagSet.tag.y - TAG_STANDOFF_M * Math.sin(tagSet.yaw);
+    const s = worldToCanvas(sx, sy);
+    mapCtx.beginPath();
+    mapCtx.arc(s.x, s.y, 5, 0, 2 * Math.PI);
+    mapCtx.fill();
+    mapCtx.setLineDash([4, 4]);
+    mapCtx.beginPath();
+    mapCtx.moveTo(f.x, f.y);
+    mapCtx.lineTo(c.x, c.y);
+    mapCtx.stroke();
+  }
+  mapCtx.restore();
+}
+async function tagSetStart() {
+  tagResult.textContent = '';
+  try {
+    const res = await fetch(FLEET_API + '/apriltags');
+    const body = await res.json();
+    const names = (body.tags || []).map((t) => t.name);
+    if (!names.length) { navState.textContent = 'no registered tags'; return; }
+    tagNameSel.innerHTML = '';
+    for (const n of names) {
+      const o = document.createElement('option');
+      o.value = o.textContent = n;
+      tagNameSel.appendChild(o);
+    }
+    if (names.includes('doghouse')) tagNameSel.value = 'doghouse';
+  } catch (e) { navState.textContent = 'tag list failed: ' + e; return; }
+  if (poseMode) { poseMode = 0; posePin = null; setPoseBtn.textContent = 'Set pose'; }
+  if (areaMode) areaReset();
+  tagSet.active = true;
+  tagSet.tag = tagSet.front = tagSet.yaw = null;
+  tagSetter.hidden = false;
+  setTagBtn.classList.add('selected');
+  tagSetUpdateUi();
+  drawMap();
+}
+setTagBtn.addEventListener('click', () => (tagSet.active ? tagSetExit() : tagSetStart()));
+tagNameSel.addEventListener('change', tagSetUpdateUi);
+document.getElementById('tag-cancel').addEventListener('click', tagSetExit);
+tagConfirmBtn.addEventListener('click', async () => {
+  if (!(tagSet.tag && tagSet.front)) return;
+  const name = tagNameSel.value;
+  const pose = { x: +tagSet.tag.x.toFixed(3), y: +tagSet.tag.y.toFixed(3),
+    yaw: +tagSet.yaw.toFixed(3) };
+  if (!confirm('Set "' + name + '" to (' + pose.x + ', ' + pose.y + ') yaw '
+    + (pose.yaw * 180 / Math.PI).toFixed(0) + ' deg?\n\n'
+    + 'This moves the robot\'s localization reference: tag_relocalizer corrects '
+    + 'amcl toward this surveyed pose whenever the tag is in view. Confirm it '
+    + 'matches the REAL location of the ' + name + '.')) return;
+  tagConfirmBtn.disabled = true;
+  try {
+    const res = await fetch(FLEET_API + '/apriltags/' + encodeURIComponent(name) + '/pose', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pose),
+    });
+    const body = await res.json();
+    if (!res.ok) { tagResult.textContent = 'failed: ' + (body.error || res.status); tagConfirmBtn.disabled = false; return; }
+    const w = body.waypoint;
+    navState.textContent = name + ' set (' + pose.x + ', ' + pose.y + ') yaw ' + pose.yaw
+      + '; standoff (' + w.x + ', ' + w.y + ')';
+    tagSetExit();
+    refreshAprilTags();
+  } catch (e) {
+    tagResult.textContent = 'failed: ' + e;
+    tagConfirmBtn.disabled = false;
+  }
+});
+
 const goalPub = new ROSLIB.Topic({
   ros, name: '/goal_pose', messageType: 'geometry_msgs/msg/PoseStamped',
 });
@@ -785,6 +936,10 @@ setPoseBtn.addEventListener('click', () => {
 });
 mapCanvas.addEventListener('click', (ev) => {
   if (!grid) return;
+  if (tagSet.active) {       // tag placement owns every tap: never a goal
+    tagSetTap(canvasToWorld(ev));
+    return;
+  }
   if (poseMode === 1) {
     posePin = canvasToWorld(ev);
     poseMode = 2;

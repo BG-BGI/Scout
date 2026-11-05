@@ -31,7 +31,16 @@
         <h2>Map</h2>
         <span id="nav-state" class="dim">no map</span>
         <button id="set-pose">Set pose</button>
+        <button id="set-tag">Set tag position</button>
         <button id="cancel-goal">Cancel Goal</button>
+      </div>
+      <div id="tag-setter" hidden style="padding:6px 8px;border:2px solid #ff9f40;margin-bottom:6px">
+        <div id="tag-banner" style="font-weight:bold;color:#ff9f40">SETTING TAG - taps do not send goals</div>
+        <label>Tag <select id="tag-name"></select></label>
+        <span id="tag-step" class="dim"></span>
+        <button id="tag-confirm" disabled>Confirm</button>
+        <button id="tag-cancel">Cancel</button>
+        <div id="tag-result" class="dim"></div>
       </div>
       <div id="map-frame">
         <canvas id="map-canvas" width="300" height="300"></canvas>
