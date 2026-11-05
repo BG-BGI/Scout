@@ -28,6 +28,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import grid as structgrid
 import httpx
 import numpy as np
 from detect import annotate, detect
@@ -436,6 +437,136 @@ def _store_waypoints(store: dict) -> None:
     with open(tmp, "w") as f:
         json.dump(store, f, indent=2, sort_keys=True)
     os.replace(tmp, WAYPOINTS_PATH)
+
+
+# --- structural grid (construction-drawing lines over the map) ----------------
+#
+# One file per map beside waypoints.json: <active_map>.grid.json (or
+# _session.grid.json before a map is saved). Pure math lives in grid.py; the
+# webui edits the same files through fleet_status /api/grid.
+
+GRID_DIR = os.environ.get("GRID_DIR") or os.path.dirname(WAYPOINTS_PATH)
+
+
+def _grid_file() -> str:
+    return structgrid.grid_path(GRID_DIR, tagdb.active_map_name())
+
+
+def _grid_or_fail() -> dict:
+    g = structgrid.load(_grid_file())
+    if g is None:
+        raise ToolError(
+            "no grid defined for the active map - use grid_define first "
+            "(or define it in the web UI: Map > Define grid)"
+        )
+    return g
+
+
+def _jsonable(r: dict) -> dict:
+    """tuples -> lists so the result is plain JSON."""
+    return {k: (list(v) if isinstance(v, tuple) else v) for k, v in r.items()}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def grid_get() -> dict:
+    """The structural grid of the current map, or {"grid": null}. The grid
+    mirrors the construction drawings: numbered lines (1, 2, 3...) one way and
+    lettered lines (A, B, C...) the other, each with its own spacing. A bay
+    like "1B" is the rectangle between number lines 1-2 and letter lines B-C.
+    All stored distances are meters in the map frame (units is display only)."""
+    g = structgrid.load(_grid_file())
+    return {"grid": g, "file": os.path.basename(_grid_file())}
+
+
+@mcp.tool
+async def grid_define(
+    numbers: list[str],
+    letters: list[str],
+    number_spacing: float | list[float],
+    letter_spacing: float | list[float],
+    units: str = "ft",
+    ref1: dict | None = None,
+    ref2: dict | None = None,
+    origin: dict | None = None,
+) -> dict:
+    """Define (and save) the structural grid of the current map from the
+    drawings. numbers = number-line labels in order, e.g. ["1","2","3","4"];
+    letters = e.g. ["A","B","C"]. number_spacing / letter_spacing are the gaps
+    BETWEEN lines in `units` ("ft" or "m"): one value = uniform spacing
+    (12 means every bay is 12 ft wide), or a list with one gap per bay
+    (4 lines -> 3 gaps, e.g. [12, 20, 14]).
+
+    Placing it on the map (pick one): ref1 and ref2 = two map-frame points
+    with known grid intersections, {"x": 1.2, "y": 0.4, "number": "1",
+    "letter": "A"} and {"x": 9.0, "y": 6.1, "number": "3", "letter": "C"}
+    (get x,y by driving the robot to a column/intersection and reading
+    grid_where_am_i / get the pose). The result reports residual_m: the
+    mismatch between the measured distance and the drawing spacing - near 0
+    is good, large means a wrong point or spacing. Or pass origin =
+    {"x":..,"y":..,"yaw_rad":..} (map position of line 1 x line A and the
+    direction of the number axis). With neither, the grid is saved unaligned
+    at the map origin (aligned: false) - fix it by calling again with refs."""
+    try:
+        gd = structgrid.define(numbers, letters, number_spacing, letter_spacing,
+                               units, origin=origin)
+        residual = None
+        if (ref1 is None) != (ref2 is None):
+            raise ToolError("give both ref1 and ref2, or neither")
+        if ref1 is not None:
+            gd, residual = structgrid.align(gd, ref1, ref2)
+        structgrid.save(_grid_file(), gd)
+    except structgrid.GridError as e:
+        raise ToolError(str(e)) from e
+    return {"grid": gd, "aligned": ref1 is not None or origin is not None,
+            "residual_m": residual, "file": os.path.basename(_grid_file())}
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def grid_resolve(label: str, kind: str = "bay") -> dict:
+    """Where is grid cell "1B" on the map? label accepts "1B", "B1", "1-B",
+    "B/1" (any case). kind="bay" (default) = the rectangle between number
+    line 1 and the next, letter B and the next: returns center, 4 corners
+    (counter-clockwise, map frame, meters), bounds, size in the grid's units
+    (e.g. the 12 ft x 30 ft bay) - drive to the center and measure to check a
+    drawing statement like "the two beams in 1B are 12 ft apart".
+    kind="intersection" = the point where line 1 crosses line B. The LAST
+    line of an axis has no bay after it (error)."""
+    g = _grid_or_fail()
+    try:
+        return _jsonable(structgrid.resolve(g, label, kind))
+    except structgrid.GridError as e:
+        raise ToolError(str(e)) from e
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def grid_locate(x: float, y: float) -> dict:
+    """Which bay is the map-frame point (x, y) meters in? Returns bay (e.g.
+    "1B", or null when outside the grid), the nearest line intersection with
+    its distance, and grid coordinates u/v in meters."""
+    g = _grid_or_fail()
+    return structgrid.locate(g, x, y)
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def grid_where_am_i() -> dict:
+    """The robot's current bay (e.g. "1B") and nearest grid intersection,
+    from its live map pose."""
+    g = _grid_or_fail()
+    async with RosBridge() as rb:
+        robot = await _robot_pose(rb)
+    if robot is None:
+        raise ToolError("robot pose unknown (/pose silent) - slam/localization not running")
+    return {"pose": robot} | structgrid.locate(g, robot["x"], robot["y"])
+
+
+@mcp.tool
+async def grid_clear() -> dict:
+    """Delete the structural grid of the current map."""
+    path = _grid_file()
+    existed = os.path.exists(path)
+    if existed:
+        os.remove(path)
+    return {"cleared": existed, "file": os.path.basename(path)}
 
 
 @mcp.tool
