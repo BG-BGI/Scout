@@ -26,7 +26,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 from launch import LaunchDescription
-from scout.core import sites
+from scout.core import mapsafety, sites
 from scout.robot_profile import merged_params
 
 # Serialized pose graphs live in the active site's bundle in the repo, which is
@@ -70,25 +70,6 @@ def _saved_maps(suffix='.posegraph'):
                   if f.endswith(suffix))
 
 
-def _map_params(map_name):
-    """Resolve a map basename to a map_file_name, failing loudly if it is missing."""
-    path = os.path.join(MAPS_DIR, map_name)
-    # ⚠ A missing map is NOT fatal to slam_toolbox, which is the dangerous part:
-    # deserializePoseGraphCallback logs "Failed to read file" and then returns true, so
-    # the node carries on with an empty graph while looking perfectly healthy. In
-    # localization mode that means localizing against nothing. Refuse at launch instead.
-    if not os.path.exists(path + '.posegraph'):
-        available = ', '.join(_saved_maps()) or '(none)'
-        raise RuntimeError(
-            f"No saved map named '{map_name}': {path}.posegraph does not exist. "
-            f'Maps available in {MAPS_DIR}: {available}. '
-            'Save one from a running mapping session with the '
-            '/slam_toolbox/serialize_map service (see NOTES.md).'
-        )
-    # No extension: serialization::write/read append .posegraph and .data themselves.
-    return {'map_file_name': path}
-
-
 def _grid_map_yaml(map_name):
     """Absolute path of the grid map YAML for amcl, failing loudly if missing.
 
@@ -120,6 +101,8 @@ def _launch_setup(context, *args, **kwargs):
             f"Unknown mode '{mode}'. Expected one of: {', '.join(MODES)}."
         )
 
+    from_site = mode == 'site'
+    site_slam_mode = None
     if mode == 'site':
         # Resolve the active site's policy to one of the three real modes below.
         # Only computes (mode, map, pose) — the executable table stays the switch.
@@ -132,6 +115,7 @@ def _launch_setup(context, *args, **kwargs):
             )
         try:
             site = sites.load_site(os.path.join(SITES_ROOT, active))
+            site_slam_mode = site['slam_mode']
             mode, map_name, start_pose = sites.resolve_slam(site, MAPS_DIR)
         except (OSError, ValueError) as e:
             raise RuntimeError(f"Bad site '{active}': {e}") from e
@@ -150,11 +134,30 @@ def _launch_setup(context, *args, **kwargs):
     if mode == 'localization':
         return _localization_nodes(map_name, start_pose, profile)
 
+    # Crash-loop guard + autosave recovery (mapsafety). An explicit operator
+    # `mode:=new` never adopts an autosave; site-resolved modes and `continue` do.
+    # (A site pinned to slam_mode:new is still treated as explicit.)
+    explicit_new = mode == 'new' and (
+        not from_site or site_slam_mode == 'new')
+    allow_autosave = (LaunchConfiguration('autosave_fallback').perform(context)
+                      == 'continue') and not explicit_new
+    max_age_h = float(LaunchConfiguration('autosave_max_age_h').perform(context))
+    try:
+        plan = mapsafety.plan_slam_start(
+            MAPS_DIR, mode, map_name, allow_autosave,
+            autosave_max_age_s=max_age_h * 3600.0)
+    except ValueError as e:
+        available = ', '.join(_saved_maps()) or '(none)'
+        raise RuntimeError(f'{e} Maps available: {available}.') from e
+    for note in plan['notes']:
+        print(f'[slam.launch] {note}', flush=True)
+    mode = plan['mode']
     if mode == 'new':
         mode_params = {}
     else:  # continue
         # Resume at the loaded graph's first node and keep adding to it.
-        mode_params = {**_map_params(map_name), 'map_start_at_dock': True}
+        mode_params = {'map_file_name': plan['map_base'],
+                       'map_start_at_dock': True}
 
     # Base params + the profile's slam overlay (tight_tunnel = finer grid).
     config = merged_params(params_file, profile)
@@ -167,6 +170,18 @@ def _launch_setup(context, *args, **kwargs):
             name='slam_toolbox',
             output='screen',
             parameters=[config, mode_params],
+        ),
+        # Autosave rides only with the mapping executable (never localization).
+        Node(
+            package='scout',
+            executable='map_autosave',
+            name='map_autosave',
+            output='screen',
+            parameters=[{
+                'autosave_period_s': float(
+                    LaunchConfiguration('autosave_period_s').perform(context)),
+                'maps_dir': MAPS_DIR,
+            }],
         ),
     ]
 
@@ -245,6 +260,27 @@ def generate_launch_description():
             'profile',
             default_value='default',
             description='Config profile (default | tight_tunnel).',
+        ),
+        DeclareLaunchArgument(
+            'autosave_period_s',
+            default_value='60',
+            description='Seconds between pose-graph autosaves to _autosave '
+                        '(new/continue only; 0 disables).',
+        ),
+        DeclareLaunchArgument(
+            'autosave_fallback',
+            default_value='continue',
+            description='continue (default): when the named map is absent/'
+                        'broken (or the site resolves to a fresh map), resume '
+                        'from a valid _autosave so an accidental restart loses '
+                        'nothing | off: ignore it. Never applied to an explicit '
+                        'mode:=new.',
+        ),
+        DeclareLaunchArgument(
+            'autosave_max_age_h',
+            default_value='48',
+            description='Ignore an _autosave older than this many hours '
+                        '(0 = no limit).',
         ),
         OpaqueFunction(function=_launch_setup),
     ])

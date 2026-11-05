@@ -53,6 +53,7 @@ setup(
             'flipper_node = scout.flipper_node:main',
             'uhf_node = scout.uhf_node:main',
             'tag_relocalizer = scout.tag_relocalizer:main',
+            'map_autosave = scout.map_autosave:main',
         ],
     },
 )
