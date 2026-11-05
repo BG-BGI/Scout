@@ -28,27 +28,37 @@
   <div id="stage">
     <section id="nav">
       <div class="map-head">
-        <h2>Map</h2>
-        <span id="nav-state" class="dim">no map</span>
-        <button id="set-pose">Set pose</button>
-        <button id="set-tag">Set tag position</button>
-        <button id="set-poi" title="mark points of interest (no physical marker)">POIs</button>
-        <button id="grid-toggle" class="selected" title="structural grid overlay">Grid</button>
-        <button id="grid-bays" title="bay labels at bay centers">Bays</button>
-        <button id="grid-settings" title="grid cell size / regenerate">Grid &#9881;</button>
-        <span id="grid-hover" class="dim"></span>
-        <span class="map-zoomctl">
-          <button id="map-zoom-out" title="zoom out">&minus;</button>
-          <span id="map-zoom" class="dim" title="zoom vs fit">100%</span>
-          <button id="map-zoom-in" title="zoom in">+</button>
-          <button id="map-fit" title="fit whole map">Fit</button>
-          <button id="map-center" title="center on robot">Robot</button>
-          <button id="map-follow" title="keep robot centered">Follow</button>
-          <button id="map-expand" title="large view (Esc closes)">Expand</button>
-        </span>
-        <button id="cancel-goal">Cancel Goal</button>
-        <button id="map-stop" class="map-stop" title="same as STOP">STOP</button>
-        <button id="map-estop" class="map-stop" title="same as E-STOP">E-STOP</button>
+        <div class="mh-title">
+          <h2>Map</h2>
+          <span id="nav-state" class="dim">no map</span>
+          <span id="grid-hover" class="dim"></span>
+        </div>
+        <div class="mh-tools">
+          <div class="seg" role="group" aria-label="Place on map">
+            <button id="set-pose" title="set the robot's localization pose">Set pose</button>
+            <button id="set-tag" title="survey an AprilTag position">Set tag</button>
+            <button id="set-poi" title="mark points of interest (no physical marker)">POIs</button>
+          </div>
+          <div class="seg" role="group" aria-label="Structural grid">
+            <button id="grid-toggle" class="selected" title="structural grid overlay">Grid</button>
+            <button id="grid-bays" title="bay labels at bay centers">Bays</button>
+            <button id="grid-settings" title="grid cell size / regenerate" aria-label="Grid settings">&#9881;</button>
+          </div>
+          <div class="seg map-zoomctl" role="group" aria-label="Map view">
+            <button id="map-zoom-out" title="zoom out" aria-label="Zoom out">&minus;</button>
+            <span id="map-zoom" title="zoom vs fit">100%</span>
+            <button id="map-zoom-in" title="zoom in" aria-label="Zoom in">+</button>
+            <button id="map-fit" title="fit whole map">Fit</button>
+            <button id="map-center" title="center on robot">Robot</button>
+            <button id="map-follow" title="keep robot centered">Follow</button>
+            <button id="map-expand" title="large view (Esc closes)">Expand</button>
+          </div>
+        </div>
+        <div class="mh-act">
+          <button id="cancel-goal">Cancel goal</button>
+          <button id="map-stop" class="map-stop" title="same as STOP">STOP</button>
+          <button id="map-estop" class="map-stop" title="same as E-STOP">E-STOP</button>
+        </div>
       </div>
       <div id="tag-setter" hidden style="padding:6px 8px;border:2px solid #ff9f40;margin-bottom:6px">
         <div id="tag-banner" style="font-weight:bold;color:#ff9f40">SETTING TAG - taps do not send goals</div>
@@ -58,18 +68,29 @@
         <button id="tag-cancel">Cancel</button>
         <div id="tag-result" class="dim"></div>
       </div>
-      <div id="poi-panel" hidden style="padding:6px 8px;border:2px solid #e0457b;margin-bottom:6px">
-        <div style="font-weight:bold;color:#e0457b">POIs - taps place the point, never send goals</div>
-        <input id="poi-name" placeholder="name" maxlength="64" style="width:10em">
-        <input id="poi-cat" placeholder="category" maxlength="32" style="width:8em" list="poi-cats">
-        <datalist id="poi-cats"></datalist>
-        <input id="poi-notes" placeholder="notes" maxlength="1000" style="width:14em">
-        <span id="poi-step" class="dim"></span>
-        <button id="poi-save" disabled>Save</button>
-        <button id="poi-new">New</button>
-        <button id="poi-close">Close</button>
-        <div id="poi-result" class="dim"></div>
-        <div id="poi-list" style="max-height:9em;overflow:auto"></div>
+      <div id="poi-panel" class="mpanel mpanel-poi" hidden>
+        <div class="mpanel-head">
+          <span class="mpanel-title"><i class="sw sw-poi"></i>Points of interest</span>
+          <span id="poi-step" class="dim"></span>
+          <button id="poi-close" class="ib" title="close" aria-label="Close POI panel">&times;</button>
+        </div>
+        <div class="poi-body">
+          <form id="poi-form" class="poi-form" onsubmit="return false" autocomplete="off">
+            <label class="fld fld-name"><span>Name</span>
+              <input id="poi-name" maxlength="64" placeholder="e.g. charger"></label>
+            <label class="fld fld-cat"><span>Category</span>
+              <input id="poi-cat" maxlength="32" placeholder="e.g. hazard" list="poi-cats"></label>
+            <datalist id="poi-cats"></datalist>
+            <label class="fld fld-notes"><span>Notes</span>
+              <input id="poi-notes" maxlength="1000" placeholder="optional"></label>
+            <div class="poi-actions">
+              <button id="poi-save" class="primary" disabled>Save</button>
+              <button id="poi-new" title="clear the form and start a new POI">New</button>
+            </div>
+          </form>
+          <div id="poi-result" class="dim poi-result"></div>
+          <div id="poi-list" class="poi-list"></div>
+        </div>
       </div>
       <div id="grid-panel" hidden style="padding:6px 8px;border:1px solid #34c38f;margin-bottom:6px">
         <label>Cell size <input id="gp-cell" type="number" min="5" max="200" step="1" style="width:5em"> ft</label>
@@ -131,7 +152,9 @@
         <!-- Map layers (ADR-0032): UHF tag markers from /uhf/registry.
              Card hidden until the registry has a localized tag. -->
         <div class="mo mo-bl mo-card mo-layers" id="mo-layers" hidden>
-          <button id="uhf-tags-toggle" class="selected">Tags</button>
+          <button id="layer-apriltag" class="selected" data-layer="apriltag" title="AprilTag markers" hidden><i class="sw sw-apriltag"></i>AprilTag<b class="n"></b></button>
+          <button id="layer-uhf" class="selected" data-layer="uhf" title="UHF RFID tag markers" hidden><i class="sw sw-uhf"></i>RFID<b class="n"></b></button>
+          <button id="layer-poi" class="selected" data-layer="poi" title="Points of interest" hidden><i class="sw sw-poi"></i>POI<b class="n"></b></button>
         </div>
 
         <!-- Tag marker popup: filled by app.js on marker tap. -->

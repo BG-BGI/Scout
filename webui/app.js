@@ -483,7 +483,7 @@ let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
 let navBusyNow = false; // from /nav_state; the plan is only meaningful while a goal is live
 let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
-let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
+const layerShow = { apriltag: true, uhf: true, poi: true };   // per-type map layer toggles (corner card)
 const poiUi = { active: false, sel: null, pt: null };   // POI panel state
 let pois = [];        // POI registry rows on the active map (fleet_status /api/pois)
 let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
@@ -799,7 +799,7 @@ function drawMap() {
   // UHF tag markers (ADR-0032): centroid dot + EPC tail + spread ring — the
   // ring radius IS the confidence (RSSI-weighted RMS scatter from the
   // registry), so a wide ring reads as "somewhere around here".
-  if (uhfShowTags && uhfTags.length) {
+  if (layerShow.uhf && uhfTags.length) {
     const pxPerM = mapView.k;
     mapCtx.save();
     mapCtx.font = '10px monospace';
@@ -839,7 +839,7 @@ function drawMap() {
   // AprilTag markers: surveyed registry tags (tags.db via fleet_status).
   // role=home draws a house — the boot-relocalization anchor. Shares the
   // corner Tags toggle with the UHF markers.
-  if (uhfShowTags && aprilTags.length) {
+  if (layerShow.apriltag && aprilTags.length) {
     mapCtx.save();
     mapCtx.textAlign = 'center';
     for (const t of aprilTags) {
@@ -881,7 +881,7 @@ function drawMap() {
     mapCtx.restore();
   }
 
-  if (uhfShowTags && pois.length) {   // POIs: pink pins, share the Tags toggle
+  if (layerShow.poi && pois.length) {   // POI pins (cyan)
     mapCtx.save();
     mapCtx.textAlign = 'center';
     for (const p of pois) {
@@ -895,7 +895,7 @@ function drawMap() {
       mapCtx.strokeStyle = '#ffffff';
       mapCtx.lineWidth = 3;
       mapCtx.stroke();
-      mapCtx.fillStyle = '#e0457b';
+      mapCtx.fillStyle = '#3DD6D0';
       mapCtx.fill();
       mapCtx.font = '10px monospace';
       mapCtx.strokeText(p.name, c.x, c.y - 19);
@@ -906,7 +906,7 @@ function drawMap() {
   if (poiUi.active && poiUi.pt) {     // pending placement
     const c = worldToCanvas(poiUi.pt.x, poiUi.pt.y);
     mapCtx.save();
-    mapCtx.strokeStyle = '#e0457b';
+    mapCtx.strokeStyle = '#3DD6D0';
     mapCtx.lineWidth = 2;
     mapCtx.beginPath();
     mapCtx.arc(c.x, c.y, 9, 0, 2 * Math.PI);
@@ -1100,30 +1100,43 @@ tagConfirmBtn.addEventListener('click', async () => {
 const poiEl = (id) => document.getElementById(id);
 function poiRender() {
   const list = poiEl('poi-list');
-  list.innerHTML = '';
+  list.replaceChildren();
   const cats = new Set();
   for (const p of pois) {
     if (p.category) cats.add(p.category);
     const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:6px;align-items:center;padding:1px 0'
-      + (poiUi.sel === p.name ? ';background:rgba(224,69,123,.2)' : '');
-    const lbl = document.createElement('span');
-    lbl.style.cssText = 'flex:1;cursor:pointer';
-    lbl.textContent = p.name + (p.category ? ' [' + p.category + ']' : '')
-      + (p.notes ? ' - ' + p.notes : '');
-    lbl.addEventListener('click', () => poiSelect(p.name));
+    row.className = 'poi-row' + (poiUi.sel === p.name ? ' sel' : '');
+    const nm = document.createElement('button');
+    nm.type = 'button';
+    nm.className = 'nm';
+    nm.title = p.notes || p.name;
+    nm.textContent = p.name;
+    if (p.notes) { const sm = document.createElement('small'); sm.textContent = p.notes; nm.appendChild(sm); }
+    nm.addEventListener('click', () => poiSelect(p.name));
+    row.appendChild(nm);
+    if (p.category) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.textContent = p.category;
+      row.appendChild(chip);
+    }
     const go = document.createElement('button');
-    go.textContent = 'Drive';
+    go.type = 'button'; go.className = 'go'; go.textContent = 'Drive';
     go.addEventListener('click', () => poiDrive(p));
     const del = document.createElement('button');
-    del.textContent = 'Delete';
+    del.type = 'button'; del.className = 'rm'; del.textContent = 'Delete';
     del.addEventListener('click', () => poiDelete(p.name));
-    row.append(lbl, go, del);
+    row.append(go, del);
     list.appendChild(row);
   }
-  if (!pois.length) list.innerHTML = '<span class="dim">no POIs on this map</span>';
+  if (!pois.length) {
+    const e = document.createElement('div');
+    e.className = 'poi-empty';
+    e.textContent = 'No POIs on this map yet. Tap the map to place one.';
+    list.appendChild(e);
+  }
   const dl = poiEl('poi-cats');
-  dl.innerHTML = '';
+  dl.replaceChildren();
   for (const c of cats) { const o = document.createElement('option'); o.value = c; dl.appendChild(o); }
 }
 function poiUpdateUi() {
@@ -1214,7 +1227,7 @@ async function refreshPois() {
     if (JSON.stringify(next) !== JSON.stringify(pois)) {
       pois = next;
       poiRender();
-      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length || pois.length);
+      layersSync();
       drawMap();
     }
   } catch (e) { /* fleet_status offline */ }
@@ -1758,7 +1771,7 @@ function mapTap(ev) {
   }
   // Tag-marker hit test first: a tap within 12 canvas px of a dot opens the
   // popup instead of sending a goal (tap empty space to navigate as before).
-  if (uhfShowTags && uhfTags.length) {
+  if (layerShow.uhf && uhfTags.length) {
     const pp = canvasPoint(ev);
     const px = pp.x, py = pp.y;
     for (const t of uhfTags) {
@@ -2376,7 +2389,7 @@ new ROSLIB.Topic({
   try { reg = JSON.parse(msg.data); } catch (e) { return; }
   // Map markers: localized tags only; the corner Tags toggle shows up with them.
   uhfTags = (reg.tags || []).filter((t) => t.est_pose);
-  document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length || pois.length);
+  layersSync();
   if (uhfPopTag && !uhfTags.some((t) => t.epc === uhfPopTag)) closeTagPop();
   drawMap();
   uhfList.innerHTML = '';
@@ -2394,7 +2407,6 @@ new ROSLIB.Topic({
 const tagPop = document.getElementById('tag-pop');
 const tagPopTitle = document.getElementById('tag-pop-title');
 const tagPopMeta = document.getElementById('tag-pop-meta');
-const tagsToggle = document.getElementById('uhf-tags-toggle');
 let tagPopPose = null;   // est_pose of the open popup's tag (Drive here target)
 
 function openTagPop(t) {
@@ -2431,11 +2443,30 @@ document.getElementById('tag-pop-goto').addEventListener('click', () => {
   closeTagPop();
 });
 
-tagsToggle.addEventListener('click', () => {
-  uhfShowTags = !uhfShowTags;
-  tagsToggle.classList.toggle('selected', uhfShowTags);
-  if (!uhfShowTags) closeTagPop(); else drawMap();
-});
+// Per-type layer toggles. A type's button shows only once it has markers on
+// this map; counts ride on the button.
+const layerCount = () => ({ apriltag: aprilTags.length, uhf: uhfTags.length, poi: pois.length });
+function layersSync() {
+  const n = layerCount();
+  let any = false;
+  for (const b of document.querySelectorAll('#mo-layers [data-layer]')) {
+    const k = b.dataset.layer;
+    b.hidden = !n[k];
+    any = any || !!n[k];
+    b.classList.toggle('selected', layerShow[k]);
+    b.setAttribute('aria-pressed', String(layerShow[k]));
+    b.querySelector('.n').textContent = n[k] || '';
+  }
+  document.getElementById('mo-layers').hidden = !any;
+}
+for (const b of document.querySelectorAll('#mo-layers [data-layer]')) {
+  b.addEventListener('click', () => {
+    const k = b.dataset.layer;
+    layerShow[k] = !layerShow[k];
+    layersSync();
+    if (k === 'uhf' && !layerShow.uhf) closeTagPop(); else drawMap();
+  });
+}
 
 // --- system panel: host vitals + per-container controls ---------------------------
 // fleet_status (docker/fleet-status) is a standalone REST backend, not a ROS node —
@@ -3202,7 +3233,7 @@ async function refreshAprilTags() {
       && (!t.map_name || !active || t.map_name === active));
     if (JSON.stringify(next) !== JSON.stringify(aprilTags)) {
       aprilTags = next;
-      document.getElementById('mo-layers').hidden = !(uhfTags.length || aprilTags.length || pois.length);
+      layersSync();
       drawMap();
     }
   } catch (e) { /* fleet_status offline — markers just don't refresh */ }
