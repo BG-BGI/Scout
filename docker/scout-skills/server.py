@@ -475,7 +475,59 @@ async def grid_get() -> dict:
     like "1B" is the rectangle between number lines 1-2 and letter lines B-C.
     All stored distances are meters in the map frame (units is display only)."""
     g = structgrid.load(_grid_file())
-    return {"grid": g, "file": os.path.basename(_grid_file())}
+    return {"grid": g, "mode": g["mode"] if g else None,
+            "file": os.path.basename(_grid_file())}
+
+
+@mcp.tool
+async def grid_auto(cell_ft: float = 30.0, align: str = "walls") -> dict:
+    """Create or extend the AUTOMATIC STANDARD GRID of the current map: square
+    cells (default 30 ft, so two beams 12 ft apart fit in one bay), numbered
+    lines 1,2,3... left to right and lettered lines A,B,C... bottom to top,
+    bay "1B" = between lines 1-2 and B-C. align="walls" rotates it to the
+    building's dominant wall direction (frozen at creation); "map" keeps it
+    axis-aligned to the map frame. Sized from the live /map (falls back to the
+    saved map files); re-run (or let the web UI) to extend as the map grows.
+    Labels never change when it grows in any direction; lines left of line 1
+    are ".1", ".2"...; below A are ".A", ".B"... A structural grid from
+    grid_define is NEVER touched: the result says action "kept_structural".
+    Returns {grid, action: created|extended|unchanged|kept_structural|empty,
+    yaw_deg, yaw_source}."""
+    path = _grid_file()
+    existing = structgrid.load(path)
+    if existing is None and os.path.exists(path):
+        raise ToolError(f"{os.path.basename(path)} exists but is unreadable; not overwriting")
+    occ = None
+    try:
+        async with RosBridge() as rb:
+            msg = await rb.subscribe_once("/map", "nav_msgs/msg/OccupancyGrid", timeout=6.0)
+        if msg is not None:
+            info = msg["info"]
+            occ = {"width": info["width"], "height": info["height"],
+                   "resolution": info["resolution"], "data": msg["data"],
+                   "origin_x": info["origin"]["position"]["x"],
+                   "origin_y": info["origin"]["position"]["y"]}
+    except (RosBridgeError, OSError):
+        occ = None
+    try:
+        if occ is None:
+            name = tagdb.active_map_name()
+            yml = os.path.join(GRID_DIR, f"{name}.yaml") if name else None
+            if not (yml and os.path.exists(yml)):
+                raise ToolError("no live /map and no saved map files for the active map")
+            occ = structgrid.load_saved_map(yml)
+        gd, action, info = structgrid.auto_from_occupancy(
+            occ, None, existing, cell_ft, align)
+        if action in ("created", "extended"):
+            structgrid.save(path, gd)
+    except structgrid.GridError as e:
+        raise ToolError(str(e)) from e
+    out = {"grid": gd, "mode": gd["mode"] if gd else None, "action": action,
+           "file": os.path.basename(path)}
+    if info:
+        out["yaw_deg"] = round(math.degrees(gd["origin"]["yaw_rad"]), 2)
+        out["yaw_source"] = info.get("source")
+    return out
 
 
 @mcp.tool
@@ -505,10 +557,14 @@ async def grid_define(
     is good, large means a wrong point or spacing. Or pass origin =
     {"x":..,"y":..,"yaw_rad":..} (map position of line 1 x line A and the
     direction of the number axis). With neither, the grid is saved unaligned
-    at the map origin (aligned: false) - fix it by calling again with refs."""
+    at the map origin (aligned: false) - fix it by calling again with refs.
+
+    The result is a STRUCTURAL grid (mode "structural"): it replaces the map's
+    automatic grid and is never changed by grid_auto or the web UI auto-sizing."""
     try:
         gd = structgrid.define(numbers, letters, number_spacing, letter_spacing,
                                units, origin=origin)
+        gd["mode"] = "structural"
         residual = None
         if (ref1 is None) != (ref2 is None):
             raise ToolError("give both ref1 and ref2, or neither")

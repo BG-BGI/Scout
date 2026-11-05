@@ -604,11 +604,17 @@ def _grid_paths():
             os.path.join(SITES_DIR, active, "site.json"))
 
 
-def grid_api(method, body=None, adopt=None):
-    """Structural grid of the active map (docker/fleet-status/gridstore.py)."""
+def grid_api(method, body=None, adopt=None, auto=None):
+    """Grid of the active map (docker/fleet-status/gridstore.py). auto:
+    'one' = POST /api/grid/auto (this map), 'all' = POST /api/grid/auto/all
+    (every saved map of every site without a grid; offline)."""
+    if auto == "all":
+        return gridstore.auto_grid_all(SITES_DIR, body)
     maps, site_json = _grid_paths()
     if maps is None:
         return 404, {"error": "no active site"}
+    if auto == "one":
+        return gridstore.auto_grid(maps, site_json, body)
     if adopt is not None:
         return gridstore.adopt_session(maps, adopt)
     if method == "GET":
@@ -898,15 +904,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200 if ok else 400, {"ok": ok, "detail": out})
             return
 
-        if parts[:2] == ["api", "grid"] and len(parts) in (2, 3):
+        if parts[:2] == ["api", "grid"] and len(parts) in (2, 3, 4):
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
                 return
             body = self._read_json_body()
             if len(parts) == 2:                      # POST /api/grid {grid}
                 code, payload = grid_api("POST", body)
-            elif parts[2] == "adopt":                # POST /api/grid/adopt {name}
+            elif parts[2] == "adopt" and len(parts) == 3:   # POST /api/grid/adopt {name}
                 code, payload = grid_api("POST", adopt=body.get("name"))
+            elif parts[2] == "auto" and len(parts) == 3:    # POST /api/grid/auto
+                code, payload = grid_api("POST", body, auto="one")
+            elif parts[2:] == ["auto", "all"]:              # POST /api/grid/auto/all
+                code, payload = grid_api("POST", body, auto="all")
             else:
                 code, payload = 404, {"error": "not found"}
             self._send_json(code, payload)
