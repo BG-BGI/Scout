@@ -485,7 +485,11 @@ let navBusyNow = false; // from /nav_state; the plan is only meaningful while a 
 let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
 let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
 let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
-let sgrid = null;     // structural grid of the active map (fleet_status /api/grid)
+let sgrid = null;     // grid of the active map as saved (fleet_status /api/grid)
+let sgridView = null; // what is drawn/located: sgrid, or for mode 'auto' sgrid grown to the live /map extent
+let liveExtent = null;    // known-cell bbox + 1 cell margin of the live /map (map frame, m)
+let liveOccupied = 0;     // occupied cells in the live /map
+let liveMsg = null;       // latest /map message (for the one-shot auto-grid POST)
 let sgridShow = true;     // 'Grid' overlay toggle
 let sgridBays = false;    // 'Bays' labels toggle
 let uhfPopTag = null; // EPC of the marker whose popup is open
@@ -500,8 +504,17 @@ mapTopic.subscribe((msg) => {
   gridCanvas.width = w;
   gridCanvas.height = h;
   const img = gridCanvas.getContext('2d').createImageData(w, h);
+  let c0 = w, c1 = -1, r0 = h, r1 = -1, nOcc = 0;
   for (let i = 0; i < w * h; i++) {
     const v = msg.data[i];
+    if (v >= 0) {
+      const c = i % w, r = (i - c) / w;
+      if (c < c0) c0 = c;
+      if (c > c1) c1 = c;
+      if (r < r0) r0 = r;
+      if (r > r1) r1 = r;
+      if (v >= OCC_THRESHOLD) nOcc++;
+    }
     // unknown: dark gray; free: light; occupied: near-black. The split is the
     // profile's occupied_threshold (shared with render.py).
     const c = v < 0 ? 26 : v < OCC_THRESHOLD ? 210 : 8;
@@ -511,6 +524,15 @@ mapTopic.subscribe((msg) => {
     img.data[4 * i + 3] = 255;
   }
   gridCanvas.getContext('2d').putImageData(img, 0, 0);
+  const res = msg.info.resolution, ox = msg.info.origin.position.x, oy = msg.info.origin.position.y;
+  liveExtent = c1 < 0 ? null : {
+    min_x: ox + (c0 - 1) * res, max_x: ox + (c1 + 2) * res,
+    min_y: oy + (r0 - 1) * res, max_y: oy + (r1 + 2) * res,
+  };
+  liveOccupied = nOcc;
+  liveMsg = msg;
+  sgRefreshView();
+  sgMaybeAutoCreate();
   drawMap();
 });
 
@@ -1002,9 +1024,109 @@ function sgDraw(g, color, dashed) {
   }
   mapCtx.restore();
 }
+// --- auto grid (standard grid sized to the map) ----------------------------
+// mode 'auto': square cells of cell_m, origin + yaw frozen at creation, lines
+// APPENDED at either end as the map grows so a bay label never changes.
+// Labels (same scheme as docker/scout-skills/grid.py): numbers i>=0 -> "1","2"..,
+// i<0 -> ".1",".2"..; letters j>=0 -> A..Z,AA.., j<0 -> ".A",".B"..
+function sgBij(n) {
+  let t = '';
+  while (n > 0) { t = String.fromCharCode(65 + ((n - 1) % 26)) + t; n = Math.floor((n - 1) / 26); }
+  return t;
+}
+const sgNumLabel = (i) => (i >= 0 ? String(i + 1) : '.' + (-i));
+const sgLetLabel = (j) => (j >= 0 ? sgBij(j + 1) : '.' + sgBij(-j));
+function sgIdxRange(lo, hi, cell) {
+  const i0 = Math.floor(lo / cell + 1e-6);
+  return [i0, Math.max(Math.ceil(hi / cell - 1e-6), i0 + 1)];
+}
+function sgAutoAxis(i0, i1, cell, lab) {
+  const labels = [], offs = [];
+  for (let i = i0; i <= i1; i++) { labels.push(lab(i)); offs.push(i * cell); }
+  return { labels, offsets_m: offs, index_start: i0 };
+}
+// Pure: grid grown to cover extent (never shrinks); same object when unchanged.
+function sgExtendAuto(g, e) {
+  if (!g || g.mode !== 'auto' || !e || !g.cell_m) return g;
+  const q = [[e.min_x, e.min_y], [e.max_x, e.min_y], [e.max_x, e.max_y], [e.min_x, e.max_y]]
+    .map(([x, y]) => sgToGrid(g, x, y));
+  const [i0, i1] = sgIdxRange(Math.min(...q.map((p) => p.u)), Math.max(...q.map((p) => p.u)), g.cell_m);
+  const [j0, j1] = sgIdxRange(Math.min(...q.map((p) => p.v)), Math.max(...q.map((p) => p.v)), g.cell_m);
+  const a0 = Math.min(g.numbers.index_start, i0);
+  const a1 = Math.max(g.numbers.index_start + g.numbers.labels.length - 1, i1);
+  const b0 = Math.min(g.letters.index_start, j0);
+  const b1 = Math.max(g.letters.index_start + g.letters.labels.length - 1, j1);
+  if (a0 === g.numbers.index_start && b0 === g.letters.index_start
+    && a1 - a0 + 1 === g.numbers.labels.length && b1 - b0 + 1 === g.letters.labels.length) return g;
+  if (a1 - a0 + 1 > 200 || b1 - b0 + 1 > 200) return g;   // server cap; keep what we have
+  return Object.assign({}, g, {
+    numbers: sgAutoAxis(a0, a1, g.cell_m, sgNumLabel),
+    letters: sgAutoAxis(b0, b1, g.cell_m, sgLetLabel),
+  });
+}
+let sgPersistAt = 0, sgPersistBusy = false, sgAutoBusy = false, sgServerNone = false;
+// Recompute the drawn grid from the saved one + the live extent (no server
+// round-trip); persist growth in the background, at most every 20 s.
+function sgRefreshView() {
+  sgridView = sgrid ? sgExtendAuto(sgrid, liveExtent) : null;
+  if (sgrid && sgridView !== sgrid && !sgPersistBusy && Date.now() - sgPersistAt > 20000) {
+    sgPersistGrowth();
+  }
+}
+async function sgPersistGrowth() {
+  sgPersistBusy = true;
+  sgPersistAt = Date.now();
+  try {
+    const res = await fetch(FLEET_API + '/grid/auto', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extent: liveExtent }),
+    });
+    const body = await res.json();
+    if (res.ok && body.grid && body.action !== 'kept_structural') { sgrid = body.grid; sgRefreshView(); }
+  } catch (e) { /* fleet_status offline: still drawn live */ }
+  sgPersistBusy = false;
+}
+function sgB64(data) {
+  const u8 = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) u8[i] = data[i] & 255;
+  let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+// A map with content and no grid file gets the auto grid (one POST; the server
+// estimates the wall yaw from the posted occupancy and freezes it).
+async function sgMaybeAutoCreate() {
+  if (!sgServerNone || sgrid || sgAutoBusy || !liveMsg || !liveExtent || liveOccupied < 600) return;
+  if (Date.now() - sgPersistAt < 15000) return;
+  sgAutoBusy = true;
+  sgPersistAt = Date.now();
+  try {
+    const m = liveMsg;
+    const res = await fetch(FLEET_API + '/grid/auto', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cell_ft: 30, align: 'walls',
+        occupancy: {
+          width: m.info.width, height: m.info.height, resolution: m.info.resolution,
+          origin: { x: m.info.origin.position.x, y: m.info.origin.position.y },
+          data_b64: sgB64(m.data),
+        },
+      }),
+    });
+    const body = await res.json();
+    if (res.ok && body.grid) {
+      sgrid = body.grid;
+      sgServerNone = false;
+      sgRefreshView();
+      drawMap();
+    }
+  } catch (e) { /* fleet_status offline */ }
+  sgAutoBusy = false;
+}
+
 function drawStructGrid() {
-  if (!sgrid || !sgridShow || !grid) return;
-  sgDraw(sgrid, 'rgba(0, 150, 120, 0.85)', false);
+  if (!sgridView || !sgridShow || !grid) return;
+  sgDraw(sgridView, 'rgba(0, 150, 120, 0.85)', false);
 }
 const gridToggleBtn = document.getElementById('grid-toggle');
 const gridBaysBtn = document.getElementById('grid-bays');
@@ -1020,9 +1142,9 @@ gridBaysBtn.addEventListener('click', () => {
   drawMap();
 });
 mapCanvas.addEventListener('mousemove', (ev) => {
-  if (!grid || !sgrid || !sgridShow) { gridHoverEl.textContent = ''; return; }
+  if (!grid || !sgridView || !sgridShow) { gridHoverEl.textContent = ''; return; }
   const w = canvasToWorld(ev);
-  const bay = sgLocate(sgrid, w.x, w.y);
+  const bay = sgLocate(sgridView, w.x, w.y);
   gridHoverEl.textContent = bay ? 'Bay ' + bay : '';
 });
 mapCanvas.addEventListener('mouseleave', () => { gridHoverEl.textContent = ''; });
@@ -1034,10 +1156,13 @@ async function refreshStructGrid() {
     const res = await fetch(FLEET_API + '/grid');
     if (!res.ok) return;
     const next = (await res.json()).grid || null;
+    sgServerNone = !next;
     if (JSON.stringify(next) !== JSON.stringify(sgrid)) {
       sgrid = next;
+      sgRefreshView();
       drawMap();
     }
+    if (!next) sgMaybeAutoCreate();
   } catch (e) { /* fleet_status offline */ }
 }
 
@@ -1111,6 +1236,7 @@ function gdRecompute() {
   const yaw = Math.atan2(dy, dx) - Math.atan2(v2 - v1, u2 - u1);
   const c = Math.cos(yaw), s = Math.sin(yaw);
   gridDef.cand = {
+    mode: 'structural',
     version: 1, units: gdEl('gd-units').value,
     origin: { x: gridDef.p1.x - (c * u1 - s * v1), y: gridDef.p1.y - (s * u1 + c * v1),
       yaw_rad: Math.atan2(s, c) },
@@ -1158,7 +1284,7 @@ function gridDefStart() {
   gridDef.active = true;
   gridDef.p1 = gridDef.p2 = null;
   gdEl('gd-result').textContent = '';
-  if (sgrid) {   // prefill from the saved grid so it can be re-aligned/edited
+  if (sgrid && sgrid.mode !== 'auto') {   // prefill from a saved STRUCTURAL grid (an auto grid has no drawing spacings to edit)
     const f = sgrid.units === 'ft' ? FT_M : 1;
     const gaps = (o) => o.slice(1).map((x, k) => +((x - o[k]) / f).toFixed(4));
     gdEl('gd-numbers').value = sgrid.numbers.labels.join(',');
@@ -1195,7 +1321,8 @@ gdEl('gd-confirm').addEventListener('click', async () => {
     const body = await res.json();
     if (!res.ok) { rEl.textContent = 'failed: ' + (body.error || res.status); gdEl('gd-confirm').disabled = false; return; }
     sgrid = body.grid;
-    navState.textContent = 'grid saved';
+    sgRefreshView();
+    navState.textContent = 'structural grid saved (replaces the auto grid)';
     gridDefExit();
   } catch (e) {
     rEl.textContent = 'failed: ' + e;
@@ -1207,8 +1334,11 @@ gdEl('gd-clear').addEventListener('click', async () => {
   try {
     await fetch(FLEET_API + '/grid', { method: 'DELETE' });
     sgrid = null;
-    gdEl('gd-result').textContent = 'saved grid cleared';
+    sgServerNone = true;
+    sgRefreshView();
+    gdEl('gd-result').textContent = 'saved grid cleared (the auto grid is regenerated from the map)';
     drawMap();
+    sgMaybeAutoCreate();
   } catch (e) { gdEl('gd-result').textContent = 'failed: ' + e; }
 });
 
@@ -2556,6 +2686,13 @@ async function commitMap(name, gridErr, force) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name }),
+    });
+    // Extent re-fit against the saved files (creates the auto grid if none;
+    // a structural grid is left alone).
+    await fetch(`${FLEET_API}/grid/auto`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
     });
     refreshStructGrid();
   } catch (e) { /* best-effort */ }
