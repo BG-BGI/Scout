@@ -569,6 +569,26 @@ async def grid_clear() -> dict:
     return {"cleared": existed, "file": os.path.basename(path)}
 
 
+@mcp.tool(annotations={"readOnlyHint": True})
+async def map_autosave_status() -> dict:
+    """Read-only: does an unsaved-mapping-session autosave exist for the active
+    site, and is it usable? Returns {exists, valid, reason, size_bytes, age_s}.
+    The map_autosave node serializes the live slam_toolbox graph to
+    `_autosave.{posegraph,data}` every ~60 s while mapping (new/continue), so a
+    slam restart loses at most a minute, and slam.launch.py resumes from it
+    automatically when the named map is absent/broken. Recovering it under a
+    name is the operator's call: POST fleet_status /api/map/recover_autosave
+    {name, force}. Never writes."""
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as http:
+            resp = await http.get(f"{FLEET_STATUS_URL}/api/map/autosave")
+    except httpx.HTTPError as e:
+        raise ToolError(f"fleet_status unreachable at {FLEET_STATUS_URL} ({e!r})") from e
+    if resp.status_code != 200:
+        raise ToolError(f"fleet_status HTTP {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
 @mcp.tool
 async def save_waypoint(name: str) -> dict:
     """Save the robot's CURRENT map-frame pose under a name ("kitchen",

@@ -2497,54 +2497,79 @@ document.getElementById('site-save-map').addEventListener('click', () => {
   const name = siteMapName.value.trim()
     || (activeSiteMeta && (activeSiteMeta.active_map || activeSiteMeta.name)) || 'map';
   if (!confirm(`Save the current map as "${name}" in the active site?`)) return;
-  siteResult.textContent = 'serializing map…';
-  serializeSrv.callService(
-    new ROSLIB.ServiceRequest({ filename: '/ros_ws/src/sites/active/maps/' + name }),
-    () => {
-      siteResult.textContent = 'saving grid map…';
-      const finish = async (gridErr) => {
-        try {
-          // Register the map entry (label/floor, ADR-0029) + make it active.
-          const label = document.getElementById('site-map-label').value.trim();
-          const floorRaw = document.getElementById('site-map-floor').value.trim();
-          const entry = {};
-          if (label) entry.label = label;
-          if (floorRaw !== '') entry.floor = parseInt(floorRaw, 10);
-          await fetch(`${FLEET_API}/sites/active`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ active_map: name, maps: { [name]: entry } }),
-          });
-        } catch (e) { /* metadata update is best-effort; the files are saved */ }
-        try {   // carry a mapping-session grid over to the saved map's name
-          await fetch(`${FLEET_API}/grid/adopt`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name }),
-          });
-          refreshStructGrid();
-        } catch (e) { /* best-effort */ }
-        siteResult.textContent = gridErr
-          ? `map "${name}" saved (posegraph only — grid save failed: ${gridErr}; localization mode needs the grid)`
-          : `map "${name}" saved (posegraph + grid).`;
-        if (confirm('Map saved. Restart slam + behaviors now to continue on it?')) {
-          try {
-            await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
-            await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
-          } catch (e) { /* ignore */ }
-        }
-        refreshSites();
-      };
-      saveGridSrv.callService(
-        new ROSLIB.ServiceRequest({ name: { data: '/ros_ws/src/sites/active/maps/' + name } }),
-        // SaveMap reports failure in-band: result 0 = success, 255 = no map yet.
-        (res) => finish(res.result === 0 ? null : `result ${res.result}`),
-        (err) => finish(err),
+  // Safe save: write to `_pending`, then fleet_status validates (refuses a
+  // trivially small graph, never shrinks an existing good map without force)
+  // and installs it as <name>. The grid goes first: SaveMap result 255 = slam
+  // never received /map, i.e. there is nothing real to save.
+  const PENDING = '/ros_ws/src/sites/active/maps/_pending';
+  siteResult.textContent = 'saving grid map…';
+  saveGridSrv.callService(
+    new ROSLIB.ServiceRequest({ name: { data: PENDING } }),
+    (gres) => {
+      if (gres.result === 255) {
+        siteResult.textContent = 'save REFUSED: slam_toolbox has not received /map yet (restarted?). Nothing written. Check the autosave: GET /api/map/autosave.';
+        return;
+      }
+      const gridErr = gres.result === 0 ? null : `result ${gres.result}`;
+      siteResult.textContent = 'serializing map…';
+      serializeSrv.callService(
+        new ROSLIB.ServiceRequest({ filename: PENDING }),
+        () => commitMap(name, gridErr, false),
+        (err) => { siteResult.textContent = 'serialize failed: ' + err; },
       );
     },
-    (err) => { siteResult.textContent = 'serialize failed: ' + err; },
+    (err) => { siteResult.textContent = 'grid save failed: ' + err; },
   );
 });
+
+async function commitMap(name, gridErr, force) {
+  let res, body;
+  try {
+    res = await fetch(`${FLEET_API}/map/commit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, force }),
+    });
+    body = await res.json();
+  } catch (e) { siteResult.textContent = 'fleet_status unreachable — map NOT saved'; return; }
+  if (res.status === 409 && body.needs_force) {
+    if (confirm(body.error + '\n\nOverwrite anyway?')) return commitMap(name, gridErr, true);
+    siteResult.textContent = 'save cancelled: ' + body.error;
+    return;
+  }
+  if (!res.ok) { siteResult.textContent = 'save REFUSED: ' + (body.error || res.status); return; }
+  try {
+    // Register the map entry (label/floor, ADR-0029) + make it active.
+    const label = document.getElementById('site-map-label').value.trim();
+    const floorRaw = document.getElementById('site-map-floor').value.trim();
+    const entry = {};
+    if (label) entry.label = label;
+    if (floorRaw !== '') entry.floor = parseInt(floorRaw, 10);
+    await fetch(`${FLEET_API}/sites/active`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active_map: name, maps: { [name]: entry } }),
+    });
+  } catch (e) { /* metadata update is best-effort; the files are saved */ }
+  try {   // carry a mapping-session grid over to the saved map's name
+    await fetch(`${FLEET_API}/grid/adopt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    refreshStructGrid();
+  } catch (e) { /* best-effort */ }
+  siteResult.textContent = !body.grid
+    ? `map "${name}" saved (posegraph only — grid save failed: ${gridErr}; localization mode needs the grid)`
+    : `map "${name}" saved (posegraph + grid, ${body.bytes} B).`;
+  if (confirm('Map saved. Restart slam + behaviors now to continue on it?')) {
+    try {
+      await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
+      await fetch(`${FLEET_API}/containers/behaviors/restart`, { method: 'POST' });
+    } catch (e) { /* ignore */ }
+  }
+  refreshSites();
+}
 
 async function refreshSites() {
   try {

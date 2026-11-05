@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bluetooth as btctl
 import gridstore
+import mapsafe
 import requests
 import tagpose
 from docker.errors import NotFound
@@ -511,6 +512,8 @@ def _site_files(site_dir):
     files = {}
     if os.path.isdir(maps_dir):
         for f in os.listdir(maps_dir):
+            if f.startswith("_"):      # _autosave/_pending: not operator maps
+                continue
             if f.endswith(".posegraph"):
                 files.setdefault(f[:-len(".posegraph")], {})["posegraph"] = True
             elif f.endswith(".yaml"):
@@ -613,6 +616,27 @@ def grid_api(method, body=None, adopt=None):
     if method == "POST":
         return gridstore.put_grid(maps, site_json, body)
     return gridstore.delete_grid(maps, site_json)
+
+
+def _active_maps_dir():
+    active = _active_site()
+    return None if active is None else os.path.join(SITES_DIR, active, "maps")
+
+
+def map_safety_api(action, body=None):
+    """/api/map/{autosave,commit,recover_autosave} on the active site."""
+    maps = _active_maps_dir()
+    if maps is None or not os.path.isdir(maps):
+        return 404, {"error": "no active site maps dir"}
+    body = body or {}
+    name, force = body.get("name", ""), bool(body.get("force"))
+    if action == "autosave":
+        return 200, mapsafe.autosave_status(maps)
+    if action == "commit":
+        return mapsafe.commit_pending(maps, name, force)
+    if action == "recover_autosave":
+        return mapsafe.recover_autosave(maps, name, force)
+    return 404, {"error": "not found"}
 
 
 def create_site(name, display_name=""):
@@ -814,6 +838,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 code, payload = grid_api("GET")
                 self._send_json(code, payload)
+        elif self.path == "/api/map/autosave":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+            else:
+                code, payload = map_safety_api("autosave")
+                self._send_json(code, payload)
         elif self.path == "/api/apriltags":
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
@@ -879,6 +909,15 @@ class Handler(BaseHTTPRequestHandler):
                 code, payload = grid_api("POST", adopt=body.get("name"))
             else:
                 code, payload = 404, {"error": "not found"}
+            self._send_json(code, payload)
+            return
+
+        if (parts[:2] == ["api", "map"] and len(parts) == 3
+                and parts[2] in ("commit", "recover_autosave")):
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            code, payload = map_safety_api(parts[2], self._read_json_body())
             self._send_json(code, payload)
             return
 
