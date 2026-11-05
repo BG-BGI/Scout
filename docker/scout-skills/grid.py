@@ -668,11 +668,32 @@ def load_saved_map(yaml_path):
 
 
 def auto_from_occupancy(occ=None, extent=None, existing=None,
-                        cell_ft=AUTO_CELL_FT, align="walls"):
+                        cell_ft=AUTO_CELL_FT, align="walls",
+                        regenerate=False, force=False):
     """Create or extend the auto grid. -> (grid, action, info).
-    action: created | extended | unchanged | kept_structural | empty.
-    A structural grid is returned untouched. Yaw is estimated ONLY at creation
-    (align 'walls' needs occ; without it, or align 'map', yaw is 0)."""
+    action: created | extended | unchanged | kept_structural | empty |
+    regenerated. A structural grid is returned untouched. Yaw is estimated ONLY
+    at creation (align 'walls' needs occ; without it, or align 'map', yaw is 0).
+    regenerate=True builds a NEW auto grid at cell_ft, replacing an auto grid
+    (info has old_cell_m/new_cell_m); a structural grid needs force=True."""
+    if regenerate:
+        if existing is not None and existing.get("mode") == "structural" and not force:
+            raise GridError("structural grid not regenerated (it comes from drawings); "
+                            "pass force=true to replace it")
+        if align not in ("walls", "map"):
+            raise GridError("align must be 'walls' or 'map'")
+        if extent is None and occ is not None:
+            extent = extent_from_occupancy(occ)
+        if extent is None:
+            return existing, "empty", {}
+        yaw, info = 0.0, {"source": "map"}
+        if align == "walls" and occ is not None:
+            yaw, info = estimate_yaw(occ)
+        new = auto_new(extent, yaw, cell_ft)
+        info = dict(info)
+        info["old_cell_m"] = existing.get("cell_m") if existing else None
+        info["new_cell_m"] = new["cell_m"]
+        return new, "regenerated", info
     if existing is not None and existing.get("mode") == "structural":
         return existing, "kept_structural", {}
     if align not in ("walls", "map"):

@@ -399,11 +399,32 @@ def load_saved_map(yaml_path):
 
 
 def auto_from_occupancy(occ=None, extent=None, existing=None,
-                        cell_ft=AUTO_CELL_FT, align="walls"):
+                        cell_ft=AUTO_CELL_FT, align="walls",
+                        regenerate=False, force=False):
     """Create or extend the auto grid. -> (grid, action, info).
-    action: created | extended | unchanged | kept_structural | empty.
-    A structural grid is returned untouched. Yaw is estimated ONLY at creation
-    (align 'walls' needs occ; without it, or align 'map', yaw is 0)."""
+    action: created | extended | unchanged | kept_structural | empty |
+    regenerated. A structural grid is returned untouched. Yaw is estimated ONLY
+    at creation (align 'walls' needs occ; without it, or align 'map', yaw is 0).
+    regenerate=True builds a NEW auto grid at cell_ft, replacing an auto grid
+    (info has old_cell_m/new_cell_m); a structural grid needs force=True."""
+    if regenerate:
+        if existing is not None and existing.get("mode") == "structural" and not force:
+            raise GridError("structural grid not regenerated (it comes from drawings); "
+                            "pass force=true to replace it")
+        if align not in ("walls", "map"):
+            raise GridError("align must be 'walls' or 'map'")
+        if extent is None and occ is not None:
+            extent = extent_from_occupancy(occ)
+        if extent is None:
+            return existing, "empty", {}
+        yaw, info = 0.0, {"source": "map"}
+        if align == "walls" and occ is not None:
+            yaw, info = estimate_yaw(occ)
+        new = auto_new(extent, yaw, cell_ft)
+        info = dict(info)
+        info["old_cell_m"] = existing.get("cell_m") if existing else None
+        info["new_cell_m"] = new["cell_m"]
+        return new, "regenerated", info
     if existing is not None and existing.get("mode") == "structural":
         return existing, "kept_structural", {}
     if align not in ("walls", "map"):
@@ -584,12 +605,15 @@ def _write_grid_file(path, g):
 
 def _cell_ft(body):
     v = body.get("cell_ft", AUTO_CELL_FT)
-    return AUTO_CELL_FT if v is None else v
+    return AUTO_CELL_FT if v is None else _num(v, "cell_ft")
 
 
 def auto_grid(maps_dir, site_json, body):
-    """POST /api/grid/auto {cell_ft?, align?, extent?, occupancy?}: create the
-    active map's auto grid, or extend it if mode auto already exists. Source of
+    """POST /api/grid/auto {cell_ft?, align?, extent?, occupancy?, regenerate?,
+    force?}: create the active map's auto grid, or extend it if mode auto already
+    exists (a differing cell_ft is then ignored: cell_ft_ignored). regenerate
+    builds a NEW auto grid at cell_ft, replacing the old atomically (action
+    regenerated); a structural grid is refused (409) unless force. Source of
     the map: posted occupancy > posted extent > the saved map's yaml/pgm.
     A structural grid is never touched (action kept_structural)."""
     body = body if isinstance(body, dict) else {}
@@ -619,16 +643,28 @@ def auto_grid(maps_dir, site_json, body):
             yml = os.path.join(maps_dir, name + ".yaml")
             if os.path.exists(yml):
                 occ = load_saved_map(yml)
+        regen, force = bool(body.get("regenerate")), bool(body.get("force"))
+        if (regen and existing is not None and existing.get("mode") == "structural"
+                and not force):
+            return 409, {"error": "structural grid not regenerated (it comes from "
+                                  "drawings); pass force=true to replace it"}
         g, action, info = auto_from_occupancy(
             occ, extent, existing, _cell_ft(body),
-            body.get("align", "walls"))
+            body.get("align", "walls"), regen, force)
     except GridError as e:
         return 400, {"error": str(e)}
     except OSError as e:
         return 500, {"error": str(e)}
-    if action in ("created", "extended"):
+    if action in ("created", "extended", "regenerated"):
         _write_grid_file(path, g)
     out = {"grid": g, "action": action, "mode": g["mode"] if g else None, "map": name}
+    if g:
+        out["cell_ft"] = round(g["cell_m"] / FT_M, 4) if g.get("cell_m") else None
+    if action == "regenerated":
+        out["old_cell_m"], out["new_cell_m"] = info.get("old_cell_m"), info.get("new_cell_m")
+    elif (g and g.get("mode") == "auto" and body.get("cell_ft") is not None
+          and abs(g["cell_m"] - _cell_ft(body) * FT_M) > 1e-6):
+        out["cell_ft_ignored"] = True
     if info:
         out["yaw_source"] = info.get("source")
         out["wall_strength"] = round(info.get("strength", 0.0), 3)

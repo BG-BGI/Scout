@@ -1086,6 +1086,20 @@ async function sgPersistGrowth() {
   } catch (e) { /* fleet_status offline: still drawn live */ }
   sgPersistBusy = false;
 }
+function sgSavedCellFt() {
+  try {
+    const v = parseFloat(localStorage.getItem('gridCellFt'));
+    if (Number.isFinite(v) && v >= 5 && v <= 200) return v;
+  } catch (e) { /* storage unavailable */ }
+  return 30;
+}
+function sgOccBody(m) {
+  return {
+    width: m.info.width, height: m.info.height, resolution: m.info.resolution,
+    origin: { x: m.info.origin.position.x, y: m.info.origin.position.y },
+    data_b64: sgB64(m.data),
+  };
+}
 function sgB64(data) {
   const u8 = new Uint8Array(data.length);
   for (let i = 0; i < data.length; i++) u8[i] = data[i] & 255;
@@ -1105,12 +1119,8 @@ async function sgMaybeAutoCreate() {
     const res = await fetch(FLEET_API + '/grid/auto', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        cell_ft: 30, align: 'walls',
-        occupancy: {
-          width: m.info.width, height: m.info.height, resolution: m.info.resolution,
-          origin: { x: m.info.origin.position.x, y: m.info.origin.position.y },
-          data_b64: sgB64(m.data),
-        },
+        cell_ft: sgSavedCellFt(), align: 'walls',
+        occupancy: sgOccBody(m),
       }),
     });
     const body = await res.json();
@@ -1148,6 +1158,50 @@ mapCanvas.addEventListener('mousemove', (ev) => {
   gridHoverEl.textContent = bay ? 'Bay ' + bay : '';
 });
 mapCanvas.addEventListener('mouseleave', () => { gridHoverEl.textContent = ''; });
+
+// --- Grid settings panel: cell size + regenerate (auto grid) -----------------
+// Only fetches /grid/auto; never a nav goal and no map-tap mode of its own.
+const gridSettingsBtn = document.getElementById('grid-settings');
+const gridPanel = document.getElementById('grid-panel');
+const gpCell = document.getElementById('gp-cell');
+const gpAlign = document.getElementById('gp-align');
+const gpResult = document.getElementById('gp-result');
+function gpFillCell() {
+  const ft = sgrid && sgrid.cell_m ? sgrid.cell_m / FT_M : sgSavedCellFt();
+  gpCell.value = +ft.toFixed(2);
+}
+gridSettingsBtn.addEventListener('click', () => {
+  gridPanel.hidden = !gridPanel.hidden;
+  gridSettingsBtn.classList.toggle('selected', !gridPanel.hidden);
+  if (!gridPanel.hidden) { gpFillCell(); gpResult.textContent = ''; }
+});
+document.getElementById('gp-apply').addEventListener('click', async () => {
+  const ft = parseFloat(gpCell.value);
+  if (!Number.isFinite(ft) || ft < 5 || ft > 200) { gpResult.textContent = 'cell size must be 5..200 ft'; return; }
+  if (!liveMsg) { gpResult.textContent = 'no live map yet'; return; }
+  if (!window.confirm('This regenerates the grid; bay labels like 1B will refer to different areas.')) return;
+  const req = { regenerate: true, cell_ft: ft, align: gpAlign.value, occupancy: sgOccBody(liveMsg) };
+  const structural = sgrid && sgrid.mode === 'structural';
+  if (structural) {
+    if (!window.confirm('The current grid is STRUCTURAL (from drawings). Replace it with an auto grid?')) return;
+    req.force = true;
+  }
+  gpResult.textContent = 'applying...';
+  try {
+    const res = await fetch(FLEET_API + '/grid/auto', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req),
+    });
+    const body = await res.json();
+    if (!res.ok || !body.grid) { gpResult.textContent = 'failed: ' + (body.error || res.status); return; }
+    try { localStorage.setItem('gridCellFt', String(ft)); } catch (e) { /* storage unavailable */ }
+    sgrid = body.grid;
+    sgServerNone = false;
+    sgPersistAt = Date.now();
+    sgRefreshView();
+    drawMap();
+    gpResult.textContent = body.action + ': ' + (body.cell_ft || ft) + ' ft cells';
+  } catch (e) { gpResult.textContent = 'fleet_status offline'; }
+});
 
 // Fetched on load and from the sites poll (an active-map change reaches
 // refreshSites too), so each map shows its own file.
@@ -1299,7 +1353,7 @@ function gridDefStart() {
   gdRecompute();
   drawMap();
 }
-gridDefineBtn.addEventListener('click', () => (gridDef.active ? gridDefExit() : gridDefStart()));
+gridDefineBtn.addEventListener('click', (ev) => { ev.preventDefault(); if (gridDef.active) gridDefExit(); else gridDefStart(); });
 gdEl('gd-cancel').addEventListener('click', gridDefExit);
 for (const id of ['gd-numbers', 'gd-letters']) {
   gdEl(id).addEventListener('input', () => { gdSyncSelects(false); gdRecompute(); drawMap(); });

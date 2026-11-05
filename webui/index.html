@@ -34,7 +34,7 @@
         <button id="set-tag">Set tag position</button>
         <button id="grid-toggle" class="selected" title="structural grid overlay">Grid</button>
         <button id="grid-bays" title="bay labels at bay centers">Bays</button>
-        <button id="grid-define">Define grid</button>
+        <button id="grid-settings" title="grid cell size / regenerate">Grid &#9881;</button>
         <span id="grid-hover" class="dim"></span>
         <button id="cancel-goal">Cancel Goal</button>
       </div>
@@ -45,6 +45,13 @@
         <button id="tag-confirm" disabled>Confirm</button>
         <button id="tag-cancel">Cancel</button>
         <div id="tag-result" class="dim"></div>
+      </div>
+      <div id="grid-panel" hidden style="padding:6px 8px;border:1px solid #34c38f;margin-bottom:6px">
+        <label>Cell size <input id="gp-cell" type="number" min="5" max="200" step="1" style="width:5em"> ft</label>
+        <label>Align <select id="gp-align"><option value="walls">walls</option><option value="map">map</option></select></label>
+        <button id="gp-apply">Apply</button>
+        <span id="gp-result" class="dim"></span>
+        <div><a href="#" id="grid-define" class="dim">Advanced: structural grid from drawings&hellip;</a></div>
       </div>
       <div id="grid-setter" hidden style="padding:6px 8px;border:2px solid #34c38f;margin-bottom:6px">
         <div style="font-weight:bold;color:#34c38f">DEFINING GRID - taps do not send goals</div>

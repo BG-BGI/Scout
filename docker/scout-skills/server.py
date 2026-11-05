@@ -480,7 +480,8 @@ async def grid_get() -> dict:
 
 
 @mcp.tool
-async def grid_auto(cell_ft: float = 30.0, align: str = "walls") -> dict:
+async def grid_auto(cell_ft: float = 30.0, align: str = "walls",
+                    regenerate: bool = False, force: bool = False) -> dict:
     """Create or extend the AUTOMATIC STANDARD GRID of the current map: square
     cells (default 30 ft, so two beams 12 ft apart fit in one bay), numbered
     lines 1,2,3... left to right and lettered lines A,B,C... bottom to top,
@@ -491,8 +492,12 @@ async def grid_auto(cell_ft: float = 30.0, align: str = "walls") -> dict:
     Labels never change when it grows in any direction; lines left of line 1
     are ".1", ".2"...; below A are ".A", ".B"... A structural grid from
     grid_define is NEVER touched: the result says action "kept_structural".
-    Returns {grid, action: created|extended|unchanged|kept_structural|empty,
-    yaw_deg, yaw_source}."""
+    regenerate=True builds a NEW auto grid at cell_ft (replacing the old one;
+    bay labels then refer to different areas); an existing structural grid is
+    refused unless force=True. Without regenerate a differing cell_ft on an
+    existing auto grid is ignored (cell_ft_ignored: true).
+    Returns {grid, action: created|extended|unchanged|kept_structural|empty|
+    regenerated, yaw_deg, yaw_source, cell_ft}."""
     path = _grid_file()
     existing = structgrid.load(path)
     if existing is None and os.path.exists(path):
@@ -517,13 +522,20 @@ async def grid_auto(cell_ft: float = 30.0, align: str = "walls") -> dict:
                 raise ToolError("no live /map and no saved map files for the active map")
             occ = structgrid.load_saved_map(yml)
         gd, action, info = structgrid.auto_from_occupancy(
-            occ, None, existing, cell_ft, align)
-        if action in ("created", "extended"):
+            occ, None, existing, cell_ft, align, regenerate, force)
+        if action in ("created", "extended", "regenerated"):
             structgrid.save(path, gd)
     except structgrid.GridError as e:
         raise ToolError(str(e)) from e
     out = {"grid": gd, "mode": gd["mode"] if gd else None, "action": action,
            "file": os.path.basename(path)}
+    if gd and gd.get("cell_m"):
+        out["cell_ft"] = round(gd["cell_m"] / structgrid.FT_M, 4)
+    if action == "regenerated":
+        out["old_cell_m"], out["new_cell_m"] = info.get("old_cell_m"), info.get("new_cell_m")
+    elif (gd and gd.get("mode") == "auto" and not regenerate
+          and abs(gd["cell_m"] - cell_ft * structgrid.FT_M) > 1e-6):
+        out["cell_ft_ignored"] = True
     if info:
         out["yaw_deg"] = round(math.degrees(gd["origin"]["yaw_rad"]), 2)
         out["yaw_source"] = info.get("source")

@@ -475,3 +475,71 @@ def test_session_grid_extent_only(tmp_path):
     assert out['map'] == '_session'
     assert (tmp_path / 'maps' / '_session.grid.json').exists()
     assert out['grid']['origin']['yaw_rad'] == 0.0
+
+
+# --- regenerate ---------------------------------------------------------------
+
+_ST = {'version': 1, 'mode': 'structural', 'units': 'ft',
+       'origin': {'x': 0, 'y': 0, 'yaw_rad': 0},
+       'numbers': {'labels': ['1', '2'], 'offsets_m': [0, 3.6]},
+       'letters': {'labels': ['A', 'B'], 'offsets_m': [0, 3.6]}}
+
+
+def test_rest_regenerate_auto_to_auto(env):
+    maps, site = env
+    occ = synth(10.0)
+    _, out = gs.auto_grid(maps, site, {'occupancy': _body(occ)})
+    assert out['cell_ft'] == 30 and 'cell_ft_ignored' not in out
+    old = out['grid']
+    # different cell_ft without regenerate: ignored and flagged
+    _, out = gs.auto_grid(maps, site, {'occupancy': _body(occ), 'cell_ft': 20})
+    assert out['action'] == 'unchanged' and out['cell_ft_ignored'] is True
+    assert out['cell_ft'] == 30
+    # regenerate: new size, replaced on disk
+    code, out = gs.auto_grid(maps, site, {'occupancy': _body(occ), 'cell_ft': 20,
+                                          'regenerate': True})
+    assert code == 200 and out['action'] == 'regenerated' and out['mode'] == 'auto'
+    assert out['old_cell_m'] == pytest.approx(old['cell_m'])
+    assert out['new_cell_m'] == pytest.approx(20 * 0.3048)
+    assert out['cell_ft'] == 20
+    assert gs.get_grid(maps, site)[1]['grid']['cell_m'] == pytest.approx(20 * 0.3048)
+
+
+def test_rest_regenerate_no_grid_and_bounds(env):
+    maps, site = env
+    occ = synth(0.0)
+    code, out = gs.auto_grid(maps, site, {'occupancy': _body(occ), 'regenerate': True,
+                                          'cell_ft': 15, 'align': 'map'})
+    assert code == 200 and out['action'] == 'regenerated' and out['old_cell_m'] is None
+    for bad in (1, 5000, 'x', True):
+        assert gs.auto_grid(maps, site, {'occupancy': _body(occ), 'regenerate': True,
+                                         'cell_ft': bad})[0] == 400
+    assert gs.get_grid(maps, site)[1]['grid']['cell_m'] == pytest.approx(15 * 0.3048)
+
+
+def test_rest_regenerate_structural_refused_unless_forced(env):
+    maps, site = env
+    occ = synth(0.0)
+    assert gs.put_grid(maps, site, _ST)[0] == 200
+    code, out = gs.auto_grid(maps, site, {'occupancy': _body(occ), 'regenerate': True})
+    assert code == 409 and 'force' in out['error']
+    assert gs.get_grid(maps, site)[1]['grid']['mode'] == 'structural'
+    code, out = gs.auto_grid(maps, site, {'occupancy': _body(occ), 'regenerate': True,
+                                          'force': True, 'cell_ft': 25})
+    assert code == 200 and out['action'] == 'regenerated' and out['mode'] == 'auto'
+    assert gs.get_grid(maps, site)[1]['grid']['mode'] == 'auto'
+
+
+@pytest.mark.parametrize('align', ['walls', 'map'])
+def test_regenerate_agreement(align):
+    occ = synth(-17.0, seed=2)
+    old = sk.auto_from_occupancy(occ, None, None, 30, align)[0]
+    a = sk.auto_from_occupancy(occ, None, old, 18, align, True)
+    b = gs.auto_from_occupancy(occ, None, old, 18, align, True)
+    assert a[1] == b[1] == 'regenerated' and a[0] == b[0]
+    assert a[2]['new_cell_m'] == b[2]['new_cell_m'] and a[2]['old_cell_m'] == b[2]['old_cell_m']
+    for mod in MODS:
+        with pytest.raises(mod.GridError):
+            mod.auto_from_occupancy(occ, None, _ST, 18, align, True)
+        assert mod.auto_from_occupancy(occ, None, _ST, 18, align, True, True)[1] == 'regenerated'
+        assert mod.auto_from_occupancy(occ, None, _ST, 18, align)[1] == 'kept_structural'
