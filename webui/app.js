@@ -1466,6 +1466,59 @@ async function refreshSystem() {
 refreshSystem();
 setInterval(refreshSystem, 30000);
 
+// --- Bluetooth controller recovery (fleet_status /api/bluetooth) ---------------------
+// Never touches ROS or motion. Polls with the system poll; every 2 s while an op runs.
+const btChip = document.getElementById('bt-chip');
+const btOp = document.getElementById('bt-op');
+const btBtns = ['bt-reconnect', 'bt-restart', 'bt-repair'].map((id) => document.getElementById(id));
+let btTimer = null;
+
+function renderBluetooth(b) {
+  const p = b.pad || {};
+  const running = b.op && b.op.state === 'running';
+  let txt, cls = '';
+  if (!p.mac || !p.paired) { txt = 'not paired'; cls = 'bad'; }
+  else if (!p.connected) { txt = 'paired, not connected'; cls = 'warn'; }
+  else txt = 'connected';
+  if (p.battery != null) txt += ` · ${p.battery}%`;
+  txt += ` · js0 ${b.js0_present ? '✓' : '✗'}`;
+  if (!b.adapter_powered) txt += ' · adapter off';
+  btChip.textContent = txt;
+  btChip.className = 'svc-stat ' + cls;
+  btBtns.forEach((x) => { x.disabled = running; });
+  const o = b.op || {};
+  btOp.textContent = o.state === 'running' ? `${o.name}: running…`
+    : (o.state === 'ok' || o.state === 'error') ? `${o.name}: ${o.state} — ${o.msg}` : '';
+  clearTimeout(btTimer);
+  if (running) btTimer = setTimeout(refreshBluetooth, 2000);
+}
+
+async function refreshBluetooth() {
+  try {
+    renderBluetooth(await fetch(FLEET_API + '/bluetooth').then((r) => r.json()));
+  } catch (e) {
+    btChip.textContent = 'fleet_status unreachable';
+    btChip.className = 'svc-stat dim';
+    btBtns.forEach((x) => { x.disabled = true; });
+  }
+}
+
+async function btAction(name, confirmMsg) {
+  if (confirmMsg && !confirm(confirmMsg)) return;
+  btBtns.forEach((x) => { x.disabled = true; });
+  try {
+    await fetch(`${FLEET_API}/bluetooth/${name}`, { method: 'POST' });
+  } catch (e) { /* offline; refresh shows it */ }
+  refreshBluetooth();
+}
+document.getElementById('bt-reconnect').addEventListener('click', () => btAction('reconnect'));
+document.getElementById('bt-restart').addEventListener('click', () => btAction('restart',
+  'Restart bluetooth.service on the Pi? The controller drops and must reconnect.'));
+document.getElementById('bt-repair').addEventListener('click', () => btAction('repair',
+  "Hold the controller's sync button until the light blinks fast, then press OK. Re-pair takes ~40 s."));
+refreshBluetooth();
+setInterval(refreshBluetooth, 30000);
+
 // --- companion panel: the box's OWN fleet_status (:9003) ---------------------------
 // Same backend/code as the Pi's, running on the companion and scoped to its own
 // compose project. We learn the box address from the Pi's /api/companion

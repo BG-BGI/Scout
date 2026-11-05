@@ -35,6 +35,7 @@ import requests
 from docker.errors import NotFound
 
 import docker
+import bluetooth as btctl  # noqa: E402 — sibling module (bluetooth.py)
 
 WIFI_IFACE = os.environ.get("WIFI_IFACE", "wlan0")
 # Companion machine to health-check (ADR-0021). Unset = feature hidden: the
@@ -759,6 +760,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, wifi_scan())
         elif self.path == "/api/wifi/quality":
             self._send_json(200, wifi_quality())
+        elif self.path == "/api/bluetooth":
+            self._send_json(200, btctl.status())
         elif self.path == "/api/companion":
             self._send_json(200, companion_health())
         elif self.path == "/api/sites":
@@ -825,6 +828,11 @@ class Handler(BaseHTTPRequestHandler):
                     parts[2], create=bool(body.get("create")))
             else:
                 code, payload = 404, {"error": "not found"}
+            self._send_json(code, payload)
+            return
+
+        if len(parts) == 3 and parts[:2] == ["api", "bluetooth"]:
+            code, payload = btctl.start_op(parts[2])
             self._send_json(code, payload)
             return
 
