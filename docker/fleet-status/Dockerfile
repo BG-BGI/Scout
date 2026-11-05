@@ -9,5 +9,5 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends network-manager dbus bluez \
     && rm -rf /var/lib/apt/lists/*
 RUN uv pip install --system --no-cache docker
-COPY server.py bluetooth.py tagpose.py gridstore.py /app/
+COPY server.py bluetooth.py tagpose.py gridstore.py mapsafe.py /app/
 CMD ["python", "/app/server.py"]
