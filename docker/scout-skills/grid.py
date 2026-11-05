@@ -63,7 +63,7 @@ def _axis(ax, name):
     if len({s.upper() for s in out_l}) != len(out_l):
         raise GridError(f"{name}: labels must be unique (case-insensitive)")
     out_o = [_num(o, f"{name}.offsets_m") for o in offs]
-    if any(b <= a for a, b in zip(out_o, out_o[1:])):
+    if any(b <= a for a, b in zip(out_o, out_o[1:], strict=False)):
         raise GridError(f"{name}: offsets_m must be strictly increasing")
     return {"labels": out_l, "offsets_m": out_o}
 
@@ -332,11 +332,11 @@ def lines(grid):
     g = validate(grid)
     no, lo = g["numbers"]["offsets_m"], g["letters"]["offsets_m"]
     out = []
-    for lb, u in zip(g["numbers"]["labels"], no):
+    for lb, u in zip(g["numbers"]["labels"], no, strict=True):
         a, b = from_grid_frame(g, u, lo[0]), from_grid_frame(g, u, lo[-1])
         out.append({"kind": "number", "label": lb, "offset_m": u,
                     "p1": {"x": a[0], "y": a[1]}, "p2": {"x": b[0], "y": b[1]}})
-    for lb, v in zip(g["letters"]["labels"], lo):
+    for lb, v in zip(g["letters"]["labels"], lo, strict=True):
         a, b = from_grid_frame(g, no[0], v), from_grid_frame(g, no[-1], v)
         out.append({"kind": "letter", "label": lb, "offset_m": v,
                     "p1": {"x": a[0], "y": a[1]}, "p2": {"x": b[0], "y": b[1]}})
