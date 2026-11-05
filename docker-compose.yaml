@@ -124,6 +124,10 @@ services:
       - ros_ws_log:/ros_ws/log
       - ros_overlay_install:/opt/overlay/install
       - /dev/serial:/dev/serial:ro
+      # Bluetooth pad: its js0 appears AFTER boot, and a privileged container's
+      # /dev is a start-time snapshot. Bind the host dir so late/re-connecting
+      # pads are visible (joystick_teleop polls for js0).
+      - /dev/input:/dev/input
     deploy:
       resources:
         limits:

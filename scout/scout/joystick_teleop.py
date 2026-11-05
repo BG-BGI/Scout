@@ -1,6 +1,7 @@
 import os
 import struct
 import threading
+import time
 
 from rclpy.node import Node
 from std_srvs.srv import Trigger
@@ -79,30 +80,42 @@ class JoystickTeleopNode(Node):
     def _reader_loop(self):
         """Read joystick events until stop or the device disappears.
 
-        enable_joystick on the launch file decides whether this node runs at all —
-        no reconnect poll. Missing device at start is a hard error; unplug mid-run
-        zeros inputs and ends the reader so a held throttle cannot keep driving.
+        enable_joystick on the launch file decides whether this node runs at all.
+        A missing device (pad off, or connecting after boot) is polled at 1 Hz,
+        and a pad that drops mid-run zeros inputs first, then the loop waits for
+        it to return. Inputs stay zero until the reconnected pad sends events,
+        so a held throttle cannot keep driving across a drop.
         """
-        try:
-            dev = open(JOY_DEV, 'rb', buffering=0)
-        except OSError as exc:
-            self.get_logger().error('Cannot open %s: %s' % (JOY_DEV, exc))
-            return
+        warned = False
+        while not self._stop:
+            try:
+                dev = open(JOY_DEV, 'rb', buffering=0)
+            except OSError as exc:
+                if not warned:
+                    self.get_logger().warn(
+                        'Waiting for controller at %s: %s' % (JOY_DEV, exc))
+                    warned = True
+                time.sleep(1.0)
+                continue
+            warned = False
+            self.get_logger().info('Controller connected: %s' % JOY_DEV)
 
-        try:
-            with dev:
-                while not self._stop:
-                    data = dev.read(_JS_EVENT.size)
-                    if not data or len(data) < _JS_EVENT.size:
-                        break
-                    _t, value, etype, number = _JS_EVENT.unpack(data)
-                    self._handle_event(value, etype, number)
-        except OSError as exc:
-            self.get_logger().warn('Joystick read failed: %s' % exc)
+            try:
+                with dev:
+                    while not self._stop:
+                        data = dev.read(_JS_EVENT.size)
+                        if not data or len(data) < _JS_EVENT.size:
+                            break
+                        _t, value, etype, number = _JS_EVENT.unpack(data)
+                        self._handle_event(value, etype, number)
+            except OSError as exc:
+                self.get_logger().warn('Joystick read failed: %s' % exc)
 
-        self._zero_inputs()
-        if not self._stop:
-            self.get_logger().warn('Controller gone — inputs zeroed')
+            self._zero_inputs()
+            if not self._stop:
+                self.get_logger().warn(
+                    'Controller gone — inputs zeroed, waiting for reconnect')
+                time.sleep(1.0)
 
     def _handle_event(self, value, etype, number):
         if etype & ~_JS_INIT_FLAG == _JS_EVENT_BUTTON:
