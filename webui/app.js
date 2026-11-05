@@ -485,6 +485,9 @@ let navBusyNow = false; // from /nav_state; the plan is only meaningful while a 
 let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
 let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
 let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
+let sgrid = null;     // structural grid of the active map (fleet_status /api/grid)
+let sgridShow = true;     // 'Grid' overlay toggle
+let sgridBays = false;    // 'Bays' labels toggle
 let uhfPopTag = null; // EPC of the marker whose popup is open
 
 const mapTopic = new ROSLIB.Topic({
@@ -589,6 +592,8 @@ function drawMap() {
   mapCtx.scale(1, -1);
   mapCtx.drawImage(gridCanvas, 0, -mapCanvas.height, mapCanvas.width, mapCanvas.height);
   mapCtx.restore();
+
+  drawStructGrid();
 
   if (plan && plan.length > 1) {
     mapCtx.strokeStyle = '#F2B200';
@@ -745,6 +750,8 @@ function drawMap() {
 
   drawTagPreview();
 
+  drawGridDefPreview();
+
   if (areaPts.length) {
     mapCtx.strokeStyle = '#40a0ff';
     mapCtx.fillStyle = '#40a0ff';
@@ -874,6 +881,7 @@ async function tagSetStart() {
     }
     if (names.includes('doghouse')) tagNameSel.value = 'doghouse';
   } catch (e) { navState.textContent = 'tag list failed: ' + e; return; }
+  if (gridDef.active) gridDefExit();
   if (poseMode) { poseMode = 0; posePin = null; setPoseBtn.textContent = 'Set pose'; }
   if (areaMode) areaReset();
   tagSet.active = true;
@@ -915,6 +923,295 @@ tagConfirmBtn.addEventListener('click', async () => {
   }
 });
 
+
+// --- structural grid (construction-drawing lines over the map) --------------
+// Per-map file <map>.grid.json served by fleet_status /api/grid (storage in
+// meters, map frame). Local +u = origin.yaw; numbers are constant-u lines,
+// letters constant-v lines; bay "1B" = number 1..2 x letter B..C.
+const FT_M = 0.3048;
+function sgToMap(g, u, v) {
+  const c = Math.cos(g.origin.yaw_rad), s = Math.sin(g.origin.yaw_rad);
+  return { x: g.origin.x + c * u - s * v, y: g.origin.y + s * u + c * v };
+}
+function sgToGrid(g, x, y) {
+  const c = Math.cos(g.origin.yaw_rad), s = Math.sin(g.origin.yaw_rad);
+  const dx = x - g.origin.x, dy = y - g.origin.y;
+  return { u: c * dx + s * dy, v: -s * dx + c * dy };
+}
+function sgSlot(offs, p) {
+  if (p < offs[0] || p > offs[offs.length - 1]) return -1;
+  for (let k = 0; k < offs.length - 1; k++) if (p < offs[k + 1]) return k;
+  return offs.length - 2;
+}
+function sgLocate(g, x, y) {
+  const q = sgToGrid(g, x, y);
+  const i = sgSlot(g.numbers.offsets_m, q.u), j = sgSlot(g.letters.offsets_m, q.v);
+  return (i < 0 || j < 0) ? null : g.numbers.labels[i] + g.letters.labels[j];
+}
+// Label at the far end of a line, nudged outward along the line (canvas px),
+// text kept upright.
+function sgEndLabel(a, b, text) {
+  const ca = worldToCanvas(a.x, a.y), cb = worldToCanvas(b.x, b.y);
+  const d = Math.hypot(cb.x - ca.x, cb.y - ca.y) || 1;
+  const ux = (cb.x - ca.x) / d, uy = (cb.y - ca.y) / d;
+  for (const [p, sgn] of [[ca, -1], [cb, 1]]) {
+    const tx = p.x + sgn * ux * 11, ty = p.y + sgn * uy * 11;
+    mapCtx.strokeText(text, tx, ty);
+    mapCtx.fillText(text, tx, ty);
+  }
+}
+function sgDraw(g, color, dashed) {
+  const no = g.numbers.offsets_m, lo = g.letters.offsets_m;
+  mapCtx.save();
+  mapCtx.lineWidth = 1;
+  mapCtx.strokeStyle = color;
+  if (dashed) mapCtx.setLineDash([6, 4]);
+  mapCtx.beginPath();
+  const segs = [];
+  g.numbers.labels.forEach((lb, k) => {
+    segs.push([sgToMap(g, no[k], lo[0]), sgToMap(g, no[k], lo[lo.length - 1]), lb]);
+  });
+  g.letters.labels.forEach((lb, k) => {
+    segs.push([sgToMap(g, no[0], lo[k]), sgToMap(g, no[no.length - 1], lo[k]), lb]);
+  });
+  for (const [a, b] of segs) {
+    const ca = worldToCanvas(a.x, a.y), cb = worldToCanvas(b.x, b.y);
+    mapCtx.moveTo(ca.x, ca.y);
+    mapCtx.lineTo(cb.x, cb.y);
+  }
+  mapCtx.stroke();
+  mapCtx.setLineDash([]);
+  mapCtx.font = 'bold 11px monospace';
+  mapCtx.textAlign = 'center';
+  mapCtx.textBaseline = 'middle';
+  mapCtx.lineWidth = 3;
+  mapCtx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+  mapCtx.fillStyle = color;
+  for (const [a, b, lb] of segs) sgEndLabel(a, b, lb);
+  if (sgridBays && !dashed) {
+    mapCtx.font = '10px monospace';
+    for (let i = 0; i < no.length - 1; i++) {
+      for (let j = 0; j < lo.length - 1; j++) {
+        const m = sgToMap(g, (no[i] + no[i + 1]) / 2, (lo[j] + lo[j + 1]) / 2);
+        const c = worldToCanvas(m.x, m.y);
+        const t = g.numbers.labels[i] + g.letters.labels[j];
+        mapCtx.strokeText(t, c.x, c.y);
+        mapCtx.fillText(t, c.x, c.y);
+      }
+    }
+  }
+  mapCtx.restore();
+}
+function drawStructGrid() {
+  if (!sgrid || !sgridShow || !grid) return;
+  sgDraw(sgrid, 'rgba(0, 150, 120, 0.85)', false);
+}
+const gridToggleBtn = document.getElementById('grid-toggle');
+const gridBaysBtn = document.getElementById('grid-bays');
+const gridHoverEl = document.getElementById('grid-hover');
+gridToggleBtn.addEventListener('click', () => {
+  sgridShow = !sgridShow;
+  gridToggleBtn.classList.toggle('selected', sgridShow);
+  drawMap();
+});
+gridBaysBtn.addEventListener('click', () => {
+  sgridBays = !sgridBays;
+  gridBaysBtn.classList.toggle('selected', sgridBays);
+  drawMap();
+});
+mapCanvas.addEventListener('mousemove', (ev) => {
+  if (!grid || !sgrid || !sgridShow) { gridHoverEl.textContent = ''; return; }
+  const w = canvasToWorld(ev);
+  const bay = sgLocate(sgrid, w.x, w.y);
+  gridHoverEl.textContent = bay ? 'Bay ' + bay : '';
+});
+mapCanvas.addEventListener('mouseleave', () => { gridHoverEl.textContent = ''; });
+
+// Fetched on load and from the sites poll (an active-map change reaches
+// refreshSites too), so each map shows its own file.
+async function refreshStructGrid() {
+  try {
+    const res = await fetch(FLEET_API + '/grid');
+    if (!res.ok) return;
+    const next = (await res.json()).grid || null;
+    if (JSON.stringify(next) !== JSON.stringify(sgrid)) {
+      sgrid = next;
+      drawMap();
+    }
+  } catch (e) { /* fleet_status offline */ }
+}
+
+// --- Define grid: labels + spacings, then two reference taps ----------------
+// Own mode (same banner pattern as Set tag position): while active every map
+// tap is a reference tap, never a nav goal.
+const gridDef = { active: false, p1: null, p2: null, cand: null, residual: null };
+const gdEl = (id) => document.getElementById(id);
+const gridSetter = gdEl('grid-setter');
+const gridDefineBtn = gdEl('grid-define');
+function gdList(id) {
+  return gdEl(id).value.split(',').map((t) => t.trim()).filter((t) => t.length);
+}
+function gdSpacing(id) {
+  const l = gdList(id).map(Number);
+  if (!l.length || l.some((n) => !Number.isFinite(n) || n <= 0)) return null;
+  return l.length === 1 ? l[0] : l;
+}
+function gdOffsets(n, spacing, f) {
+  const gaps = Array.isArray(spacing) ? spacing : new Array(n - 1).fill(spacing);
+  if (gaps.length !== n - 1) return null;
+  const offs = [0];
+  for (const g of gaps) offs.push(offs[offs.length - 1] + g * f);
+  return offs;
+}
+function gdFillSelect(sel, labels, want) {
+  const keep = want || sel.value;
+  sel.innerHTML = '';
+  for (const l of labels) {
+    const o = document.createElement('option');
+    o.value = o.textContent = l;
+    sel.appendChild(o);
+  }
+  if (labels.includes(keep)) sel.value = keep;
+}
+function gdSyncSelects(reset) {
+  const nums = gdList('gd-numbers'), lets = gdList('gd-letters');
+  gdFillSelect(gdEl('gd-r1n'), nums, reset ? nums[0] : null);
+  gdFillSelect(gdEl('gd-r1l'), lets, reset ? lets[0] : null);
+  gdFillSelect(gdEl('gd-r2n'), nums, reset ? nums[nums.length - 1] : null);
+  gdFillSelect(gdEl('gd-r2l'), lets, reset ? lets[lets.length - 1] : null);
+}
+// Rebuild the candidate grid from the form + taps; sets gridDef.cand/residual.
+function gdRecompute() {
+  gridDef.cand = null;
+  gridDef.residual = null;
+  const step = gdEl('gd-step'), resEl = gdEl('gd-residual');
+  const confirmBtn = gdEl('gd-confirm');
+  confirmBtn.disabled = true;
+  resEl.textContent = '';
+  const nums = gdList('gd-numbers'), lets = gdList('gd-letters');
+  const f = gdEl('gd-units').value === 'ft' ? FT_M : 1;
+  const ns = gdSpacing('gd-nspace'), ls = gdSpacing('gd-lspace');
+  if (nums.length < 2 || lets.length < 2) { step.textContent = 'Enter at least 2 number lines and 2 letter lines'; return; }
+  if (new Set(nums.concat(lets).map((t) => t.toUpperCase())).size !== nums.length + lets.length) {
+    step.textContent = 'Labels must be unique across both axes'; return;
+  }
+  if (ns === null || ls === null) { step.textContent = 'Enter spacings (positive numbers)'; return; }
+  const no = gdOffsets(nums.length, ns, f), lo = gdOffsets(lets.length, ls, f);
+  if (!no || !lo) { step.textContent = 'Need one spacing (uniform) or one per gap (' + (nums.length - 1) + ' numbers, ' + (lets.length - 1) + ' letters)'; return; }
+  if (!gridDef.p1) { step.textContent = 'Tap 1/2: intersection ' + gdEl('gd-r1n').value + ' / ' + gdEl('gd-r1l').value + ' on the map'; return; }
+  if (!gridDef.p2) { step.textContent = 'Tap 2/2: intersection ' + gdEl('gd-r2n').value + ' / ' + gdEl('gd-r2l').value + ' on the map'; return; }
+  const ref = (sel) => ({ i: nums.indexOf(gdEl(sel + 'n').value), j: lets.indexOf(gdEl(sel + 'l').value) });
+  const r1 = ref('gd-r1'), r2 = ref('gd-r2');
+  const u1 = no[r1.i], v1 = lo[r1.j], u2 = no[r2.i], v2 = lo[r2.j];
+  const dg = Math.hypot(u2 - u1, v2 - v1);
+  const dx = gridDef.p2.x - gridDef.p1.x, dy = gridDef.p2.y - gridDef.p1.y;
+  const dm = Math.hypot(dx, dy);
+  if (dg < 1e-9) { step.textContent = 'Tap 1 and tap 2 must be different intersections'; return; }
+  if (dm < 1e-9) { step.textContent = 'Taps coincide'; return; }
+  const yaw = Math.atan2(dy, dx) - Math.atan2(v2 - v1, u2 - u1);
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  gridDef.cand = {
+    version: 1, units: gdEl('gd-units').value,
+    origin: { x: gridDef.p1.x - (c * u1 - s * v1), y: gridDef.p1.y - (s * u1 + c * v1),
+      yaw_rad: Math.atan2(s, c) },
+    numbers: { labels: nums, offsets_m: no }, letters: { labels: lets, offsets_m: lo },
+    bay_anchor: 'lower',
+  };
+  gridDef.residual = Math.abs(dm - dg);
+  step.textContent = 'Review the dashed preview, then Confirm (re-tap to redo)';
+  resEl.textContent = 'residual ' + gridDef.residual.toFixed(2) + ' m ('
+    + (gridDef.residual / FT_M).toFixed(1) + ' ft): measured vs configured distance between the two taps'
+    + (gridDef.residual > 0.5 ? ' - LARGE, check spacings / taps' : '');
+  resEl.style.color = gridDef.residual > 0.5 ? '#e5484d' : '';
+  confirmBtn.disabled = false;
+}
+function drawGridDefPreview() {
+  if (!gridDef.active || !grid) return;
+  if (gridDef.cand) sgDraw(gridDef.cand, '#e8590c', true);
+  mapCtx.save();
+  mapCtx.fillStyle = '#e8590c';
+  for (const p of [gridDef.p1, gridDef.p2]) {
+    if (!p) continue;
+    const c = worldToCanvas(p.x, p.y);
+    mapCtx.beginPath();
+    mapCtx.arc(c.x, c.y, 5, 0, 2 * Math.PI);
+    mapCtx.fill();
+  }
+  mapCtx.restore();
+}
+function gridDefExit() {
+  gridDef.active = false;
+  gridDef.p1 = gridDef.p2 = gridDef.cand = gridDef.residual = null;
+  gridSetter.hidden = true;
+  gridDefineBtn.classList.remove('selected');
+  drawMap();
+}
+function gridDefTap(w) {
+  if (!gridDef.p1 || gridDef.p2) { gridDef.p1 = w; gridDef.p2 = null; } else { gridDef.p2 = w; }
+  gdRecompute();
+  drawMap();
+}
+function gridDefStart() {
+  if (tagSet.active) tagSetExit();
+  if (poseMode) { poseMode = 0; posePin = null; setPoseBtn.textContent = 'Set pose'; }
+  if (areaMode) areaReset();
+  gridDef.active = true;
+  gridDef.p1 = gridDef.p2 = null;
+  gdEl('gd-result').textContent = '';
+  if (sgrid) {   // prefill from the saved grid so it can be re-aligned/edited
+    const f = sgrid.units === 'ft' ? FT_M : 1;
+    const gaps = (o) => o.slice(1).map((x, k) => +((x - o[k]) / f).toFixed(4));
+    gdEl('gd-numbers').value = sgrid.numbers.labels.join(',');
+    gdEl('gd-letters').value = sgrid.letters.labels.join(',');
+    gdEl('gd-nspace').value = gaps(sgrid.numbers.offsets_m).join(',');
+    gdEl('gd-lspace').value = gaps(sgrid.letters.offsets_m).join(',');
+    gdEl('gd-units').value = sgrid.units;
+  }
+  gdSyncSelects(true);
+  gridSetter.hidden = false;
+  gridDefineBtn.classList.add('selected');
+  gdRecompute();
+  drawMap();
+}
+gridDefineBtn.addEventListener('click', () => (gridDef.active ? gridDefExit() : gridDefStart()));
+gdEl('gd-cancel').addEventListener('click', gridDefExit);
+for (const id of ['gd-numbers', 'gd-letters']) {
+  gdEl(id).addEventListener('input', () => { gdSyncSelects(false); gdRecompute(); drawMap(); });
+}
+for (const id of ['gd-nspace', 'gd-lspace', 'gd-units', 'gd-r1n', 'gd-r1l', 'gd-r2n', 'gd-r2l']) {
+  gdEl(id).addEventListener('input', () => { gdRecompute(); drawMap(); });
+}
+gdEl('gd-confirm').addEventListener('click', async () => {
+  if (!gridDef.cand) return;
+  const rEl = gdEl('gd-result');
+  if (!confirm('Save this grid for the active map?'
+    + (gridDef.residual > 0.5 ? '\n\nResidual is ' + gridDef.residual.toFixed(2) + ' m - the taps disagree with the spacings.' : ''))) return;
+  gdEl('gd-confirm').disabled = true;
+  try {
+    const res = await fetch(FLEET_API + '/grid', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(gridDef.cand),
+    });
+    const body = await res.json();
+    if (!res.ok) { rEl.textContent = 'failed: ' + (body.error || res.status); gdEl('gd-confirm').disabled = false; return; }
+    sgrid = body.grid;
+    navState.textContent = 'grid saved';
+    gridDefExit();
+  } catch (e) {
+    rEl.textContent = 'failed: ' + e;
+    gdEl('gd-confirm').disabled = false;
+  }
+});
+gdEl('gd-clear').addEventListener('click', async () => {
+  if (!confirm('Delete the saved grid for the active map?')) return;
+  try {
+    await fetch(FLEET_API + '/grid', { method: 'DELETE' });
+    sgrid = null;
+    gdEl('gd-result').textContent = 'saved grid cleared';
+    drawMap();
+  } catch (e) { gdEl('gd-result').textContent = 'failed: ' + e; }
+});
+
 const goalPub = new ROSLIB.Topic({
   ros, name: '/goal_pose', messageType: 'geometry_msgs/msg/PoseStamped',
 });
@@ -938,6 +1235,10 @@ mapCanvas.addEventListener('click', (ev) => {
   if (!grid) return;
   if (tagSet.active) {       // tag placement owns every tap: never a goal
     tagSetTap(canvasToWorld(ev));
+    return;
+  }
+  if (gridDef.active) {      // grid definition owns every tap: never a goal
+    gridDefTap(canvasToWorld(ev));
     return;
   }
   if (poseMode === 1) {
@@ -2215,6 +2516,14 @@ document.getElementById('site-save-map').addEventListener('click', () => {
             body: JSON.stringify({ active_map: name, maps: { [name]: entry } }),
           });
         } catch (e) { /* metadata update is best-effort; the files are saved */ }
+        try {   // carry a mapping-session grid over to the saved map's name
+          await fetch(`${FLEET_API}/grid/adopt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name }),
+          });
+          refreshStructGrid();
+        } catch (e) { /* best-effort */ }
         siteResult.textContent = gridErr
           ? `map "${name}" saved (posegraph only — grid save failed: ${gridErr}; localization mode needs the grid)`
           : `map "${name}" saved (posegraph + grid).`;
@@ -2245,6 +2554,7 @@ async function refreshSites() {
     renderSites(await res.json());
   } catch (e) { siteState.textContent = 'offline'; }
   refreshAprilTags();
+  refreshStructGrid();
 }
 
 // Surveyed AprilTags -> map markers. Rides the sites poll: after renderSites

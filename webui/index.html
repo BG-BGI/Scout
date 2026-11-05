@@ -32,6 +32,10 @@
         <span id="nav-state" class="dim">no map</span>
         <button id="set-pose">Set pose</button>
         <button id="set-tag">Set tag position</button>
+        <button id="grid-toggle" class="selected" title="structural grid overlay">Grid</button>
+        <button id="grid-bays" title="bay labels at bay centers">Bays</button>
+        <button id="grid-define">Define grid</button>
+        <span id="grid-hover" class="dim"></span>
         <button id="cancel-goal">Cancel Goal</button>
       </div>
       <div id="tag-setter" hidden style="padding:6px 8px;border:2px solid #ff9f40;margin-bottom:6px">
@@ -41,6 +45,31 @@
         <button id="tag-confirm" disabled>Confirm</button>
         <button id="tag-cancel">Cancel</button>
         <div id="tag-result" class="dim"></div>
+      </div>
+      <div id="grid-setter" hidden style="padding:6px 8px;border:2px solid #34c38f;margin-bottom:6px">
+        <div style="font-weight:bold;color:#34c38f">DEFINING GRID - taps do not send goals</div>
+        <div class="dim">Labels and spacings are comma separated, e.g. numbers 1,2,3,4 spacing 12 (uniform) or 12,20,14 (one gap per bay), in the chosen units.</div>
+        <div>
+          <label>Numbers <input id="gd-numbers" size="14" placeholder="1,2,3,4"></label>
+          <label>spacing <input id="gd-nspace" size="12" placeholder="12 or 12,20,14"></label>
+        </div>
+        <div>
+          <label>Letters <input id="gd-letters" size="14" placeholder="A,B,C"></label>
+          <label>spacing <input id="gd-lspace" size="12" placeholder="25 or 25,40"></label>
+          <label>units <select id="gd-units"><option value="ft">ft</option><option value="m">m</option></select></label>
+        </div>
+        <div>
+          Tap 1 is the intersection
+          <select id="gd-r1n"></select> / <select id="gd-r1l"></select>;
+          tap 2 is
+          <select id="gd-r2n"></select> / <select id="gd-r2l"></select>
+        </div>
+        <div id="gd-step" class="dim"></div>
+        <div id="gd-residual" class="dim"></div>
+        <button id="gd-confirm" disabled>Confirm</button>
+        <button id="gd-clear">Clear saved grid</button>
+        <button id="gd-cancel">Cancel</button>
+        <div id="gd-result" class="dim"></div>
       </div>
       <div id="map-frame">
         <canvas id="map-canvas" width="300" height="300"></canvas>

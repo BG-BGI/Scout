@@ -33,6 +33,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bluetooth as btctl
+import gridstore
 import requests
 import tagpose
 from docker.errors import NotFound
@@ -592,6 +593,28 @@ def set_tag_pose(name, body):
         os.path.join(SITES_DIR, active, "site.json"))
 
 
+def _grid_paths():
+    active = _active_site()
+    if active is None:
+        return None, None
+    return (os.path.join(SITES_DIR, active, "maps"),
+            os.path.join(SITES_DIR, active, "site.json"))
+
+
+def grid_api(method, body=None, adopt=None):
+    """Structural grid of the active map (docker/fleet-status/gridstore.py)."""
+    maps, site_json = _grid_paths()
+    if maps is None:
+        return 404, {"error": "no active site"}
+    if adopt is not None:
+        return gridstore.adopt_session(maps, adopt)
+    if method == "GET":
+        return gridstore.get_grid(maps, site_json)
+    if method == "POST":
+        return gridstore.put_grid(maps, site_json, body)
+    return gridstore.delete_grid(maps, site_json)
+
+
 def create_site(name, display_name=""):
     if not _valid_site_name(name):
         return 400, {"error": "invalid site name (a-z0-9_-, max 32, "
@@ -759,7 +782,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
@@ -785,6 +808,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "sites not configured here"})
             else:
                 self._send_json(200, list_sites())
+        elif self.path == "/api/grid":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+            else:
+                code, payload = grid_api("GET")
+                self._send_json(code, payload)
         elif self.path == "/api/apriltags":
             if not SITES_DIR:
                 self._send_json(404, {"error": "sites not configured here"})
@@ -801,6 +830,16 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(length))
         except json.JSONDecodeError:
             return {}
+
+    def do_DELETE(self):
+        if self.path.rstrip("/") == "/api/grid":
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            code, payload = grid_api("DELETE")
+            self._send_json(code, payload)
+            return
+        self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
         parts = self.path.strip("/").split("/")
@@ -827,6 +866,20 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 ok, out = wifi_forget(name)
             self._send_json(200 if ok else 400, {"ok": ok, "detail": out})
+            return
+
+        if parts[:2] == ["api", "grid"] and len(parts) in (2, 3):
+            if not SITES_DIR:
+                self._send_json(404, {"error": "sites not configured here"})
+                return
+            body = self._read_json_body()
+            if len(parts) == 2:                      # POST /api/grid {grid}
+                code, payload = grid_api("POST", body)
+            elif parts[2] == "adopt":                # POST /api/grid/adopt {name}
+                code, payload = grid_api("POST", adopt=body.get("name"))
+            else:
+                code, payload = 404, {"error": "not found"}
+            self._send_json(code, payload)
             return
 
         if (parts[:2] == ["api", "apriltags"] and len(parts) == 4
