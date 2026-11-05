@@ -503,6 +503,7 @@ mapTopic.subscribe((msg) => {
   const w = msg.info.width, h = msg.info.height;
   gridCanvas.width = w;
   gridCanvas.height = h;
+  mapUpdateBounds(msg.info);
   const img = gridCanvas.getContext('2d').createImageData(w, h);
   let c0 = w, c1 = -1, r0 = h, r1 = -1, nOcc = 0;
   for (let i = 0; i < w * h; i++) {
@@ -565,14 +566,119 @@ planTopic.subscribe((msg) => {
   drawMap();
 });
 
+// --- map view: zoom / pan / large view ------------------------------------------
+// ONE transform (MapView, mapview.js) maps world <-> canvas CSS px. Everything that
+// draws goes through worldToCanvas, every pointer->world conversion through
+// canvasToWorld; nothing else may do its own map math. The backing store is
+// CSS size x devicePixelRatio and drawMap() applies the dpr as a base transform,
+// so all drawing code works in CSS px.
+const MV = window.MapView;
+const mapFrame = document.getElementById('map-frame');
+const navPanel = document.getElementById('nav');
+const mapZoomEl = document.getElementById('map-zoom');
+const MAX_MAP_PIXELS = 16e6;
+let mapSize = { w: 0, h: 0 };   // CSS px
+let mapDpr = 1;
+let mapView = null;             // {k, cx, cy}; null until first fit
+let mapBounds = null;           // world bounds of the latest grid
+let mapFollow = false;
+let mapViewKey = null;          // map name the view belongs to
+let mapSaveTimer = null;
+let mapDragging = false;       // a pan/pinch gesture is in progress
+
+function mapKey() {
+  try { return (activeSiteMeta && activeSiteMeta.active_map) || 'default'; } catch (e) { return 'default'; }
+}
+function mapFitK() { return MV.fitK(mapBounds, mapSize); }
+function mapStoreView() {
+  if (!mapView) return;
+  clearTimeout(mapSaveTimer);
+  mapSaveTimer = setTimeout(() => {
+    try {
+      sessionStorage.setItem('scout.mapview.' + mapViewKey, JSON.stringify(mapView));
+    } catch (e) { /* storage unavailable: view just is not remembered */ }
+  }, 250);
+}
+function mapLoadView(key) {
+  try {
+    const v = JSON.parse(sessionStorage.getItem('scout.mapview.' + key));
+    if (v && isFinite(v.k) && v.k > 0 && isFinite(v.cx) && isFinite(v.cy)) return v;
+  } catch (e) { /* none */ }
+  return null;
+}
+function mapFitView() {
+  if (!mapBounds || !mapSize.w || !mapSize.h) return;
+  mapView = MV.fit(mapBounds, mapSize);
+  mapStoreView();
+}
+// Called on every /map message. Keeps the user's view unless it is the first map,
+// a different map name, or the extent changed drastically (a different map loaded).
+function mapUpdateBounds(info) {
+  const nb = MV.boundsOf(info);
+  const key = mapKey();
+  const reset = !mapView || key !== mapViewKey || MV.drasticChange(mapBounds, nb);
+  mapBounds = nb;
+  mapSyncControls();
+  if (!reset) return;
+  const keyChanged = key !== mapViewKey;
+  mapViewKey = key;
+  const saved = mapLoadView(key);
+  if (saved && mapSize.w && (keyChanged || !mapView)) {
+    mapView = saved;
+  } else {
+    mapFitView();
+  }
+  mapSyncControls();
+}
+function mapSetView(v, keepFollow) {
+  if (!mapBounds) return;
+  mapView = MV.constrain(v, mapSize, mapBounds, 48);
+  if (!keepFollow) mapFollow = false;
+  mapSyncControls();
+  mapStoreView();
+  drawMap();
+}
+function mapSyncControls() {
+  if (mapZoomEl && mapView && mapBounds) {
+    mapZoomEl.textContent = MV.zoomPercent(mapView.k, mapFitK()) + '%';
+  }
+  const f = document.getElementById('map-follow');
+  if (f) f.classList.toggle('selected', mapFollow);
+}
+function mapZoomBy(factor, px, py) {
+  if (!mapView || !mapBounds) return;
+  const x = px === undefined ? mapSize.w / 2 : px;
+  const y = py === undefined ? mapSize.h / 2 : py;
+  mapSetView(MV.zoomAt(mapView, mapSize, x, y, factor, mapFitK()), true);
+}
+function mapResize() {
+  const w = Math.floor(mapFrame.clientWidth), h = Math.floor(mapFrame.clientHeight);
+  if (w < 2 || h < 2) return;
+  const first = !mapSize.w;
+  mapSize = { w, h };
+  mapDpr = Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_MAP_PIXELS / (w * h)));
+  mapCanvas.width = Math.round(w * mapDpr);
+  mapCanvas.height = Math.round(h * mapDpr);
+  if (first && mapBounds) {
+    const saved = mapLoadView(mapViewKey || mapKey());
+    if (saved) mapView = saved; else mapFitView();
+  }
+  mapSyncControls();
+  drawMap();
+}
+new ResizeObserver(mapResize).observe(mapFrame);
+
 function worldToCanvas(wx, wy) {
-  // map origin is the world coord of cell (0,0); canvas y is flipped.
-  const sx = mapCanvas.width / grid.width;
-  const sy = mapCanvas.height / grid.height;
-  return {
-    x: (wx - grid.origin.position.x) / grid.resolution * sx,
-    y: mapCanvas.height - (wy - grid.origin.position.y) / grid.resolution * sy,
-  };
+  return MV.worldToCanvas(mapView, mapSize, wx, wy);
+}
+// Pointer event (or any {clientX, clientY}) -> canvas CSS px -> world.
+function canvasPoint(ev) {
+  const r = mapCanvas.getBoundingClientRect();
+  return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+}
+function canvasToWorld(ev) {
+  const c = canvasPoint(ev);
+  return MV.canvasToWorld(mapView, mapSize, c.x, c.y);
 }
 
 // Tag facing arrow: map_yaw points robot-in-front -> tag, so the face normal
@@ -600,19 +706,22 @@ function drawTagFacing(c, mapYaw, color) {
 function drawMap() {
   if (!grid) return;
   navState.textContent = robotPose ? 'live' : 'map only';
-  // Fit the canvas backing store to the grid aspect (CSS scales to width).
-  const aspect = grid.height / grid.width;
-  const W = 960;  // backing store; CSS scales to fit the stage
-  if (mapCanvas.width !== W || mapCanvas.height !== Math.round(W * aspect)) {
-    mapCanvas.width = W;
-    mapCanvas.height = Math.round(W * aspect);
-    mapCanvas.style.aspectRatio = W + ' / ' + mapCanvas.height;
+  if (!mapView || !mapSize.w) return;
+  if (mapFollow && robotPose && !mapDragging) {
+    mapView = MV.centerOn(mapView, robotPose.x, robotPose.y);
   }
-  mapCtx.imageSmoothingEnabled = false;
+  mapCtx.setTransform(1, 0, 0, 1, 0, 0);
+  mapCtx.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+  mapCtx.setTransform(mapDpr, 0, 0, mapDpr, 0, 0);
+  const cellPx = mapView.k * grid.resolution;
+  mapCtx.imageSmoothingEnabled = cellPx * mapDpr < 1;  // minify smooth, magnify crisp
   mapCtx.save();
-  // Flip vertically so world +y is up.
+  // Occupancy image: row 0 is world y-min, so anchor at the bottom-left corner
+  // and draw flipped upward.
+  const bl = worldToCanvas(grid.origin.position.x, grid.origin.position.y);
+  mapCtx.translate(bl.x, bl.y);
   mapCtx.scale(1, -1);
-  mapCtx.drawImage(gridCanvas, 0, -mapCanvas.height, mapCanvas.width, mapCanvas.height);
+  mapCtx.drawImage(gridCanvas, 0, 0, cellPx * grid.width, cellPx * grid.height);
   mapCtx.restore();
 
   drawStructGrid();
@@ -689,7 +798,7 @@ function drawMap() {
   // ring radius IS the confidence (RSSI-weighted RMS scatter from the
   // registry), so a wide ring reads as "somewhere around here".
   if (uhfShowTags && uhfTags.length) {
-    const pxPerM = (mapCanvas.width / grid.width) / grid.resolution;
+    const pxPerM = mapView.k;
     mapCtx.save();
     mapCtx.font = '10px monospace';
     mapCtx.textAlign = 'center';
@@ -1152,7 +1261,7 @@ gridBaysBtn.addEventListener('click', () => {
   drawMap();
 });
 mapCanvas.addEventListener('mousemove', (ev) => {
-  if (!grid || !sgridView || !sgridShow) { gridHoverEl.textContent = ''; return; }
+  if (!grid || !mapView || !sgridView || !sgridShow) { gridHoverEl.textContent = ''; return; }
   const w = canvasToWorld(ev);
   const bay = sgLocate(sgridView, w.x, w.y);
   gridHoverEl.textContent = bay ? 'Bay ' + bay : '';
@@ -1415,8 +1524,8 @@ setPoseBtn.addEventListener('click', () => {
   setPoseBtn.textContent = poseMode ? 'Tap position…' : 'Set pose';
   drawMap();
 });
-mapCanvas.addEventListener('click', (ev) => {
-  if (!grid) return;
+function mapTap(ev) {
+  if (!grid || !mapView) return;
   if (tagSet.active) {       // tag placement owns every tap: never a goal
     tagSetTap(canvasToWorld(ev));
     return;
@@ -1464,9 +1573,8 @@ mapCanvas.addEventListener('click', (ev) => {
   // Tag-marker hit test first: a tap within 12 canvas px of a dot opens the
   // popup instead of sending a goal (tap empty space to navigate as before).
   if (uhfShowTags && uhfTags.length) {
-    const rr = mapCanvas.getBoundingClientRect();
-    const px = (ev.clientX - rr.left) * (mapCanvas.width / rr.width);
-    const py = (ev.clientY - rr.top) * (mapCanvas.height / rr.height);
+    const pp = canvasPoint(ev);
+    const px = pp.x, py = pp.y;
     for (const t of uhfTags) {
       const c = worldToCanvas(t.est_pose.x, t.est_pose.y);
       if ((c.x - px) ** 2 + (c.y - py) ** 2 <= 12 ** 2) {
@@ -1476,13 +1584,8 @@ mapCanvas.addEventListener('click', (ev) => {
     }
     if (uhfPopTag) closeTagPop();   // tap elsewhere dismisses an open popup
   }
-  const r = mapCanvas.getBoundingClientRect();
-  const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
-  const cy = (ev.clientY - r.top) * (mapCanvas.height / r.height);
-  const wx = cx / (mapCanvas.width / grid.width) * grid.resolution
-    + grid.origin.position.x;
-  const wy = (mapCanvas.height - cy) / (mapCanvas.height / grid.height)
-    * grid.resolution + grid.origin.position.y;
+  const wp = canvasToWorld(ev);
+  const wx = wp.x, wy = wp.y;
   // Face the direction of travel (or map-x if pose unknown).
   const yaw = robotPose ? Math.atan2(wy - robotPose.y, wx - robotPose.x) : 0;
   goalPub.publish(new ROSLIB.Message({
@@ -1493,7 +1596,145 @@ mapCanvas.addEventListener('click', (ev) => {
     },
   }));
   navState.textContent = 'goal sent (' + wx.toFixed(2) + ', ' + wy.toFixed(2) + ')';
+}
+
+// --- map pointer interaction: tap vs drag vs pinch ------------------------------
+// A press that stays within TAP_SLOP px and never became a 2-finger gesture is a
+// TAP and goes to mapTap() on pointerup — exactly the old click behaviour. Anything
+// that moved further is a pan and places/sends nothing. No click listener exists,
+// so a drag can never also fire one. No double-tap zoom: it would have to delay
+// every single tap to tell them apart (and a double tap would send two goals).
+const TAP_SLOP = 5;
+const mapPtrs = new Map();   // pointerId -> {x, y} canvas px
+let mapGesture = null;       // {moved, multi, startPt, startView, pinch?}
+
+function mapPtrMid() {
+  const p = [...mapPtrs.values()];
+  return { x: (p[0].x + p[1].x) / 2, y: (p[0].y + p[1].y) / 2,
+    d: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) };
+}
+mapCanvas.addEventListener('pointerdown', (ev) => {
+  if (!grid || !mapView) return;
+  if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+  mapCanvas.setPointerCapture(ev.pointerId);
+  mapPtrs.set(ev.pointerId, canvasPoint(ev));
+  if (mapPtrs.size === 1) {
+    mapGesture = { moved: false, multi: false, startPt: canvasPoint(ev), startView: mapView };
+  } else if (mapPtrs.size === 2 && mapGesture) {
+    const m = mapPtrMid();
+    mapGesture.multi = true;
+    mapGesture.pinch = { mid: { x: m.x, y: m.y }, d: m.d, view: mapView };
+    mapDragging = true;
+  }
 });
+mapCanvas.addEventListener('pointermove', (ev) => {
+  if (!mapPtrs.has(ev.pointerId) || !mapGesture) return;
+  const pt = canvasPoint(ev);
+  mapPtrs.set(ev.pointerId, pt);
+  if (mapPtrs.size >= 2 && mapGesture.pinch) {
+    const m = mapPtrMid();
+    const g = mapGesture.pinch;
+    mapSetView(MV.pinch(g.view, mapSize, g.mid, g.d, m, m.d, mapFitK()), true);
+    return;
+  }
+  if (mapGesture.multi) return;   // one finger left over from a pinch: ignore
+  const dx = pt.x - mapGesture.startPt.x, dy = pt.y - mapGesture.startPt.y;
+  if (!mapGesture.moved) {
+    if (Math.hypot(dx, dy) < TAP_SLOP) return;
+    mapGesture.moved = true;
+    mapDragging = true;
+    mapCanvas.classList.add('panning');
+  }
+  mapSetView(MV.panBy(mapGesture.startView, dx, dy));
+});
+function mapPtrEnd(ev, cancelled) {
+  if (!mapPtrs.delete(ev.pointerId) || !mapGesture) return;
+  if (mapPtrs.size === 0) {
+    const g = mapGesture;
+    mapGesture = null;
+    mapDragging = false;
+    mapCanvas.classList.remove('panning');
+    if (!cancelled && !g.moved && !g.multi) mapTap(ev);
+  } else {
+    mapGesture.pinch = null;   // pinch over; remaining finger must not tap or pan
+    mapGesture.multi = true;
+  }
+}
+mapCanvas.addEventListener('pointerup', (ev) => mapPtrEnd(ev, false));
+mapCanvas.addEventListener('pointercancel', (ev) => mapPtrEnd(ev, true));
+mapCanvas.addEventListener('wheel', (ev) => {
+  if (!mapView) return;
+  ev.preventDefault();
+  const px = ev.deltaMode === 1 ? 16 : 1;
+  const rate = ev.ctrlKey ? 0.01 : 0.0015;   // ctrl+wheel = trackpad pinch
+  const p = canvasPoint(ev);
+  mapZoomBy(Math.exp(-ev.deltaY * px * rate), p.x, p.y);
+}, { passive: false });
+
+// Header controls
+document.getElementById('map-zoom-in').addEventListener('click', () => mapZoomBy(1.5));
+document.getElementById('map-zoom-out').addEventListener('click', () => mapZoomBy(1 / 1.5));
+document.getElementById('map-fit').addEventListener('click', () => {
+  mapFollow = false;
+  mapFitView();
+  mapSyncControls();
+  drawMap();
+});
+document.getElementById('map-center').addEventListener('click', () => {
+  if (!robotPose || !mapView) return;
+  mapSetView(MV.centerOn(mapView, robotPose.x, robotPose.y));
+});
+document.getElementById('map-follow').addEventListener('click', () => {
+  mapFollow = !mapFollow;
+  mapSyncControls();
+  drawMap();
+});
+
+// Large view: fixed overlay filling the window (+ Fullscreen API when available).
+// STOP / E-STOP in the header proxy the main buttons, so the same stop path runs.
+const mapExpandBtn = document.getElementById('map-expand');
+function mapSetExpanded(on) {
+  navPanel.classList.toggle('expanded', on);
+  document.body.classList.toggle('map-expanded', on);
+  mapExpandBtn.textContent = on ? 'Close' : 'Expand';
+  // Resize before the next paint is handled by the ResizeObserver.
+}
+mapExpandBtn.addEventListener('click', () => {
+  const on = !navPanel.classList.contains('expanded');
+  mapSetExpanded(on);
+  try {
+    if (on && navPanel.requestFullscreen) {
+      Promise.resolve(navPanel.requestFullscreen()).catch(() => { /* overlay only */ });
+    } else if (!on && document.fullscreenElement) {
+      document.exitFullscreen();
+    }
+  } catch (e) { /* overlay only */ }
+});
+document.addEventListener('fullscreenchange', () => {
+  // User left fullscreen (Esc handled by the browser): close the overlay too.
+  if (!document.fullscreenElement && navPanel.classList.contains('expanded')) {
+    mapSetExpanded(false);
+  }
+});
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && navPanel.classList.contains('expanded')) {
+    mapSetExpanded(false);
+    if (document.fullscreenElement) document.exitFullscreen();
+  }
+});
+document.getElementById('map-stop').addEventListener('click', () => {
+  document.getElementById('stop').click();
+});
+document.getElementById('map-estop').addEventListener('click', () => {
+  document.getElementById('estop').click();
+});
+{
+  // Mirror the main E-STOP's label/engaged state onto the expanded-view copy.
+  const src = document.getElementById('estop'), dst = document.getElementById('map-estop');
+  const sync = () => { dst.textContent = src.textContent; dst.classList.toggle('engaged', src.classList.contains('engaged')); };
+  new MutationObserver(sync).observe(src, { attributes: true, childList: true, characterData: true, subtree: true });
+  sync();
+}
 
 // Cancel = nav_manager's dispatcher-aware /nav/cancel (ADR-0018): stops
 // patrol, pauses explore, then zero-uuid cancels BOTH bt_navigator actions —
@@ -1598,18 +1839,6 @@ ros.on('connection', () => coverageBoxPub.advertise());
 const areaBtn = document.getElementById('patrol-area');
 let areaMode = false;
 let areaPts = [];   // [{x, y}] map-frame vertices
-
-function canvasToWorld(ev) {
-  const r = mapCanvas.getBoundingClientRect();
-  const cx = (ev.clientX - r.left) * (mapCanvas.width / r.width);
-  const cy = (ev.clientY - r.top) * (mapCanvas.height / r.height);
-  return {
-    x: cx / (mapCanvas.width / grid.width) * grid.resolution
-      + grid.origin.position.x,
-    y: (mapCanvas.height - cy) / (mapCanvas.height / grid.height)
-      * grid.resolution + grid.origin.position.y,
-  };
-}
 
 function areaReset(msg) {
   areaMode = false;

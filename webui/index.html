@@ -36,7 +36,18 @@
         <button id="grid-bays" title="bay labels at bay centers">Bays</button>
         <button id="grid-settings" title="grid cell size / regenerate">Grid &#9881;</button>
         <span id="grid-hover" class="dim"></span>
+        <span class="map-zoomctl">
+          <button id="map-zoom-out" title="zoom out">&minus;</button>
+          <span id="map-zoom" class="dim" title="zoom vs fit">100%</span>
+          <button id="map-zoom-in" title="zoom in">+</button>
+          <button id="map-fit" title="fit whole map">Fit</button>
+          <button id="map-center" title="center on robot">Robot</button>
+          <button id="map-follow" title="keep robot centered">Follow</button>
+          <button id="map-expand" title="large view (Esc closes)">Expand</button>
+        </span>
         <button id="cancel-goal">Cancel Goal</button>
+        <button id="map-stop" class="map-stop" title="same as STOP">STOP</button>
+        <button id="map-estop" class="map-stop" title="same as E-STOP">E-STOP</button>
       </div>
       <div id="tag-setter" hidden style="padding:6px 8px;border:2px solid #ff9f40;margin-bottom:6px">
         <div id="tag-banner" style="font-weight:bold;color:#ff9f40">SETTING TAG - taps do not send goals</div>
@@ -406,6 +417,7 @@
 })();
 </script>
 <script src="vendor/roslib.min.js"></script>
+<script src="mapview.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
