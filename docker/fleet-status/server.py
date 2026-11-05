@@ -31,11 +31,11 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import bluetooth as btctl
 import requests
 from docker.errors import NotFound
 
 import docker
-import bluetooth as btctl  # noqa: E402 — sibling module (bluetooth.py)
 
 WIFI_IFACE = os.environ.get("WIFI_IFACE", "wlan0")
 # Companion machine to health-check (ADR-0021). Unset = feature hidden: the

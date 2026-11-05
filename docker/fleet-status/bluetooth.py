@@ -157,8 +157,8 @@ def _do_repair():
         return False, "controller not found; hold sync until light blinks fast and retry"
     _run(["bluetoothctl", "remove", mac], timeout=10)
     try:
-        r = subprocess.run(["bash", "-c", repair_script(mac)], capture_output=True,
-                           text=True, timeout=75)
+        subprocess.run(["bash", "-c", repair_script(mac)], capture_output=True,
+                       text=True, timeout=75)
     except Exception as e:  # noqa: BLE001
         return False, str(e)
     ok, info = _ctl("info", mac, timeout=5)
