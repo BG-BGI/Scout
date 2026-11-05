@@ -24,8 +24,11 @@ LoadMap republishes the latched /map before responding; amcl and the global
 costmap's static layer both re-consume it, and a short delay orders amcl's
 map callback ahead of the /initialpose.
 
-One seed per boot, deliberately: after the first fix the node goes quiet so
-it never fights slam_toolbox's own tracking. /tag_relocalizer/reseed
+After the first seed the node keeps correcting (core.landmark_correction):
+a median window of close, stationary tag solves that disagrees with the
+amcl TF pose by more than a threshold re-seeds /initialpose, rate-limited,
+and logs the delta (the drift measurement) + /tag_relocalizer/correction.
+/tag_relocalizer/reseed
 (std_srvs/Trigger) re-arms it (and the transit machinery) for the next
 sighting. A transit resets the flag itself — arriving on a new floor is a new
 boot as far as seeding is concerned.
@@ -57,12 +60,14 @@ import urllib.request
 from apriltag_msgs.msg import AprilTagDetectionArray
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav2_msgs.srv import LoadMap
+from nav_msgs.msg import Odometry
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Float32MultiArray, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
 from scout.core.geometry import yaw_to_quat_zw
+from scout.core.landmark_correction import LandmarkCorrector
 from scout.core.status import NAV_BUSY_STATES, parse_nav_state
 from scout.node_util import lookup_matrix, run_node
 from scout.qos import LATCHED_QOS
@@ -105,7 +110,30 @@ class TagRelocalizer(Node):
         self.declare_parameter('min_transit_sightings', 3)
         self.declare_parameter('transit_cooldown_s', 30.0)
         self.declare_parameter('fleet_api', DEFAULT_FLEET_API)
+        # Continuous correction after the first seed (median window).
+        self.declare_parameter('correct_max_dist_m', 1.5)
+        self.declare_parameter('correct_window', 5)
+        self.declare_parameter('correct_spread_xy_m', 0.03)
+        self.declare_parameter('correct_spread_yaw_deg', 2.0)
+        self.declare_parameter('correct_xy_m', 0.10)
+        self.declare_parameter('correct_yaw_deg', 3.0)
+        self.declare_parameter('correct_cooldown_s', 5.0)
+        self.declare_parameter('correct_max_v', 0.10)
+        self.declare_parameter('correct_max_w', 0.20)
 
+        g = self.get_parameter
+        self._corrector = LandmarkCorrector(
+            window=g('correct_window').value,
+            spread_xy_m=g('correct_spread_xy_m').value,
+            spread_yaw_deg=g('correct_spread_yaw_deg').value,
+            xy_m=g('correct_xy_m').value,
+            yaw_deg=g('correct_yaw_deg').value,
+            cooldown_s=g('correct_cooldown_s').value,
+            max_dist_m=g('correct_max_dist_m').value,
+            max_v=g('correct_max_v').value,
+            max_w=g('correct_max_w').value)
+        self._v = 0.0
+        self._w = 0.0
         self._done = False
         self._nav_busy = False
         self._switching = False
@@ -116,6 +144,9 @@ class TagRelocalizer(Node):
         self._tf_listener = TransformListener(self._tf, self)
         self._pub = self.create_publisher(
             PoseWithCovarianceStamped, '/initialpose', 10)
+        self._corr_pub = self.create_publisher(
+            Float32MultiArray, '/tag_relocalizer/correction', 10)
+        self.create_subscription(Odometry, '/odom', self._on_odom, 10)
         self._load_map_cli = self.create_client(LoadMap, '/map_server/load_map')
         self.create_subscription(
             AprilTagDetectionArray, '/detections', self._on_detections, 10)
@@ -171,8 +202,13 @@ class TagRelocalizer(Node):
         status, _, _ = parse_nav_state(msg.data)
         self._nav_busy = status in NAV_BUSY_STATES
 
+    def _on_odom(self, msg):
+        self._v = msg.twist.twist.linear.x
+        self._w = msg.twist.twist.angular.z
+
     def _on_reseed(self, _req, resp):
         self._done = False
+        self._corrector.reset()
         self._cand = {'map': None, 'count': 0, 'pose': None, 'name': None}
         self._last_switch_t = 0.0
         resp.success = True
@@ -208,15 +244,55 @@ class TagRelocalizer(Node):
         elif saw_registered and self._cand['count']:
             # Same-map tags with no foreign vote decay a stale candidate.
             self._cand['count'] -= 1
-        if best_same is None or self._done:
+        if best_same is None:
+            return
+        if self._done:
+            self._maybe_correct(*best_same)
             return
         dist, name, theta, pose = best_same
         self._pub.publish(pose)
         self._done = True
+        self._corrector.reset()
         self.get_logger().info(
             'seeded /initialpose from tag %r %.2f m away: map (%.2f, %.2f) yaw %.1f deg'
             % (name, dist, pose.pose.pose.position.x,
                pose.pose.pose.position.y, math.degrees(theta)))
+
+    def _maybe_correct(self, dist, name, theta, pose):
+        """Post-seed landmark correction: compare the window-median tag solve
+        with the current amcl pose (TF map->base_link) and re-seed on drift.
+        No TF = silently behave as the old one-shot node."""
+        if self._switching:
+            return
+        m = lookup_matrix(self._tf, 'map', 'base_link')
+        if m is None:
+            return
+        rot, t = m
+        amcl = (float(t[0]), float(t[1]),
+                math.atan2(float(rot[1, 0]), float(rot[0, 0])))
+        p = pose.pose.pose
+        res = self._corrector.add(
+            (p.position.x, p.position.y, theta), amcl,
+            self._v, self._w, dist, time.monotonic())
+        if res is None:
+            return
+        dx, dy, dyaw, dist, (mx, my, myaw) = res
+        pose.pose.pose.position.x = mx
+        pose.pose.pose.position.y = my
+        qz, qw = yaw_to_quat_zw(myaw)
+        pose.pose.pose.orientation.z = qz
+        pose.pose.pose.orientation.w = qw
+        pose.header.stamp = self.get_clock().now().to_msg()
+        self._pub.publish(pose)
+        out = Float32MultiArray()
+        out.data = [float(dx), float(dy), float(math.degrees(dyaw)),
+                    float(dist)]
+        self._corr_pub.publish(out)
+        self.get_logger().info(
+            'landmark correction #%d via tag %r %.2f m: dx %.3f dy %.3f '
+            'dyaw %.2f deg -> map (%.2f, %.2f) yaw %.1f deg'
+            % (self._corrector.count, name, dist, dx, dy,
+               math.degrees(dyaw), mx, my, math.degrees(myaw)))
 
     # --- floor transit (ADR-0029) --------------------------------------------
 
