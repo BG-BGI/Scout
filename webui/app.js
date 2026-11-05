@@ -481,6 +481,7 @@ const gridCanvas = document.createElement('canvas');
 let grid = null;      // latest OccupancyGrid info
 let robotPose = null; // {x, y, yaw} in map frame
 let plan = null;      // array of {x, y} in map frame
+let navBusyNow = false; // from /nav_state; the plan is only meaningful while a goal is live
 let uhfTags = [];     // registry rows WITH est_pose (ADR-0032 map markers)
 let uhfShowTags = true;   // corner Tags toggle — gates UHF AND AprilTag markers
 let aprilTags = [];   // surveyed AprilTag registry rows (fleet_status /api/apriltags)
@@ -530,6 +531,9 @@ const planTopic = new ROSLIB.Topic({
   ros, name: '/plan', messageType: 'nav_msgs/msg/Path', throttle_rate: 1000,
 });
 planTopic.subscribe((msg) => {
+  // /plan is never cleared by nav2 when a goal ends, and a final replan can land
+  // after the terminal /nav_state — ignore it unless a goal is live.
+  if (!navBusyNow) return;
   plan = msg.poses.map((ps) => ({ x: ps.pose.position.x, y: ps.pose.position.y }));
   // Redraw now: in localization mode /map is latched (no periodic republish) and
   // /amcl_pose is sparse, so without this the plan waits for the next pose update.
@@ -872,6 +876,8 @@ new ROSLIB.Topic({
   ros, name: '/nav_state', messageType: 'std_msgs/msg/String',
 }).subscribe((msg) => {
   const [state, dist, recov] = msg.data.split('|');
+  navBusyNow = NAV_BUSY_STATES.includes(state);
+  if (!navBusyNow && plan) { plan = null; drawMap(); }  // goal over: drop the stale path
   let text = state;
   if (dist) text += ' — ' + dist + ' m left';
   if (recov && recov !== '0') text += ' (' + recov + ' recoveries)';
