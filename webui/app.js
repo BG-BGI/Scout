@@ -1714,6 +1714,17 @@ const setPoseBtn = document.getElementById('set-pose');
 let poseMode = 0;      // 0 off, 1 awaiting position tap, 2 awaiting heading tap
 let posePin = null;    // {x, y} map frame, set by the first tap
 setPoseBtn.addEventListener('click', () => {
+  // /initialpose is consumed only by amcl (localization mode, ADR-0028). In
+  // continue/new mode slam_toolbox runs instead and has no such subscriber, so
+  // the pose would be published to nobody — say so instead of "succeeding".
+  const slamMode = activeSiteMeta && activeSiteMeta.slam_mode;
+  if (!poseMode && (slamMode === 'continue' || slamMode === 'new')) {
+    navState.textContent = 'Set pose needs localization mode (amcl) — current mode: '
+      + slamMode + ' (slam_toolbox self-localizes and ignores /initialpose). '
+      + 'Switch the site to localization first.';
+    return;
+  }
+  if (poiUi.active) poiExit();   // POI placement would otherwise swallow the taps
   poseMode = poseMode ? 0 : 1;
   posePin = null;
   setPoseBtn.textContent = poseMode ? 'Tap position…' : 'Set pose';
