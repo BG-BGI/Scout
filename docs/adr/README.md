@@ -40,3 +40,4 @@ forking a config no longer forks — and drifts — the reasoning).
 | 0031 | (retired — reverted BIM/OpenSpace integration) |
 | [0032](0032-uhf-rfid-pipeline.md) | UHF RFID (M7E Hecto) — batched pose-stamped reads, companion centroid localization |
 | [0038](0038-poi-registry-and-tag-family-naming.md) | POI registry + AprilTag/RFID/POI tag-family naming |
+| [0039](0039-rosbridge-handshake-gate.md) | rosbridge handshake gate: concurrent light calls, heavy fence, yielding tag watcher |

@@ -36,8 +36,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import bluetooth as btctl
 import gridstore
 import mapsafe
-import requests
 import poi as poidb
+import requests
 import tagpose
 from docker.errors import NotFound
 

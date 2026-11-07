@@ -31,11 +31,11 @@ from datetime import datetime, timezone
 import grid as structgrid
 import httpx
 import numpy as np
+import poi as poidb
 from detect import annotate, detect
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.utilities.types import Image
-from geometry import planar_yaw
 from motion import (
     CMD_VEL,
     MAX_MOVE_M,
@@ -45,12 +45,12 @@ from motion import (
     run_move,
     run_rotate,
 )
+from navpose import pose_from_tf, pose_of
 from render import render_map
 from robot_profile import load as _load_profile
-from rosbridge import ADVERTISE_SETTLE_S, RosBridge, RosBridgeError
+from rosbridge import ADVERTISE_SETTLE_S, RosBridge, RosBridgeBusy, RosBridgeError
 from tf import TfTree
 
-import poi as poidb
 import tags as tagdb
 
 TAG_WATCH_PERIOD_S = 2.0
@@ -91,50 +91,28 @@ NAV_STATUS = dict(enumerate(_load_profile()["goal_status_names"]))
 CMD_VEL_OUT = _load_profile()["topic_cmd_vel_out"]
 
 
-def _pose_of(msg: dict | None) -> dict | None:
-    """slam_toolbox /pose (PoseWithCovarianceStamped) → {x, y, yaw}."""
-    if msg is None:
-        return None
-    p = msg["pose"]["pose"]
-    q = p["orientation"]
-    return {
-        "x": round(p["position"]["x"], 3),
-        "y": round(p["position"]["y"], 3),
-        # Planar quaternion; same shortcut the webui uses.
-        "yaw": round(planar_yaw(q["z"], q["w"]), 3),
-    }
+_pose_of = pose_of  # kept under the old name for existing callers
+
+POSE_TYPE = "geometry_msgs/msg/PoseWithCovarianceStamped"
+TF_TYPE = "tf2_msgs/msg/TFMessage"
 
 
 async def _robot_pose(rb: RosBridge) -> dict | None:
-    """Map-frame pose. /pose first, but slam only publishes it per PROCESSED
-    scan — a stationary robot goes silent (keyframe gating). Fall back to
-    composing map→odom (slam, 50 Hz) ∘ odom→base_link (EKF, 30 Hz) from /tf,
-    which never stops."""
-    pose = _pose_of(
-        await rb.subscribe_once(
-            "/pose", "geometry_msgs/msg/PoseWithCovarianceStamped", timeout=1.5
+    """Map-frame pose. /pose is preferred, but slam only publishes it per
+    PROCESSED scan — a stationary robot goes silent (keyframe gating) — so
+    /pose and /tf are read in ONE shared window and the pose is composed from
+    map->odom (slam/amcl) o odom->base_link (EKF) when /pose stayed quiet.
+    (This used to wait 1.5 s for /pose and then 1.0 s more for /tf.)"""
+    got = await rb.collect_multi({"/pose": POSE_TYPE, "/tf": TF_TYPE}, duration=0.5)
+    pose = pose_of(got["/pose"][-1]) if got["/pose"] else None
+    if pose is None:
+        pose = pose_from_tf(got["/tf"])
+    if pose is None:
+        # cold start: tf not flowing yet — one longer look before giving up
+        pose = pose_from_tf(
+            (await rb.collect_multi({"/tf": TF_TYPE}, duration=1.0))["/tf"]
         )
-    )
-    if pose is not None:
-        return pose
-    tfs: dict[str, tuple] = {}
-    for m in await rb.subscribe_collect("/tf", "tf2_msgs/msg/TFMessage", duration=1.0):
-        for t in m["transforms"]:
-            tr, q = t["transform"]["translation"], t["transform"]["rotation"]
-            tfs[t["header"]["frame_id"]] = (
-                tr["x"], tr["y"], planar_yaw(q["z"], q["w"])
-            )
-        if {"map", "odom"} <= tfs.keys():
-            break
-    if not ({"map", "odom"} <= tfs.keys()):
-        return None
-    mx, my, myaw = tfs["map"]
-    ox, oy, oyaw = tfs["odom"]
-    return {
-        "x": round(mx + ox * math.cos(myaw) - oy * math.sin(myaw), 3),
-        "y": round(my + ox * math.sin(myaw) + oy * math.cos(myaw), 3),
-        "yaw": round(math.atan2(math.sin(myaw + oyaw), math.cos(myaw + oyaw)), 3),
-    }
+    return pose
 
 
 # Both bt_navigator actions; single-goal go_to rides the first, go_through/
@@ -146,18 +124,13 @@ FEEDBACK_TYPES = {
 }
 
 
-async def _nav_status(
-    rb: RosBridge, timeout: float = 2.5, action: str = "/navigate_to_pose"
-) -> dict | None:
-    """Latest GoalStatusArray entry for one nav action, or None if nothing
-    arrived in the window (idle, or no goal since nav2 start — the status
-    topic only re-publishes on transitions unless rosbridge matched its
-    transient_local durability)."""
-    msg = await rb.subscribe_once(
-        f"{action}/_action/status",
-        "action_msgs/msg/GoalStatusArray",
-        timeout=timeout,
-    )
+STATUS_TYPE = "action_msgs/msg/GoalStatusArray"
+
+
+def _parse_status(action: str, msg: dict | None) -> dict | None:
+    """Latest GoalStatusArray entry for one nav action -> status dict, or None
+    (nothing arrived: idle, or no goal since nav2 start — the status topic only
+    re-publishes on transitions unless rosbridge matched transient_local)."""
     if not msg or not msg["status_list"]:
         return None
     latest = msg["status_list"][-1]
@@ -168,6 +141,29 @@ async def _nav_status(
     }
 
 
+def _parse_feedback(action: str, msg: dict | None) -> dict | None:
+    """Drive telemetry from one nav action's feedback message, or None."""
+    if msg is None:
+        return None
+    fb = msg["feedback"]
+    out = {"action": action.lstrip("/")}
+    if fb.get("distance_remaining") is not None:
+        out["distance_remaining_m"] = round(fb["distance_remaining"], 2)
+    if fb.get("number_of_poses_remaining") is not None:
+        out["poses_remaining"] = fb["number_of_poses_remaining"]
+    return out
+
+
+async def _nav_status(
+    rb: RosBridge, timeout: float = 2.5, action: str = "/navigate_to_pose"
+) -> dict | None:
+    """Latest GoalStatusArray entry for one nav action (see _parse_status)."""
+    msg = await rb.subscribe_once(
+        f"{action}/_action/status", STATUS_TYPE, timeout=timeout
+    )
+    return _parse_status(action, msg)
+
+
 async def _nav_feedback(rb: RosBridge, window: float = 0.8) -> dict | None:
     """Live drive telemetry: whichever nav action is streaming feedback right
     now (they publish ~10 Hz only while a goal runs — presence IS liveness,
@@ -176,15 +172,9 @@ async def _nav_feedback(rb: RosBridge, window: float = 0.8) -> dict | None:
         msg = await rb.subscribe_once(
             f"{action}/_action/feedback", FEEDBACK_TYPES[action], timeout=window
         )
-        if msg is None:
-            continue
-        fb = msg["feedback"]
-        out = {"action": action.lstrip("/")}
-        if fb.get("distance_remaining") is not None:
-            out["distance_remaining_m"] = round(fb["distance_remaining"], 2)
-        if fb.get("number_of_poses_remaining") is not None:
-            out["poses_remaining"] = fb["number_of_poses_remaining"]
-        return out
+        out = _parse_feedback(action, msg)
+        if out is not None:
+            return out
     return None
 
 
@@ -195,7 +185,7 @@ async def get_map() -> list:
     black = wall/obstacle, gray = unexplored. Returns metadata first (map
     size, resolution, robot pose, and the pixel→world formula for picking
     go_to coordinates off the image), then the image."""
-    async with RosBridge() as rb:
+    async with RosBridge(heavy=True) as rb:
         # slam_toolbox publishes /map at 0.5 Hz; 6 s covers three periods.
         grid = await rb.subscribe_once(
             "/map", "nav_msgs/msg/OccupancyGrid", timeout=6.0
@@ -505,7 +495,7 @@ async def grid_auto(cell_ft: float = 30.0, align: str = "walls",
         raise ToolError(f"{os.path.basename(path)} exists but is unreadable; not overwriting")
     occ = None
     try:
-        async with RosBridge() as rb:
+        async with RosBridge(heavy=True) as rb:
             msg = await rb.subscribe_once("/map", "nav_msgs/msg/OccupancyGrid", timeout=6.0)
         if msg is not None:
             info = msg["info"]
@@ -913,16 +903,34 @@ async def nav_status() -> dict:
     since nav2 started. ⚠ 'aborted' does NOT mean stopped — already-dispatched
     recovery behaviors keep the robot moving after the abort; nav_cancel if it
     must stop."""
+    # One shared window for every topic (was six back-to-back windows, ~6.5 s
+    # idle). Feedback streams ~10 Hz while driving, so 0.6 s is ample to see it;
+    # status replays immediately when rosbridge matched transient_local, and
+    # /pose-or-/tf supplies the pose.
+    specs = {f"{a}/_action/feedback": FEEDBACK_TYPES[a] for a in NAV_ACTIONS}
+    specs |= {f"{a}/_action/status": STATUS_TYPE for a in NAV_ACTIONS}
+    specs |= {"/pose": POSE_TYPE, "/tf": TF_TYPE}
     async with RosBridge() as rb:
-        # Feedback first: it streams continuously while driving, so it is the
-        # honest liveness signal; the status topics only show transitions.
-        driving = await _nav_feedback(rb)
-        statuses = [
-            s
+        got = await rb.collect_multi(specs, duration=0.6)
+        robot = pose_of(got["/pose"][-1]) if got["/pose"] else None
+        if robot is None:
+            robot = pose_from_tf(got["/tf"])
+        if robot is None:
+            robot = await _robot_pose(rb)  # cold start: longer tf look
+    # Feedback first: it is the honest liveness signal; status shows transitions.
+    driving = next(
+        (
+            fb
             for a in NAV_ACTIONS
-            if (s := await _nav_status(rb, timeout=1.2, action=a)) is not None
-        ]
-        robot = await _robot_pose(rb)
+            if (fb := _parse_feedback(a, (got[f"{a}/_action/feedback"] or [None])[-1]))
+        ),
+        None,
+    )
+    statuses = [
+        s
+        for a in NAV_ACTIONS
+        if (s := _parse_status(a, (got[f"{a}/_action/status"] or [None])[-1]))
+    ]
     return {
         "nav": statuses or "no recent status traffic (idle, or no goal yet)",
         "driving": driving or False,
@@ -989,7 +997,7 @@ async def detect_objects(min_confidence: float = 0.35) -> list:
     visually. Detections come from the companion world model (boxes may lag
     the frame ~1 s — fine when stationary); Pi-local inference is the
     companion-down fallback and is reported in `notes.source`."""
-    async with RosBridge() as rb:
+    async with RosBridge(heavy=True) as rb:
         color = await rb.subscribe_once(
             COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=5.0
         )
@@ -1117,7 +1125,7 @@ async def camera_snapshot() -> Image:
     """Scout's current camera view (D455 color) as an image, unprocessed —
     for reading the scene directly: text, signage, layout, anything outside
     detect_objects' 80 COCO classes. Costs no YOLO inference."""
-    async with RosBridge() as rb:
+    async with RosBridge(heavy=True) as rb:
         color = await rb.subscribe_once(
             COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=5.0
         )
@@ -1530,13 +1538,14 @@ _tag_watch_last: dict = {"at": None, "seen": []}
 DETECTIONS_TOPIC = "/detections"
 
 
-async def _scan_tags(update_waypoints: bool = True):
+async def _scan_tags(update_waypoints: bool = True, background: bool = False):
     """apriltag_ros detections joined with the registry + TF geometry.
     Returns a result list, or None when /detections is silent (apriltag
     nodes or camera down). One node per FAMILY publishes here at 2 fps, so
     collect a window and merge — a single message is one family's view only.
-    Cheap: no image transfer."""
-    async with RosBridge() as rb:
+    Cheap: no image transfer. `background=True` (the watcher) yields instead
+    of competing: raises RosBridgeBusy while any tool call is in flight."""
+    async with RosBridge(background=background) as rb:
         msgs = await rb.subscribe_collect(
             DETECTIONS_TOPIC,
             "apriltag_msgs/msg/AprilTagDetectionArray",
@@ -1625,15 +1634,27 @@ async def _scan_tags(update_waypoints: bool = True):
                 }
             if update_waypoints and pose:
                 store = _load_waypoints()
-                store["waypoints"][entry["name"]] = pose | {
-                    "saved": datetime.now(timezone.utc).strftime(
-                        "%Y-%m-%d %H:%M UTC"
-                    ),
-                    "source": "tag",
-                }
-                if active:
-                    store["waypoints"][entry["name"]]["map"] = active
-                _store_waypoints(store)
+                prev = store["waypoints"].get(entry["name"])
+                # Only rewrite waypoints.json when the standoff actually
+                # changed: the watcher sees a registered tag every 2 s, and an
+                # identical rewrite is pure disk churn + a race with the webui.
+                unchanged = (
+                    prev is not None
+                    and prev.get("source") == "tag"
+                    and (prev.get("x"), prev.get("y"), prev.get("yaw"))
+                    == (pose["x"], pose["y"], pose["yaw"])
+                    and prev.get("map") == (active or None)
+                )
+                if not unchanged:
+                    store["waypoints"][entry["name"]] = pose | {
+                        "saved": datetime.now(timezone.utc).strftime(
+                            "%Y-%m-%d %H:%M UTC"
+                        ),
+                        "source": "tag",
+                    }
+                    if active:
+                        store["waypoints"][entry["name"]]["map"] = active
+                    _store_waypoints(store)
                 out["waypoint_refreshed"] = entry["name"]
         out["_box"] = [
             min(c["x"] for c in d["corners"]), min(c["y"] for c in d["corners"]),
@@ -1650,7 +1671,9 @@ async def _tag_watch_loop():
         if not _tag_watch_enabled:
             continue
         try:
-            results = await _scan_tags(update_waypoints=True)
+            results = await _scan_tags(update_waypoints=True, background=True)
+        except RosBridgeBusy:
+            continue  # a tool call is in flight — yield, retry next period
         except Exception:  # noqa: BLE001 — apriltag node/rosbridge hiccup; retry next period
             continue
         if results is not None:
@@ -1676,7 +1699,7 @@ async def detect_apriltags() -> list:
             f"nothing on {DETECTIONS_TOPIC} within 1.5 s — apriltag node or "
             "camera down (robot service up?)"
         )
-    async with RosBridge() as rb:
+    async with RosBridge(heavy=True) as rb:
         color = await rb.subscribe_once(
             COLOR_TOPIC, "sensor_msgs/msg/Image", timeout=4.0
         )
