@@ -32,6 +32,7 @@ import grid as structgrid
 import httpx
 import numpy as np
 import poi as poidb
+import scanmeasure as sm
 from detect import annotate, detect
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -1235,6 +1236,202 @@ async def world_query(
         "count": len(objs),
         "objects": objs,
     }
+
+
+SCAN_TOPIC = "/scan"
+SCAN_TYPE = "sensor_msgs/msg/LaserScan"
+ODOM_TOPIC = "/odom"
+ODOM_TYPE = "nav_msgs/msg/Odometry"
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def scan_measure(
+    targets: list[dict] | None = None,
+    pair: list[str] | None = None,
+    scans: int = 3,
+    search_radius_m: float = 0.8,
+    max_range_m: float = 6.0,
+    known_width_m: float | None = None,
+    require_stationary: bool = True,
+    include_points: bool = False,
+) -> dict:
+    """Measure real objects from the live lidar, on the robot, in ONE call —
+    use this instead of subscribe_once /scan (44 KB, truncated) plus hand-rolled
+    clustering. Robot must be parked. Captures `scans` /scan messages in one
+    window, projects each with the map->laser transform at THAT scan's stamp,
+    segments returns into clusters, and matches each target to the nearest
+    cluster within search_radius_m of its hint.
+    targets: [{"name": "steel-support-3"}, {"name": "x", "x": -0.64, "y": 2.63}]
+    — a bare name resolves to that POI's map x/y, used ONLY as a search hint,
+    never as the answer; no cluster nearby => found:false (never back-filled).
+    pair: two target names -> face-to-face and centroid-to-centroid distance
+    per scan with mean/spread; known_width_m (e.g. 0.30) adds the estimated
+    centre-to-centre (face-to-face + width). 2D scan, one height, face-only:
+    a field-verification aid, not a survey. Returns a few KB. include_points
+    adds each matched cluster's map-frame points."""
+    if not 1 <= scans <= 10:
+        raise ToolError("scans must be 1-10")
+    hints: dict[str, tuple[float, float]] = {}
+    for t in targets or []:
+        name = t.get("name")
+        if not name:
+            raise ToolError("each target needs a name")
+        if "x" in t and "y" in t:
+            hints[name] = (float(t["x"]), float(t["y"]))
+        else:
+            hints[name] = _poi_hint(name)
+    if pair:
+        if len(pair) != 2:
+            raise ToolError("pair must be exactly two target names")
+        for name in pair:
+            if name not in hints:
+                hints[name] = _poi_hint(name)
+    if not hints:
+        raise ToolError("give targets and/or pair")
+
+    window = 1.0 + scans / 8.0
+    async with RosBridge(heavy=True) as rb:
+        got = await rb.collect_multi(
+            {
+                SCAN_TOPIC: SCAN_TYPE,
+                "/tf": TF_TYPE,
+                "/tf_static": TF_TYPE,
+                ODOM_TOPIC: ODOM_TYPE,
+            },
+            duration=window,
+        )
+    scan_msgs = got[SCAN_TOPIC][-scans:]
+    if not scan_msgs:
+        raise ToolError(f"no {SCAN_TOPIC} traffic in {window:.1f} s — lidar down?")
+    tfs = sm.index_tf(got["/tf_static"] + got["/tf"])
+
+    flags: list[str] = []
+    per_scan = []  # [(laser_pose, {name: segment|None}, dt)]
+    fallback = False
+    for msg in scan_msgs:
+        t = sm.stamp_s(msg["header"])
+        res = sm.map_laser_at(tfs, t, msg["header"].get("frame_id", "laser"))
+        if res is None:
+            raise ToolError("no map->odom->base_link TF — localization not up")
+        pose, dt, fb = res
+        fallback |= fb
+        pts = sm.scan_points(msg, pose, max_range_m)
+        segs = sm.segment(pts)
+        per_scan.append(
+            (pose, {n: sm.match(segs, h, search_radius_m) for n, h in hints.items()}, dt, msg)
+        )
+    if fallback:
+        flags.append("base_link->laser from URDF constants (/tf_static not replayed)")
+    if max(dt for _, _, dt, _ in per_scan) > sm.STALE_TF_S:
+        flags.append(f"TF older than {sm.STALE_TF_S} s relative to a scan stamp")
+
+    poses = [p for p, _, _, _ in per_scan]
+    drift = max(
+        math.hypot(p[0] - poses[0][0], p[1] - poses[0][1]) for p in poses
+    )
+    odom = got[ODOM_TOPIC]
+    v = max(
+        (
+            max(
+                abs(o["twist"]["twist"]["linear"]["x"]),
+                abs(o["twist"]["twist"]["angular"]["z"]),
+            )
+            for o in odom
+        ),
+        default=None,
+    )
+    stationary = drift <= sm.STATIONARY_DRIFT_M and (v is None or v <= sm.STATIONARY_V)
+    if v is None:
+        flags.append("no /odom traffic: stationary judged from TF drift only")
+    if not stationary:
+        msg = (
+            f"robot moving (laser drift {drift * 100:.1f} cm, "
+            f"max twist {v if v is not None else 'n/a'})"
+        )
+        if require_stationary:
+            raise ToolError(msg + " — park it and retry, or require_stationary=False")
+        flags.append(msg)
+
+    last_pose, last_matches, _, last_msg = per_scan[-1]
+    out_targets = []
+    for name in hints:
+        segs = [m[name] for _, m, _, _ in per_scan]
+        found = [s for s in segs if s is not None]
+        if len(found) < len(segs):
+            flags.append(f"{name}: found in {len(found)}/{len(segs)} scans")
+        if not found:
+            out_targets.append({"name": name, "found": False, "hint": list(hints[name])})
+            continue
+        last = last_matches[name] or found[-1]
+        info = sm.characterize(
+            last,
+            da=last_msg["angle_increment"],
+            a0=last_msg["angle_min"],
+            laser_yaw_in_base=(sm.LASER_FALLBACK[2]),
+        )
+        if info["chord_width_m"] > sm.WIDE_CLUSTER_M:
+            flags.append(f"{name}: cluster {info['chord_width_m']} m wide (merged with wall?)")
+        out_targets.append({"name": name, "found": True} | info)
+        if include_points:
+            out_targets[-1]["points_xy"] = [[round(p[1], 3), round(p[2], 3)] for p in last]
+
+    result = {
+        "ok": True,
+        "map": tagdb.active_map_name(),
+        "robot_pose": {
+            "x": round(last_pose[0], 3),
+            "y": round(last_pose[1], 3),
+            "yaw": round(last_pose[2], 3),
+            "source": "tf@scan_stamp (laser frame)",
+        },
+        "scans_used": len(scan_msgs),
+        "stationary": stationary,
+        "targets": out_targets,
+    }
+    if pair:
+        a, b = pair
+        both = [m for _, m, _, _ in per_scan if m[a] and m[b]]
+        if both:
+            f2f = [sm.face_to_face(m[a], m[b]) for m in both]
+            c2c = [sm.centroid_dist(m[a], m[b]) for m in both]
+            pr = {
+                "a": a,
+                "b": b,
+                "scans_with_both": len(both),
+                "face_to_face_m": sm.stats(f2f),
+                "centroid_to_centroid_m": sm.stats(c2c),
+                "ft_in": {"face_to_face": sm.ft_in(sum(f2f) / len(f2f))},
+            }
+            if known_width_m is not None:
+                est = [f + known_width_m for f in f2f]
+                pr["est_centre_to_centre_m"] = sm.stats(est) | {
+                    "assumed_width_m": known_width_m
+                }
+                pr["ft_in"]["est_centre_to_centre"] = sm.ft_in(sum(est) / len(est))
+            if pr["face_to_face_m"]["spread"] > sm.SPREAD_FLAG_M:
+                flags.append(
+                    f"face-to-face spread {pr['face_to_face_m']['spread'] * 100:.1f} cm "
+                    f"> {sm.SPREAD_FLAG_M * 100:.0f} cm"
+                )
+            result["pair"] = pr
+        else:
+            result["pair"] = {"a": a, "b": b, "error": "both targets not found in any one scan"}
+            flags.append("pair: no scan contained both targets")
+    result["flags"] = flags
+    result["assumptions"] = [
+        "2D scan at a single height; face-only visibility",
+        "centre estimate = face-to-face + known_width_m (if given)",
+        "POIs are search hints only, never the measured position",
+    ]
+    return result
+
+
+def _poi_hint(name: str) -> tuple[float, float]:
+    poi = poidb.get(name)
+    if poi is None:
+        have = [r["name"] for r in poidb.all_pois()]
+        raise ToolError(f"no POI named {name!r} — have: {have or 'none'}; or pass x/y")
+    return (poi["map_x"], poi["map_y"])
 
 
 # --- RFID (Flipper Zero, ADR-0025) --------------------------------------------
