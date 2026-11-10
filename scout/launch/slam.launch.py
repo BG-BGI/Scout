@@ -27,7 +27,7 @@ from launch_ros.actions import Node
 
 from launch import LaunchDescription
 from scout.core import mapsafety, sites
-from scout.robot_profile import merged_params
+from scout.robot_profile import merged_params, merged_params_for_source
 
 # Serialized pose graphs live in the active site's bundle in the repo, which is
 # bind-mounted at /ros_ws/src, so they land on the host where they can be inspected
@@ -103,6 +103,7 @@ def _launch_setup(context, *args, **kwargs):
 
     from_site = mode == 'site'
     site_slam_mode = None
+    source = 'scan'
     if mode == 'site':
         # Resolve the active site's policy to one of the three real modes below.
         # Only computes (mode, map, pose) — the executable table stays the switch.
@@ -116,6 +117,7 @@ def _launch_setup(context, *args, **kwargs):
         try:
             site = sites.load_site(os.path.join(SITES_ROOT, active))
             site_slam_mode = site['slam_mode']
+            source = sites.active_map_source(site)
             mode, map_name, start_pose = sites.resolve_slam(site, MAPS_DIR)
         except (OSError, ValueError) as e:
             raise RuntimeError(f"Bad site '{active}': {e}") from e
@@ -132,7 +134,7 @@ def _launch_setup(context, *args, **kwargs):
             )
 
     if mode == 'localization':
-        return _localization_nodes(map_name, start_pose, profile)
+        return _localization_nodes(map_name, start_pose, profile, source)
 
     # Crash-loop guard + autosave recovery (mapsafety). An explicit operator
     # `mode:=new` never adopts an autosave; site-resolved modes and `continue` do.
@@ -186,14 +188,20 @@ def _launch_setup(context, *args, **kwargs):
     ]
 
 
-def _localization_nodes(map_name, start_pose, profile):
+def _localization_nodes(map_name, start_pose, profile, source):
     """amcl + map_server + lifecycle manager on the saved grid map (ADR-0028).
 
     Together these own exactly what localization_slam_toolbox_node owned: /map
     (map_server, latched) and map->odom (amcl). tag_relocalizer's /initialpose
     seed is consumed by amcl natively; initial_pose.* below is only the
-    pre-seed guess from the site policy."""
-    config = merged_params('amcl.yaml', profile)
+    pre-seed guess from the site policy.
+
+    amcl params compose base <- SCOUT_PROFILE overlay <- map-source overlay
+    (a drawing map gets the clutter-tolerant profile). A scan map resolves to
+    exactly the file it always did."""
+    config = merged_params_for_source('amcl.yaml', profile, source)
+    print(f'[slam.launch] amcl params: base <- profile {profile!r} <- source '
+          f'{source!r} -> {config}', flush=True)
     map_yaml = _grid_map_yaml(map_name)
     return [
         Node(

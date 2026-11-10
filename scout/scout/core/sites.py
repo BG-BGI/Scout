@@ -97,6 +97,34 @@ def _norm_map_entry(name, entry):
     return m
 
 
+def entry_source(entry):
+    """'scan' | 'drawing' for one map entry, raw or normalized. Anything else —
+    missing key, unknown value, non-dict entry — reads as scan (same rule as
+    _norm_map_entry)."""
+    if isinstance(entry, dict) and entry.get('source') in SOURCES:
+        return entry['source']
+    return _MAP_DEFAULTS['source']
+
+
+def map_source(maps, name):
+    """Source of the named map in a `maps` mapping; scan when absent."""
+    entry = maps.get(name) if isinstance(maps, dict) else None
+    return entry_source(entry)
+
+
+def active_map_source(site):
+    """Source of a loaded site's active map: 'drawing' or 'scan'. Scan for v1
+    sites (their one map normalizes to scan) and when no map is active."""
+    return map_source(site.get('maps'), site.get('active_map'))
+
+
+def sources_differ(maps, current, target):
+    """True when switching `current` -> `target` crosses a map source (scan <->
+    drawing). That needs a slam restart: amcl's parameters are fixed at launch,
+    so a live LoadMap would leave a drawing map under scan params or vice versa."""
+    return map_source(maps, current) != map_source(maps, target)
+
+
 def load_site(site_dir):
     """Read site.json merged over defaults, normalizing v1 -> v2 in memory.
     Raises on unreadable/invalid JSON; a missing file raises FileNotFoundError

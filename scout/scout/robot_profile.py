@@ -139,6 +139,25 @@ def merged_params_chain(basename: str, overlays: list) -> str:
         base, [os.path.join(d, basename) for d in layers], tag, basename)
 
 
+def merged_params_for_source(basename: str, profile: str, source: str) -> str:
+    """Params-file path for `basename` under operator `profile` AND the active
+    map's `source` ('scan' | 'drawing'): base <- profile overlay <- source
+    overlay, source winning on shared keys. A source with no overlay for this
+    file (scan, today) takes the plain merged_params() path, so scan maps
+    resolve to exactly the file the launch produced before sources existed.
+    Raises on a source outside sites.SOURCES — a typo must fail loudly, not
+    silently behave as scan — and on an unknown profile."""
+    from scout.core import sites
+    if source not in sites.SOURCES:
+        raise RuntimeError('unknown map source %r (known: %s)'
+                           % (source, ', '.join(sites.SOURCES)))
+    source_dir = source_overlay_dir(source)
+    if not os.path.isfile(os.path.join(source_dir, basename)):
+        return merged_params(basename, profile)
+    return merged_params_chain(
+        basename, [profile_overlay_dir(profile), source_dir])
+
+
 def _write_merged(base: str, overlay_paths: list, tag: str, basename: str) -> str:
     with open(base) as f:
         merged = yaml.safe_load(f) or {}

@@ -2942,12 +2942,15 @@ async function activateMap(name) {
   if (siteNavBusy) { alert('Navigation goal active — cancel it before switching maps.'); return; }
   if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before switching maps.'); return; }
   const entry = (activeSiteMeta.maps || {})[name] || {};
-  const mode = activeSiteMeta.slam_mode || 'auto';
-  if (mode === 'localization') {
-    if (!entry.grid) {
-      alert(`"${name}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session first.`);
-      return;
-    }
+  // Branch on what slam is actually running as (resolved_mode: `auto` resolves to
+  // localization for a drawing map), and never live-swap across map sources —
+  // amcl's params are fixed at launch (mapswitch.js).
+  const plan = MapSwitch.activationPlan(activeSiteMeta, name);
+  if (plan.needsGrid && !entry.grid) {
+    alert(`"${name}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session (or re-import the drawing) first.`);
+    return;
+  }
+  if (plan.live) {
     if (!confirm(`Switch to map "${name}" live? The grid swaps in ~1 s and the pose is seeded at the map's start pose — show the robot a registered tag to refine.`)) return;
     siteResult.textContent = `loading map "${name}"…`;
     loadMapSrv.callService(
@@ -2980,7 +2983,10 @@ async function activateMap(name) {
     );
     return;
   }
-  if (!confirm(`Switch to map "${name}"? slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
+  const crossNote = plan.crossSource
+    ? ` "${name}" is a ${plan.targetSource} map and the live map is ${plan.currentSource}, so amcl is reconfigured.`
+    : '';
+  if (!confirm(`Switch to map "${name}"?${crossNote} slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
   siteResult.textContent = `switching to map "${name}"…`;
   try {
     await postActiveMap(name);
@@ -2993,6 +2999,48 @@ async function activateMap(name) {
   }
   setTimeout(refreshSites, 5000);
   setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
+  await reseedAfterRestart(name);
+}
+
+// How long to wait for the restarted amcl to publish before telling the operator
+// to set the pose by hand.
+const AMCL_WAIT_MS = 90000;
+
+function waitForAmclPose(timeoutMs) {
+  return new Promise((resolve) => {
+    const topic = new ROSLIB.Topic({
+      ros, name: '/amcl_pose', messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+      throttle_rate: 1000,
+    });
+    let timer = null;
+    const done = (ok) => { clearTimeout(timer); topic.unsubscribe(); resolve(ok); };
+    timer = setTimeout(() => done(false), timeoutMs);
+    topic.subscribe(() => done(true));
+  });
+}
+
+// After a slam restart that leaves amcl running (e.g. scan -> drawing): the
+// tag relocalizer lives in the robot container and did not restart, so its
+// "already seeded" flag still describes the OLD map. Once the new amcl is
+// publishing, re-arm it so the next registered-tag sighting seeds /initialpose.
+// The restarted amcl itself starts at the map's start pose (launch initial_pose).
+async function reseedAfterRestart(name) {
+  await refreshSites();
+  if (!MapSwitch.needsReseed(activeSiteMeta, name)) return;
+  siteResult.textContent = `map "${name}" — slam + behaviors restarting; waiting for amcl…`;
+  if (!(await waitForAmclPose(AMCL_WAIT_MS))) {
+    siteResult.textContent = `map "${name}" — no /amcl_pose after ${AMCL_WAIT_MS / 1000} s. Set pose after restart: use Set pose, or show the robot a registered tag.`;
+    return;
+  }
+  reseedSrv.callService(
+    new ROSLIB.ServiceRequest({}),
+    () => {
+      siteResult.textContent = `now on map "${name}" — amcl is up at its start pose and the tag relocalizer is re-armed. Set pose, or show a registered tag, to refine.`;
+    },
+    (err) => {
+      siteResult.textContent = `now on map "${name}" — amcl is up but the tag relocalizer re-arm failed (${err}). Set pose after restart.`;
+    },
+  );
 }
 
 // --- slam mode selector -------------------------------------------------------------

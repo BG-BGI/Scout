@@ -271,3 +271,75 @@ def test_hand_built_entry_without_source_resolves_as_scan(tmp_path):
     site = {'active_map': 'office', 'slam_mode': 'auto', 'maps': {
         'office': {'map_start_pose': [0.0, 0.0, 0.0]}}}
     assert sites.resolve_slam(site, str(tmp_path))[0] == 'new'
+
+
+# --- active map source / cross-source detection ----------------------------------
+
+def _two_source_site(tmp_path, active):
+    return sites.load_site(_write_site(
+        tmp_path, version=2, active_map=active, slam_mode='auto',
+        maps={'plan': {'source': 'drawing'}, 'scanned': {}, 'other_plan':
+              {'source': 'drawing'}}))
+
+
+def test_active_map_source_drawing(tmp_path):
+    assert sites.active_map_source(_two_source_site(tmp_path, 'plan')) == 'drawing'
+
+
+def test_active_map_source_scan_ignores_other_drawing_maps(tmp_path):
+    assert sites.active_map_source(_two_source_site(tmp_path, 'scanned')) == 'scan'
+
+
+def test_active_map_source_v1_site_is_scan(tmp_path):
+    site = sites.load_site(_write_site(
+        tmp_path, version=1, default_map='office', map_start_pose=[1, 2, 0]))
+    assert sites.active_map_source(site) == 'scan'
+
+
+def test_active_map_source_no_active_map_is_scan(tmp_path):
+    site = sites.load_site(_write_site(
+        tmp_path, version=2, maps={'plan': {'source': 'drawing'}}))
+    assert site['active_map'] is None
+    assert sites.active_map_source(site) == 'scan'
+
+
+def test_active_map_source_unknown_value_is_scan(tmp_path):
+    site = sites.load_site(_write_site(
+        tmp_path, version=2, active_map='plan',
+        maps={'plan': {'source': 'bim'}}))
+    assert sites.active_map_source(site) == 'scan'
+
+
+@pytest.mark.parametrize('site', [
+    {}, {'maps': None}, {'maps': []}, {'active_map': 'x'},
+    {'active_map': 'x', 'maps': {'x': None}},
+    {'active_map': 'x', 'maps': {'x': 'drawing'}},
+    {'active_map': 'x', 'maps': {'x': {'source': ['drawing']}}},
+    {'active_map': 'x', 'maps': {'x': {}}},
+])
+def test_active_map_source_tolerates_hand_built_sites(site):
+    assert sites.active_map_source(site) == 'scan'
+
+
+def test_active_map_source_reads_raw_entries(tmp_path):
+    raw = {'active_map': 'plan', 'maps': {'plan': {'source': 'drawing'}}}
+    assert sites.active_map_source(raw) == 'drawing'
+
+
+@pytest.mark.parametrize('current,target,expect', [
+    ('scanned', 'plan', True),
+    ('plan', 'scanned', True),
+    ('plan', 'other_plan', False),
+    ('scanned', 'scanned', False),
+    ('scanned', 'ghost', False),
+    ('ghost', 'plan', True),
+    (None, 'plan', True),
+    (None, 'scanned', False),
+])
+def test_sources_differ(tmp_path, current, target, expect):
+    site = _two_source_site(tmp_path, 'scanned')
+    assert sites.sources_differ(site['maps'], current, target) is expect
+
+
+def test_sources_differ_tolerates_missing_maps():
+    assert sites.sources_differ(None, 'a', 'b') is False
