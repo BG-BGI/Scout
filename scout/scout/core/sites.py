@@ -54,6 +54,13 @@ MAP_NAME_RE = SITE_NAME_RE
 SLAM_MODES = ('auto', 'new', 'localization', 'continue')
 SOURCES = ('scan', 'drawing')
 
+# What a parsed-but-hostile site.json can make site_from_data / effective_mode
+# raise: ValueError (our validation), TypeError (unhashable active_map, non-str
+# names or maps_dir reaching os.path), KeyError / AttributeError (belt and braces
+# for entries that are not mappings), OSError (map_source_in_active_site's read).
+# Enumerated on purpose, not `Exception`.
+_SITE_FAILURES = (ValueError, TypeError, KeyError, AttributeError, OSError)
+
 _DEFAULTS = {
     'version': VERSION,
     'display_name': '',
@@ -107,9 +114,12 @@ def entry_source(entry):
 
 
 def map_source(maps, name):
-    """Source of the named map in a `maps` mapping; scan when absent."""
-    entry = maps.get(name) if isinstance(maps, dict) else None
-    return entry_source(entry)
+    """Source of the named map in a `maps` mapping; scan when absent, and for
+    anything that is not a (mapping, str name) pair — `name` comes from parsed
+    JSON in some callers, and an unhashable one must not raise."""
+    if not isinstance(maps, dict) or not isinstance(name, str):
+        return _MAP_DEFAULTS['source']
+    return entry_source(maps.get(name))
 
 
 def active_map_source(site):
@@ -135,7 +145,7 @@ def map_source_in_active_site(sites_root, map_name):
         return _MAP_DEFAULTS['source']
     try:
         site = load_site(os.path.join(sites_root, name))
-    except (OSError, ValueError):
+    except _SITE_FAILURES:
         return _MAP_DEFAULTS['source']
     return map_source(site['maps'], map_name)
 
@@ -205,13 +215,20 @@ def effective_mode(site, maps_dir):
 
 
 def effective_mode_from_data(data, maps_dir):
-    """effective_mode for a raw parsed site.json dict. A site that does not
-    normalize (bad slam_mode, dangling active_map) yields its raw slam_mode, so
-    a gate keeps the behaviour it had before `auto` could mean localization."""
+    """effective_mode for a raw parsed site.json. Never raises, whatever JSON
+    shape or maps_dir it is handed (it runs in a node's per-frame callback,
+    where an escaping exception kills the node): data that is not a dict gives
+    None; a site that does not normalize or resolve (bad slam_mode, dangling or
+    unhashable active_map, non-str map names, a maps_dir that is not a path)
+    yields its raw slam_mode when that is a str, else None — so a gate keeps the
+    behaviour it had before `auto` could mean localization."""
+    if not isinstance(data, dict):
+        return None
     try:
         return effective_mode(site_from_data(data), maps_dir)
-    except ValueError:
-        return data.get('slam_mode')
+    except _SITE_FAILURES:
+        raw = data.get('slam_mode')
+        return raw if isinstance(raw, str) else None
 
 
 def resolve_slam(site, maps_dir):

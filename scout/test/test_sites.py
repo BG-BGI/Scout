@@ -476,3 +476,107 @@ def test_explicit_map_source_invalid_site_is_scan(tmp_path):
 def test_explicit_map_source_v1_site_is_scan(tmp_path):
     root = _active_site_root(tmp_path, version=1, default_map='office')
     assert sites.map_source_in_active_site(root, 'office') == 'scan'
+
+
+# --- hostile (parsed-but-malformed) site.json must never raise out of the gates ------
+# effective_mode_from_data runs in tag_relocalizer's per-frame callback and
+# map_source_in_active_site in a launch's explicit-map path; site_from_data /
+# load_site / resolve_slam are deliberately NOT softened (launch fails loudly).
+
+def _hostile_cases():
+    pin = {'slam_mode': 'localization'}
+    return [
+        ('active list', {'active_map': ['a'], 'maps': {'a': {}}}, None),
+        ('active list pinned', {**pin, 'active_map': ['a'], 'maps': {'a': {}}},
+         'localization'),
+        ('active dict', {'active_map': {'a': 1}, 'maps': {'a': {}}}, None),
+        ('active dict pinned', {'slam_mode': 'continue', 'active_map': {'a': 1},
+                                'maps': {'a': {}}}, 'continue'),
+        ('active int', {'active_map': 5, 'maps': {'a': {}}}, None),
+        ('active int pinned', {**pin, 'active_map': 5, 'maps': {'a': {}}},
+         'localization'),
+        ('maps list', {'active_map': 'a', 'maps': ['a']}, 'new'),
+        ('maps str', {'active_map': 'a', 'maps': 'a'}, 'new'),
+        ('entry str', {'active_map': 'a', 'maps': {'a': 'x'}}, 'new'),
+        ('entry list', {'active_map': 'a', 'maps': {'a': []}}, 'new'),
+        ('entry null', {'active_map': 'a', 'maps': {'a': None}}, 'new'),
+        ('entry int', {'active_map': 'a', 'maps': {'a': 3}}, 'new'),
+        ('source list', {'active_map': 'a', 'maps': {'a': {'source': ['drawing']}}},
+         'new'),
+        ('start pose junk',
+         {'active_map': 'a', 'maps': {'a': {'map_start_pose': 'x'}}}, 'new'),
+        ('mode list', {'slam_mode': ['auto']}, None),
+        ('mode dict', {'slam_mode': {'a': 1}}, None),
+        ('mode int', {'slam_mode': 3}, None),
+        ('mode null', {'slam_mode': None}, 'new'),
+        ('mode unknown str', {'slam_mode': 'bogus'}, 'bogus'),
+        ('default_map list', {'default_map': ['x']}, None),
+        ('default_map dict', {'default_map': {'a': 1}}, None),
+        ('default_map int', {'default_map': 7}, None),
+        ('default_map list pinned', {**pin, 'default_map': ['x']}, 'localization'),
+        ('name slash', {'active_map': '../x', 'maps': {'../x': {'source': 'drawing'}}},
+         'new'),
+        ('name NUL', {'active_map': 'a\x00b', 'maps': {'a\x00b': {'source': 'drawing'}}},
+         'new'),
+        ('name empty', {'active_map': '', 'maps': {'': {}}}, 'new'),
+        ('name huge', {'active_map': 'a' * 5000,
+                       'maps': {'a' * 5000: {'source': 'drawing'}}}, 'new'),
+        ('non-str key in maps', {'active_map': 'a', 'maps': {'a': {}, 1: {}}}, 'new'),
+        ('empty dict', {}, 'new'),
+        ('data list', [], None), ('data str', 'x', None), ('data int', 3, None),
+        ('data null', None, None), ('data float', 1.5, None), ('data bool', True, None),
+    ]
+
+
+HOSTILE = _hostile_cases()
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+def test_effective_mode_from_data_never_raises_on_hostile_json(
+        tmp_path, label, data, want):
+    assert sites.effective_mode_from_data(data, str(tmp_path)) == want
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+@pytest.mark.parametrize('bad_dir', [None, 5, b'x', ['x'], {}])
+def test_effective_mode_from_data_never_raises_on_a_bad_maps_dir(
+        label, data, want, bad_dir):
+    got = sites.effective_mode_from_data(data, bad_dir)
+    assert got is None or isinstance(got, str)
+
+
+def test_effective_mode_from_data_pinned_modes_need_no_maps_dir():
+    data = {'slam_mode': 'localization', 'active_map': 'a', 'maps': {'a': {}}}
+    assert sites.effective_mode_from_data(data, None) == 'localization'
+
+
+def test_effective_mode_from_data_auto_with_a_bad_maps_dir_is_raw_auto():
+    data = {'slam_mode': 'auto', 'active_map': 'a', 'maps': {'a': {}}}
+    assert sites.effective_mode_from_data(data, None) == 'auto'
+
+
+def test_strict_normalization_still_raises_for_launch():
+    # the softening is only in effective_mode_from_data
+    with pytest.raises(TypeError):
+        sites.site_from_data({'active_map': ['a'], 'maps': {'a': {}}})
+    with pytest.raises(ValueError):
+        sites.site_from_data({'slam_mode': 'bogus'})
+    with pytest.raises(ValueError):
+        sites.resolve_slam(
+            sites.site_from_data({'slam_mode': 'continue'}), '/nonexistent')
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+@pytest.mark.parametrize('map_name', ['a', 'plan', '', '../x'])
+def test_map_source_in_active_site_never_raises_on_hostile_json(
+        tmp_path, label, data, want, map_name):
+    (tmp_path / 'office').mkdir()
+    os.symlink('office', tmp_path / 'active')
+    (tmp_path / 'office' / 'site.json').write_text(json.dumps(data))
+    assert sites.map_source_in_active_site(str(tmp_path), map_name) in sites.SOURCES
+
+
+@pytest.mark.parametrize('name', [None, 5, ['x'], {'a': 1}, b'a'])
+def test_map_source_tolerates_a_non_str_name(name):
+    assert sites.map_source({'a': {'source': 'drawing'}}, name) == 'scan'
+    assert sites.sources_differ({'a': {'source': 'drawing'}}, name, 'a') is True

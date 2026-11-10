@@ -11,6 +11,7 @@ import pathlib
 import types
 
 import pytest
+from test_sites import HOSTILE
 
 from scout.core import sites
 
@@ -62,7 +63,8 @@ class _Self:
         self._nav_busy = False
         params = {'min_transit_sightings': 3, 'transit_cooldown_s': 30.0,
                   'maps_dir': str(maps_dir), 'site_json': str(maps_dir / 'site.json')}
-        self.get_parameter = lambda n: types.SimpleNamespace(value=params[n])
+        self.params = params
+        self.get_parameter = lambda n: types.SimpleNamespace(value=self.params[n])
         self._load_map_cli = types.SimpleNamespace(
             service_is_ready=lambda: ready, call_async=self._call_async)
         self._on_map_loaded = lambda *a: None
@@ -194,13 +196,18 @@ def _site_json(active, slam_mode, **sources):
             'maps': {n: {'source': src} for n, src in sources.items()}}
 
 
-def _transit(tmp_path, site, home, *, grids=(), sightings=3):
+_KEEP = object()
+
+
+def _transit(tmp_path, site, home, *, grids=(), sightings=3, maps_dir=_KEEP):
     """The real _read_site feeding the real _track_transit, against the
     ROS-boundary fake: the composition the node runs per detection frame."""
     for g in grids:
         (tmp_path / (g + '.yaml')).write_text('x')
     (tmp_path / 'site.json').write_text(json.dumps(site))
     node = _Self(tmp_path)
+    if maps_dir is not _KEEP:
+        node.params['maps_dir'] = maps_dir
     active, slam_mode, maps, mode = _method(
         '_read_site', json=json, sites=sites)(node)
     fake_loadmap = types.SimpleNamespace(
@@ -286,3 +293,58 @@ def test_unnormalizable_site_keeps_the_raw_mode_gate(tmp_path):
     site = _site_json('ghost', 'localization', other_scan='scan', third='scan')
     node = _transit(tmp_path, site, 'other_scan', grids=('other_scan',))
     assert node.load_requests == [str(tmp_path / 'other_scan.yaml')]
+
+
+# --- a malformed-but-valid-JSON site.json must never escape the detection callback --
+
+def _hostile_read(tmp_path, data, maps_dir=_KEEP):
+    (tmp_path / 'site.json').write_text(json.dumps(data))
+    node = _Self(tmp_path)
+    if maps_dir is not _KEEP:
+        node.params['maps_dir'] = maps_dir
+    return _method('_read_site', json=json, sites=sites)(node)
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+def test_read_site_never_raises_on_hostile_json(tmp_path, label, data, want):
+    active, slam_mode, maps, mode = _hostile_read(tmp_path, data)
+    assert isinstance(maps, dict)
+    assert mode == (want if isinstance(data, dict) else None)
+    if not isinstance(data, dict):
+        assert (active, slam_mode, maps) == (None, None, {})
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+@pytest.mark.parametrize('bad_dir', [None, 5, ['x']])
+def test_read_site_never_raises_on_a_bad_maps_dir_param(
+        tmp_path, label, data, want, bad_dir):
+    mode = _hostile_read(tmp_path, data, maps_dir=bad_dir)[3]
+    assert mode is None or isinstance(mode, str)
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+def test_transit_never_raises_and_only_a_localization_gate_reaches_loadmap(
+        tmp_path, label, data, want):
+    node = _transit(tmp_path, data, 'other', grids=('other',))
+    assert bool(node.load_requests) == (want == 'localization')
+
+
+@pytest.mark.parametrize('label,data,want', HOSTILE, ids=[c[0] for c in HOSTILE])
+@pytest.mark.parametrize('bad_dir', [None, 5])
+def test_transit_survives_a_bad_maps_dir_too(tmp_path, label, data, want, bad_dir):
+    node = _Self(tmp_path)
+    node.params['maps_dir'] = bad_dir
+    (tmp_path / 'site.json').write_text(json.dumps(data))
+    active, slam_mode, maps, mode = _method(
+        '_read_site', json=json, sites=sites)(node)
+    track = _method('_track_transit', sites=sites, os=__import__('os'),
+                    time=types.SimpleNamespace(monotonic=lambda: NOW),
+                    LoadMap=None)
+    if mode == 'localization':
+        # pinned localization with a bad maps_dir param: the node's own
+        # yaml_path join is a pre-existing misconfiguration, not a data shape
+        return
+    for _ in range(3):
+        track(node, 'other', 1.0, 'tag7', 0.0, 'pose', slam_mode=slam_mode,
+              active_map=active, maps=maps, mode=mode)
+    assert node.load_requests == []
