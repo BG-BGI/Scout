@@ -180,9 +180,9 @@ the mission needs 3D capture. Do not run RTAB-Map on the Pi.**
 Decisions and limits: ADR-0040. **Nothing in this section has run on the robot
 yet** — steps are written from the merged code; the first on-robot pass will
 correct them. A drawing map is an ordinary amcl grid map (`<name>.yaml` +
-`.pgm`, no posegraph) whose `site.json` entry has `source: drawing`. The
-importer that produces the pair from a PDF/IFC is not merged yet (see the stub
-at the end), so today you install a pair you made yourself.
+`.pgm`, no posegraph) whose `site.json` entry has `source: drawing`. The usual
+way in is the web import wizard (6.7: PDF or IFC → importer → installed map);
+6.1 is the API underneath it and the way to install a pair you made yourself.
 
 ### 6.1 Install a drawing grid via the API
 
@@ -254,8 +254,20 @@ live, use the webui **Set pose** (tap the position, then the heading →
 `/initialpose`),
 or show the robot a surveyed AprilTag (6.5). Then **look at the scan against the
 map** before sending a goal — a tight numeric correction does not prove the
-pose. (The scan-over-drawing overlay in the web UI is decided but not built yet:
-UI pending.)
+pose.
+
+The web UI does that for you: while the active map is a drawing **and** slam
+runs as localization, the map view draws the live `/scan` over the grid (green
+points, grey when no scan for 2 s) under a banner "Confirm the scan sits on the
+walls before sending a goal" with `fit N%` (share of scan points within 0.15 m
+of a wall cell). It subscribes to `/scan` at 2 Hz only while that holds, never
+blocks or delays a goal, and the fit is an **alignment hint, not localization
+proof** — a wrong pose in a repetitive building can score well. **Dismiss**
+hides the banner for that map until you switch maps (or the tab session ends).
+The scan is placed with a hard-coded laser mount (0.073 m forward of
+`base_link`, yawed π; the page does not read `/tf_static`): a scan that looks
+mirrored front-to-back means that constant is wrong. Built from
+`webui/scanlayer.js` + `scanoverlay.js`; **not yet seen on the robot**.
 
 ### 6.4 Switching maps
 
@@ -343,10 +355,239 @@ reason is then added to `flags` and the spans are less trustworthy); `503` no
 `/mcp` never does. The stationary threshold (0.04 m scan-to-scan) is untuned on
 the real lidar.
 
-### 6.7 Import wizard (pending)
+### 6.7 Import wizard (PDF / IFC → installed drawing map)
 
-*Stub — a later docs pass fills this in once the importer HTTP server and the web
-wizard merge:* PDF upload and page choice, the scale proposal and the three
-calibration methods (two-click, robot-measured via 6.6, typed scale), rotation
-and origin, occupancy preview, IFC storey picker, naming/floor, and the
-scan-over-drawing overlay check. Until then 6.1 is the only way in.
+Written from `webui/importwizard.js` / `importflow.js` / `importmath.js` and the
+HTTP contract in `docker/floorplan-importer/server.py`'s docstring. **Not yet run
+against the real importer image, companion or robot** (6.10). Needs the importer
+running (compose service `floorplan_importer`, `:9004`, `companion/README.md`);
+the operator's **browser** talks to it directly, so the browser must reach the
+companion box on `:9004` as well as the Pi on `:9003` and `:9001`.
+
+**Open it:** SITE tab → "Floors & saving" → **Import drawing…**. Close = the
+panel's Close button. Nothing is sent until you click something (no polling, no
+rosbridge topic).
+
+**Importer address** (resolved when the panel opens):
+
+1. A remembered address (browser localStorage `scout.importer.base`) wins.
+2. Else the companion host fleet_status reports (`GET :9003/api/companion` →
+   `{configured, host}`) with port **9004**.
+3. Else blank: type `http://<box>:9004` (scheme optional, `/api` is appended).
+
+The field is editable. Leaving it, or **Retry**, saves it and checks
+`GET /api/health`: "Importer ready at … (version)" or "Importer not reachable
+at …". An empty field + Retry forgets the saved address and resolves again.
+Health is checked only on panel open and Retry.
+
+**Rules for both flows**
+
+- One importer call at a time; the panel shows what is running. A `429 busy` is
+  retried up to 5 times after `Retry-After` ("Importer busy — retrying in N s").
+- Jobs live in importer **memory**: at most 3, dropped after 2 h idle or when the
+  importer restarts. A dead job answers "no such import (unknown or expired)":
+  upload again.
+- **Install never activates and never overwrites a scan map.** fleet_status
+  refuses a name that is a scan map (409, shown as is). Installing a drawing's
+  name again replaces it in place — that is how you recalibrate. The wizard sends
+  no `map_start_pose`, so fleet_status stores `[0, 0, 0]` (the map origin you
+  chose).
+- Name `a-z 0-9 _ -`, starts with a letter or digit, ≤ 32 chars; floor is an
+  optional whole number.
+- Install errors: `503` the importer has no `FLEET_STATUS_URL`; `502` fleet_status
+  unreachable / timed out (the job is kept, retry; the message names the
+  upstream URL); fleet_status's own `409`/`422` are shown unchanged.
+- After a successful install the Site list refreshes and an **Activate** button
+  appears (IFC: one per installed storey). It is the same path as the Site
+  panel's Activate (confirm dialog; live swap or cross-source restart, 6.4).
+  **After activating, seed the pose (6.3)** — amcl starts at the map's
+  `map_start_pose` and will not find the robot itself — then check the scan
+  overlay.
+
+**PDF flow**
+
+1. Choose the file → **Upload**. The kind is sniffed from the bytes (`%PDF-`).
+   One page loads at once; several give "Choose a page…" with each page marked
+   `(vector)` or `(image)`.
+2. **Scale.** The panel shows the importer's proposal ("Proposed scale: 1 page
+   unit = X m (confidence), evidence"). **Accept proposed scale** applies it — it
+   is never applied on its own, and the button is off when there is no proposal.
+   "This page has no usable scale" means use one of the methods; each runs
+   calibrate and draws the preview:
+   - **Two taps:** **Tap two points** on a known length (≥ 20 screen px apart),
+     type the real metres, **Use this scale**.
+   - **Typed scale:** scale text (`1/4" = 1'-0"`, `1:100`) **or** a ratio (real ÷
+     paper), not both. For a PDF that is a reduced print also give the full-size
+     sheet width × height in inches (must match the PDF's aspect within 3 %).
+   - **Robot-measured:** below.
+3. **Rotation** (degrees, map +X counter-clockwise from the page's right edge),
+   **Tap map origin** (the page point that becomes map (0, 0); default = lower-left
+   of the extracted walls), **read as image** (raster extraction; use it when a
+   vector page says "no wall geometry" or the walls look wrong). Each change
+   after a preview re-runs calibrate and regenerates the grid — it is never
+   layered over the old one.
+4. **Preview:** the grid is drawn 50 % over the page (faded while out of date),
+   with "Scale … m/unit (method), rotation …, Grid W x H cells at 0.05 m;
+   interior N %" and any warnings. Check the walls land on the drawing's walls.
+   "little enclosed interior (N % …)" means the walls do not close or an opening
+   is ≥ 1.2 m wide (`close_m`), so the inside reads unknown. The warning says
+   "raise close_m", but the wizard has **no control for it** (the API's
+   `close_m`, ≤ 5 m, is reachable only by calling the importer yourself): fix the
+   gap in the source or use **read as image** with a cleaner sheet.
+   Drag pans, wheel or +/−/Fit zooms; taps only place points.
+5. **Install** (needs a current preview and a valid name): `Installed "<name>". It
+   is not active yet.` If you changed anything afterwards it says the preview
+   moved on: install again to update the same name.
+
+**Robot-measured scale** (read-only; 6.6 has the measurement itself)
+
+1. Park the robot, **stationary**, with two non-parallel wall pairs in view.
+2. **Read wall spans** = one plain `GET http://<pi>:9001/api/wall_spans` with no
+   query string (6.6 defaults; stationary required; the Pi host is the page's own
+   host). The panel lists the top pair per axis ("W1: 4.213 m at 90°") and the
+   lidar's `flags` as "Lidar note: …". Fewer than two axes → move the robot so
+   two directions are in view.
+3. For each pair press **Mark on page** and tap one wall, then the opposite wall
+   of the **same** pair on the drawing.
+4. **Use robot scale** (needs ≥ 2 marked pairs that differ by ≥ 20°; the importer
+   answers 400 otherwise). Spans that disagree by more than 1 % are **not** an
+   error: the mean is applied and a warning is shown — read it.
+
+Errors: `409` "The robot is moving. Park it and retry." (the wizard has no
+override; `require_stationary=false` is curl-only, 6.6); `503` "No lidar scan yet
+(/scan is not publishing)"; "Could not reach the robot at <url>" = scout-skills
+`:9001` down or the page host is not the Pi.
+
+**IFC flow**
+
+1. **Upload** the `.ifc` (STEP text, sniffed from `ISO-10303-21`; `.ifczip` /
+   `.ifcxml` are refused; `415` if the image was built without IFC support).
+   The model is metric: there is no scale step. Storeys are listed in floor
+   order: tick box, `label (elevation m)`, map name (suggested from the label,
+   editable), floor # (by elevation), **Show**, status.
+2. Optional **slice height** (blank = 0.241 m above each storey's elevation, the
+   lidar plane) and **rotation**; both apply to every storey, and changing them
+   marks sliced storeys "settings changed: slice again". **Slice ticked
+   storeys** makes one importer call per storey, in order; a storey that fails
+   keeps its message and the rest go on.
+3. **Show** a storey to see its preview (red cross = map (0, 0)). **Tap map
+   origin**, then tap its preview: that storey is sliced again with the tapped
+   world point as its origin. Without a tap the origin is the lower-left of that
+   storey's slice bounds (6.8).
+4. **Install ticked storeys.** Every ticked storey must be sliced and current
+   ("Slice this storey first"), and names must be valid and unique within the
+   batch. Each storey installs as its own drawing map; failures are listed per
+   storey, the others go on. Then **Activate <name>** per installed storey.
+
+### 6.8 IFC operating notes
+
+- **Origins differ per storey.** The default origin of a storey is the
+  lower-left corner of **its own** slice bounds, so two floors do not share a map
+  origin unless you tap the **same physical point** (a column, a stair core) on
+  each storey's preview. Do it before installing if the same (x, y) should mean
+  the same place on every floor. Slice height and rotation are shared, origin is
+  not.
+- **A slice cuts everything crossing the plane, whichever storey owns it** (z =
+  storey elevation + slice height, by absolute Z): a wall or column spanning two
+  floors shows on both. Doors are excluded on purpose (a leaf is solid at 0.241 m
+  and would seal the doorway); a window shows only if the plane crosses it.
+- **One IFC model is open at a time** (~7× its file in memory). Uploading another
+  IFC evicts the open one — and other idle jobs if needed — **before** the new
+  body is read, even if the upload is then refused or the file fails to parse;
+  `429` if one of them is mid-operation. Install the storeys you want before
+  uploading the next model. Upload checks run in this order: Content-Length
+  (`411`/`400`/`413`) → importer busy (`429`) → kind sniffed from the first 2 KiB
+  (`415`) → that kind's size cap (`413`) → evict → memory gate → stream → parse.
+- **Upload cap 80 MiB by default** (`IMPORTER_MAX_IFC_BYTES`), sized for compose
+  `mem_limit: 2g` (an open model ≈ 7× its file, a slice peak ≈ 15×). Over the cap
+  is `413 {count, limit}` before the body is read; so is a model over the
+  3,000,000-triangle face budget. To take bigger files **raise `mem_limit` first**
+  (≈ 128 MiB at 3g, ≈ 256 MiB at 6g), then the cap.
+- **Memory gate.** The gate judges the resident size **after** the eviction
+  above, so replacing one IFC with another normally does not trip it. An IFC
+  upload whose size would still push the resident set past 90 % of the container
+  limit (current RSS + ≈ 15× the file) is `503` with `Retry-After: 15`: every
+  open import is dropped and the process exits itself (code 75; compose
+  `restart: unless-stopped` brings it back). Wait ~15 s, Retry, upload again. It
+  is the answer to ifcopenshell giving back only part of a freed model's memory,
+  so RSS creeps up model by model. It only fires when nothing else is in flight:
+  if another import is mid-operation **or another upload is in flight** the
+  answer is `429` with `Retry-After: 15` instead — nothing dropped, no restart;
+  retry. At startup the importer deletes stale `importer-ifc-*` temp dirs left by
+  a previous process. Watch it: `GET http://<box>:9004/api/health` → `rss_mb`
+  (null off Linux), `ifc` (false = the image has no ifcopenshell / shapely),
+  `jobs`, `busy`.
+- **Cached storey grids are capped at 128 MiB per job.** Past that the **oldest**
+  sliced storey's grid is dropped (never the one just sliced); the new slice's
+  warning names it. A dropped storey is "not sliced" on the importer while the
+  panel may still show it sliced, so its install fails with the importer's `409`
+  in that storey's row: slice it again, then install. Slicing and installing in
+  small batches avoids it.
+
+### 6.9 First-run checklist (operator, in this order)
+
+Mark each pass/fail in the session notes; a fail here is a finding, not a
+failure of the operator. Use a scratch name (`test_plan`): the same name can be
+installed again to replace it. There is no delete-map button, so a scratch map
+stays in the site until its files are removed on the Pi.
+
+1. **Importer down.** On the companion `docker compose stop floorplan_importer`;
+   open the panel. Expect "Importer not reachable at …/api/health", Upload gives
+   "Could not reach …", the rest of the web UI and the robot are untouched, and
+   6.1 still installs. `docker compose start floorplan_importer`, **Retry** →
+   "Importer ready". Also check one install with a wrong `FLEET_STATUS_URL` or
+   the Pi unreachable from the box: expect `502 … (upstream: …)`, the job kept.
+2. **Vector PDF** (a CAD export). Upload; a proposed scale with its evidence
+   → check it against one dimension you can measure (two-tap method) before
+   **Accept**. Preview overlay: walls on walls, interior % sane. Set origin,
+   rotation. Install → Site list shows the map with the `drawing` chip,
+   `GET :9003/api/sites` → `source: drawing`, `grid: true`, `posegraph: false`,
+   `GET :9003/api/maps/<name>.pgm` returns the grid. **Not activated yet.**
+3. **Raster PDF** (a scan or image-only page, marked `(image)`). No proposal:
+   "no usable scale"; Accept is off. Calibrate with typed or two-tap; preview;
+   install. Also on a *vector* page tick **read as image** and confirm the grid
+   regenerates.
+4. **Robot-measured.** Robot parked in a corridor with an end wall in view.
+   **Read wall spans** → two axes; mark both pairs on the page; **Use robot
+   scale**. Compare the resulting scale with the typed / two-tap scale for the
+   same sheet and note the difference; read any > 1 % span-spread warning; a 409
+   on a robot you know is parked is a finding (the stationary threshold is
+   untuned).
+5. **IFC.** A small model first (well under the cap). Storeys listed in floor
+   order; slice all; tap one common point on two storeys; install two; `GET
+   :9004/api/health` → `rss_mb` before/after. Then upload a second IFC from the
+   wizard: it discards the first job first (`DELETE`), so `jobs` stays 1 and
+   `rss_mb` shows what the freed model gave back.
+6. **On the robot, with one of the above.** Activate (confirm dialog), watch the
+   restart/live swap (6.4), **Set pose** (6.3), confirm the scan overlay sits on
+   the walls and `fit` is plausible, drive a short goal. Anything that disagrees
+   with 6.2–6.4 goes back into this document.
+
+### 6.10 Known limits
+
+- **The importer has no auth and answers CORS `*`** (`IMPORTER_CORS_ORIGIN`,
+  default `*`): any page open in a browser that can reach `:9004` can upload,
+  calibrate and install a drawing map through it. The importer itself cannot
+  activate a map or replace a scan map (fleet_status refuses a scan map's name).
+  It adds no capability beyond fleet_status `:9003`, which is also CORS `*` with no
+  auth (LAN-trust, same as ros_mcp / scout-skills) and *can* activate maps and
+  restart containers. Narrow `IMPORTER_CORS_ORIGIN` to the webui's origin if the
+  box is reachable by more than the operator.
+- **`GET :9001/api/wall_spans` is CORS `*`, read-only** (lidar subscribe only,
+  nothing commanded). **`/mcp` is never CORS-open** (it exposes motion tools).
+- **Legacy tag poses follow onto a new drawing map** until the tag is
+  re-surveyed there (6.5).
+- **An IFC boolean-geometry failure can silently seal a doorway:** the geometry
+  iterator subtracts openings and a failed subtraction leaves the wall solid
+  across the gap, with no error. **Always look at the preview.**
+- **The PDF wall classifier has not been validated on a real CAD export** (only
+  on Scout-generated sheets). A double-hairline wall gives `kind: none`; use
+  **read as image**.
+- **ifcopenshell memory give-back on Linux is unverified** (measured only on
+  macOS); the memory gate (6.8) is the backstop.
+- **Glass and thin walls:** thin glass under one cell (0.05 m) vanishes from the
+  grid; glass / curtain wall is solid on the drawing and invisible to the lidar.
+- Not yet verified on hardware: the image build on amd64 and arm64, the compose
+  caps (`cpus: 1.0`, `mem_limit: 2g`), the scan overlay on the robot, the
+  `wall_spans` stationarity threshold, and the real companion → Pi install path
+  (the box reaching `http://<PI_IP>:9003`; the zenoh bridge only proves `:7447`).

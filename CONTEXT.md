@@ -103,11 +103,28 @@ This file names the concepts and maps the running system.
   and wall-to-wall spans in `base_link`, needing no map or localization: MCP tool
   and plain `GET :9001/api/wall_spans`. The robot-measured scale reference for a
   drawing; CORS on that one route only, never `/mcp`.
-- **floorplan importer (pending server)** — off-Pi service that turns a PDF/IFC
-  into the grid pair for `POST /api/maps/install`; planned on the companion at
-  :9004, HTTP only. The pure library (`docker/floorplan-importer/`: calib,
-  planraster, pdfsource, ifcsource) is merged; the HTTP server and image are
-  not.
+- **floorplan importer** — off-Pi service (`docker/floorplan-importer/`,
+  compose service `floorplan_importer` on the companion, `:9004`, HTTP only, no
+  auth, CORS `*`) that turns a PDF or IFC into the grid pair and installs it by
+  POSTing to the Pi's fleet_status `POST /api/maps/install`
+  (`FLEET_STATUS_URL`). Optional: the Pi never depends on it. Operating recipe
+  `docs/slam.md` §6.7; service env `companion/README.md`.
+- **import job** — one uploaded PDF or IFC held in the importer's memory (≤ 3
+  jobs, dropped after 2 h idle or on importer restart; one open IFC model at a
+  time). Calibrated (PDF) or sliced per storey (IFC), previewed, then installed.
+  Install never activates a map.
+- **storey slice** — one IFC storey cut at a plane (storey elevation + slice
+  height, default 0.241 m = the lidar height) and rasterized with scale 1. The
+  plane cuts every element crossing it, whichever storey owns it; each storey's
+  default origin is the lower-left of its own slice bounds.
+- **import wizard** — the web UI panel (`webui/importwizard.js`,
+  `importflow.js`, `importmath.js`; SITE tab → Import drawing…) that drives an
+  import job over plain HTTP on operator clicks, including the robot-measured
+  scale via `wall_spans`.
+- **scan-over-drawing overlay** — the web UI's live `/scan` drawn over a drawing
+  map under localization, with a banner and a `fit N%` alignment hint
+  (`webui/scanlayer.js`, `scanoverlay.js`). Not localization proof; never blocks a
+  goal. Distinct from a *source overlay* (amcl parameters).
 - **robot profile (robot_profile.yaml)** — the cross-surface SSOT for velocity
   caps, floors, rates, topic names, LED modes, status names, thresholds. Read by
   the ROS nodes, scout-skills (ro mount) and the webui (compose bind-mounts the
