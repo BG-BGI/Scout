@@ -2098,6 +2098,22 @@ async def list_uhf_tags() -> dict:
 
 _tag_watch_enabled = True
 _tag_watch_last: dict = {"at": None, "seen": []}
+# (tag name, map) pairs the operator armed with resurvey_apriltag: the next
+# sighting of that tag ON that map may take a pose even though the tag is
+# surveyed on another map. In-memory on purpose — a server restart disarms.
+_survey_armed: set = set()
+
+
+def _may_first_survey(entry: dict, active, armed: set) -> bool:
+    """May a sighting survey this tag on the ACTIVE map? Only on a known map
+    where it has no pose yet, and either it has no pose on ANY map (the original
+    first-sighting rule) or the operator armed it. A tag surveyed elsewhere and
+    seen here unarmed is a floor-transit candidate for tag_relocalizer; surveying
+    it from the live robot pose (wrong if the robot is really on the other floor)
+    would both pollute this map and kill the transit."""
+    if active is None or entry.get("map_x") is not None:
+        return False
+    return not entry.get("poses") or (entry["name"], active) in armed
 
 
 DETECTIONS_TOPIC = "/detections"
@@ -2181,14 +2197,25 @@ async def _scan_tags(update_waypoints: bool = True, background: bool = False):
             # (corrupted doghouse 2026-11-05). So a surveyed tag keeps its
             # pose; only a never-surveyed tag takes its first pose from a
             # sighting. Re-survey a moved tag explicitly with register_apriltag.
+            # Poses are per MAP (a floor can hold a scan and a drawing map):
+            # `surveyed` means surveyed on the ACTIVE map, and a first pose is
+            # taken only where _may_first_survey allows.
             surveyed = entry.get("map_x") is not None
-            tagdb.record_sighting(
+            wrote = tagdb.record_sighting(
                 family, tag_id,
                 tuple(out["position_map"]) + (pose["yaw"],)
-                if pose and "position_map" in out and not surveyed
+                if pose and "position_map" in out
+                and _may_first_survey(entry, active, _survey_armed)
                 else None,
                 map_name=active,
             )
+            if wrote:
+                _survey_armed.discard((entry["name"], active))
+            if not surveyed and not wrote:
+                # Not surveyed on THIS map: live geometry is shown in the result
+                # but never becomes a waypoint (it could be map B's frame with
+                # the robot actually elsewhere).
+                pose = None
             if surveyed:
                 # Standoff comes from the surveyed pose, not the live geometry.
                 yaw = entry["map_yaw"]
@@ -2211,6 +2238,12 @@ async def _scan_tags(update_waypoints: bool = True, background: bool = False):
                     and prev.get("map") == (active or None)
                 )
                 if not unchanged:
+                    if prev is not None and prev.get("map") != (active or None):
+                        # waypoints.json holds ONE waypoint per tag name, scoped
+                        # to one map; say which map's waypoint this replaces.
+                        out["waypoint_replaced"] = {
+                            k: prev.get(k)
+                            for k in ("map", "x", "y", "yaw", "source")}
                     store["waypoints"][entry["name"]] = pose | {
                         "saved": datetime.now(timezone.utc).strftime(
                             "%Y-%m-%d %H:%M UTC"
@@ -2297,9 +2330,9 @@ async def register_apriltag(
     family/size configured in companion/config/apriltag.yaml (companion
     apriltag service restart to change, ADR-0034) — registering here names
     tags that node can already see.
-    A tag's surveyed pose is stamped with the map it was seen on
-    (ADR-0029) — one surveyed pose per tag ID, so use a DISTINCT physical tag
-    per floor/map."""
+    A tag's surveyed pose is stored PER MAP: the same physical tag can be
+    surveyed on a floor's scan map and on its drawing map, and each map
+    relocalizes from its own pose. Surveying on one map never touches another's."""
     if not (0.01 <= size_m <= 2.0):
         raise ToolError("size_m implausible — meters, black square edge only")
     return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}
@@ -2307,21 +2340,34 @@ async def register_apriltag(
 
 @mcp.tool
 async def resurvey_apriltag(name: str) -> dict:
-    """Forget a tag's surveyed map pose; the next sighting surveys it afresh.
+    """Forget a tag's surveyed pose ON THE ACTIVE MAP (other maps' surveys are
+    untouched) and arm the next sighting to survey it afresh there. This is also
+    how to survey a tag that is already surveyed on ANOTHER map (e.g. the scan
+    map of the same floor): a sighting alone never takes a second map's pose.
     Surveyed poses never change from sightings (the registry is the truth the
     robot's localization is corrected against), so use this ONLY after the tag
-    was physically moved, and only while the robot is verifiably well
-    localized (scan overlays the map) with the tag in view."""
-    if not tagdb.clear_pose(name):
+    was physically moved or to survey a new map, and only while the robot is
+    verifiably well localized on the ACTIVE map (scan overlays it) with the tag
+    in view. Arming is in memory: a server restart disarms."""
+    active = tagdb.active_map_name()
+    if active is None:
+        raise ToolError(
+            "no active map — cannot tell which map to survey the tag on")
+    removed = tagdb.clear_pose(name)
+    if removed is None:
         raise ToolError(f"no AprilTag named {name!r}")
-    return {"resurveyed": name, "next": "pose is re-surveyed on the next sighting"}
+    _survey_armed.add((name, active))
+    return {"resurveyed": name, "map": active, "cleared_poses": removed,
+            "next": f"pose is surveyed on map {active!r} at the next sighting"}
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def list_apriltags() -> dict:
-    """Registered AprilTags with last-seen info (incl. map_name — the map each
-    tag's pose was surveyed on), plus the passive watcher state (scans every
-    2 s and refreshes tag waypoints when the camera is up)."""
+    """Registered AprilTags with last-seen info. map_x/map_y/map_yaw/map_name
+    are the pose for the ACTIVE map (null when unsurveyed there); `poses` lists
+    every named map the tag is surveyed on ({map: {x, y, yaw, surveyed_at}}).
+    Plus the passive watcher state (scans every 2 s and refreshes tag waypoints
+    when the camera is up)."""
     return {
         "tags": tagdb.all_tags(),
         "watcher": {"enabled": _tag_watch_enabled, "last_scan": _tag_watch_last},
@@ -2330,10 +2376,11 @@ async def list_apriltags() -> dict:
 
 @mcp.tool
 async def delete_apriltag(name: str) -> dict:
-    """Remove a tag from the registry (its waypoint, if any, stays until
-    delete_waypoint)."""
+    """Remove a tag from the registry with ALL its per-map poses (its waypoint,
+    if any, stays until delete_waypoint)."""
     if not tagdb.delete(name):
         raise ToolError(f"no AprilTag named {name!r}")
+    _survey_armed.difference_update({k for k in _survey_armed if k[0] == name})
     return {"deleted": name}
 
 

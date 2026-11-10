@@ -348,3 +348,340 @@ def test_transit_survives_a_bad_maps_dir_too(tmp_path, label, data, want, bad_di
         track(node, 'other', 1.0, 'tag7', 0.0, 'pose', slam_mode=slam_mode,
               active_map=active, maps=maps, mode=mode)
     assert node.load_requests == []
+
+
+# =============================================================================
+# U11: a tag is surveyed per map. The real _registered / _on_detections /
+# _track_transit run against a real tmp tags.db; only the ROS boundary is faked.
+# =============================================================================
+
+import importlib.util  # noqa: E402
+import math  # noqa: E402
+import sqlite3  # noqa: E402
+import sys  # noqa: E402
+
+from scout.core import tag_homes  # noqa: E402
+
+TAGS_PY = NODE.parents[2] / 'docker' / 'scout-skills' / 'tags.py'
+_NODE_TREE = ast.parse(NODE.read_text())
+
+
+def _module_fn(name):
+    fn = next(n for n in _NODE_TREE.body
+              if isinstance(n, ast.FunctionDef) and n.name == name)
+    ns = {}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), name, 'exec'), ns)
+    return ns[name]
+
+
+@pytest.fixture
+def tagdb(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location('skills_tags_reloc', TAGS_PY)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules['skills_tags_reloc'] = mod
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, 'DB_PATH', str(tmp_path / 'tags.db'))
+    monkeypatch.setattr(mod, 'SITE_JSON', str(tmp_path / 'site.json'))
+    return mod
+
+
+SITE_MAPS = {'floor1': {'source': 'scan'}, 'floor1_plan': {'source': 'drawing'},
+             'floor2': {'source': 'scan'}, 'floor2_plan': {'source': 'drawing'},
+             'floor3': {'source': 'scan'}}
+
+
+class _Frames(_Self):
+    """_Self + what _on_detections touches beyond the transit fakes."""
+
+    def __init__(self, maps_dir):
+        super().__init__(maps_dir)
+        self.params['tags_db'] = str(maps_dir / 'tags.db')
+        self._done = False
+        self.published = []
+        self.solved_for = []
+        self._pub = types.SimpleNamespace(publish=self.published.append)
+        self._corrector = types.SimpleNamespace(reset=lambda: None)
+
+
+def _pose_msg(x=1.0):
+    pos = types.SimpleNamespace(x=x, y=0.0)
+    return types.SimpleNamespace(
+        pose=types.SimpleNamespace(pose=types.SimpleNamespace(position=pos)))
+
+
+def _node(tmp_path, tagdb, *, active, slam_mode='localization', grids=(),
+          busy=0.05):
+    for g in grids:
+        (tmp_path / (g + '.yaml')).write_text('x')
+    (tmp_path / 'site.json').write_text(json.dumps({
+        'version': 2, 'active_map': active, 'slam_mode': slam_mode,
+        'maps': SITE_MAPS}))
+    node = _Frames(tmp_path)
+    fake_loadmap = types.SimpleNamespace(
+        Request=lambda: types.SimpleNamespace(map_url=None),
+        Response=types.SimpleNamespace(RESULT_SUCCESS=0))
+    glob = dict(sites=sites, tag_homes=tag_homes, sqlite3=sqlite3,
+                os=__import__('os'), json=json, math=math,
+                time=types.SimpleNamespace(monotonic=lambda: NOW),
+                LoadMap=fake_loadmap, REGISTRY_BUSY_S=busy,
+                _norm_family=_module_fn('_norm_family'))
+    for name in ('_registered', '_read_site', '_track_transit', '_on_detections'):
+        setattr(node, name, types.MethodType(_method(name, **glob), node))
+
+    def solve(det, entry):
+        node.solved_for.append(entry['name'])
+        return 1.0, entry['name'], 0.0, _pose_msg(entry['map_x'])
+
+    node._solve = solve
+    node._maybe_correct = lambda *a: None
+    return node
+
+
+def _frame(*tags):
+    return types.SimpleNamespace(detections=[
+        types.SimpleNamespace(family=f, id=i) for f, i in tags])
+
+
+def _frames(node, n=3, tags=(('tag36h11', 0),)):
+    for _ in range(n):
+        node._on_detections(_frame(*tags))
+    return node
+
+
+def _tag(tagdb, tag_id, name, **poses):
+    tagdb.upsert(name, tag_id, 'tag36h11', '', 0.16)
+    for m, pose in poses.items():
+        assert tagdb.record_sighting('tag36h11', tag_id, pose, map_name=m)
+
+
+def test_pose_on_the_active_map_seeds_there_and_never_transits(tmp_path, tagdb):
+    _tag(tagdb, 0, 'doghouse', floor1=(1.0, 2.0, 0.5), floor2=(9.0, 9.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1',
+                         grids=('floor1', 'floor2')))
+    assert node.solved_for == ['doghouse'] * 3
+    assert len(node.published) == 1 and node.load_requests == []
+    assert node._cand['count'] == 0
+
+
+def test_the_pose_used_is_the_active_maps_not_the_other_maps(tmp_path, tagdb):
+    _tag(tagdb, 0, 'doghouse', floor1=(1.0, 2.0, 0.5), floor1_plan=(7.0, 8.0, 0.1))
+    n1 = _frames(_node(tmp_path, tagdb, active='floor1', grids=('floor1',)), n=1)
+    assert n1.published[0].pose.pose.position.x == 1.0
+    n2 = _frames(_node(tmp_path, tagdb, active='floor1_plan'), n=1)
+    assert n2.published[0].pose.pose.position.x == 7.0
+
+
+def test_one_same_source_foreign_map_transits_via_the_existing_path(tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor2=(3.0, 3.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1', grids=('floor1', 'floor2')))
+    assert node.load_requests == [str(tmp_path / 'floor2.yaml')]
+    assert node._switching is True and node.logger.warns == []
+
+
+def test_same_source_choice_ignores_poses_on_the_other_source(tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor2=(3.0, 3.0, 0.0), floor1_plan=(1.0, 1.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1',
+                         grids=('floor1', 'floor2', 'floor1_plan')))
+    assert node.load_requests == [str(tmp_path / 'floor2.yaml')]
+
+
+def test_foreign_only_on_the_other_source_is_refused_with_the_existing_message(
+        tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor1_plan=(1.0, 1.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1',
+                         grids=('floor1', 'floor1_plan')))
+    assert node.load_requests == []
+    assert len(node.logger.warns) == 1
+    msg, throttle = node.logger.warns[0]
+    assert "tag 'elev' lives on drawing map 'floor1_plan'" in msg
+    assert 'slam restart' in msg and throttle == 30.0
+
+
+def test_two_same_source_foreign_maps_are_refused_and_named(tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor2=(3.0, 3.0, 0.0), floor3=(4.0, 4.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1',
+                         grids=('floor1', 'floor2', 'floor3')))
+    assert node.load_requests == [] and node.solved_for == []
+    assert len(node.logger.warns) == 3                 # one per frame, throttled by rclpy
+    msg, throttle = node.logger.warns[0]
+    assert 'floor2' in msg and 'floor3' in msg and "'elev'" in msg
+    assert "active scan map 'floor1'" in msg and throttle == 30.0
+
+
+def test_two_other_source_foreign_maps_are_refused_and_named(tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor1_plan=(3.0, 3.0, 0.0), floor2_plan=(4.0, 4.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1'), n=1)
+    assert node.load_requests == [] and 'floor1_plan' in node.logger.warns[0][0]
+
+
+def test_legacy_null_map_row_behaves_as_before(tmp_path, tagdb):
+    db = sqlite3.connect(tagdb.DB_PATH)
+    db.execute("""CREATE TABLE tags(family TEXT NOT NULL, tag_id INTEGER NOT NULL,
+        name TEXT NOT NULL UNIQUE, role TEXT NOT NULL DEFAULT '',
+        size_m REAL NOT NULL DEFAULT 0.16, map_x REAL, map_y REAL, map_yaw REAL,
+        last_seen TEXT, map_name TEXT, PRIMARY KEY(family, tag_id))""")
+    db.execute("INSERT INTO tags VALUES('tag36h11',0,'elev','',0.16,4.0,5.0,0.0,NULL,NULL)")
+    db.commit()
+    db.close()
+    for migrated in (False, True):
+        if migrated:
+            tagdb.all_tags()
+        for active in ('floor1', 'floor2_plan'):
+            node = _frames(_node(tmp_path, tagdb, active=active,
+                                 grids=('floor1', 'floor2_plan')), n=2)
+            assert node.published and node.published[0].pose.pose.position.x == 4.0
+            assert node.load_requests == [] and node._cand['count'] == 0
+
+
+def test_legacy_pose_plus_a_named_survey_elsewhere_transits_to_it(tmp_path, tagdb):
+    db = sqlite3.connect(tagdb.DB_PATH)
+    db.execute("""CREATE TABLE tags(family TEXT NOT NULL, tag_id INTEGER NOT NULL,
+        name TEXT NOT NULL UNIQUE, role TEXT NOT NULL DEFAULT '',
+        size_m REAL NOT NULL DEFAULT 0.16, map_x REAL, map_y REAL, map_yaw REAL,
+        last_seen TEXT, map_name TEXT, PRIMARY KEY(family, tag_id))""")
+    db.execute("INSERT INTO tags VALUES('tag36h11',0,'elev','',0.16,4.0,5.0,0.0,NULL,NULL)")
+    db.commit()
+    db.close()
+    tagdb.record_sighting('tag36h11', 0, (8.0, 8.0, 0.0), map_name='floor2')
+    node = _frames(_node(tmp_path, tagdb, active='floor1', grids=('floor1', 'floor2')))
+    assert node.load_requests == [str(tmp_path / 'floor2.yaml')]
+
+
+def test_unsurveyed_and_unregistered_tags_do_nothing(tmp_path, tagdb):
+    _tag(tagdb, 0, 'blank')
+    node = _frames(_node(tmp_path, tagdb, active='floor1'),
+                   tags=(('tag36h11', 0), ('tag36h11', 77)))
+    assert node.solved_for == [] and node.published == [] and node.logger.warns == []
+
+
+def test_auto_on_a_drawing_map_transits_between_drawing_maps(tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor2_plan=(3.0, 3.0, 0.0))
+    node = _frames(_node(tmp_path, tagdb, active='floor1_plan', slam_mode='auto',
+                         grids=('floor1_plan', 'floor2_plan')))
+    assert node.load_requests == [str(tmp_path / 'floor2_plan.yaml')]
+
+
+def test_two_foreign_tags_in_one_frame_pick_the_nearest_without_raising(
+        tmp_path, tagdb):
+    _tag(tagdb, 0, 'a', floor2=(3.0, 3.0, 0.0))
+    _tag(tagdb, 1, 'b', floor2=(5.0, 5.0, 0.0))
+    node = _node(tmp_path, tagdb, active='floor1', grids=('floor1', 'floor2'))
+    dists = {'a': 2.0, 'b': 1.0}
+
+    def solve(det, entry):
+        return dists[entry['name']], entry['name'], 0.0, _pose_msg()
+
+    node._solve = solve
+    _frames(node, tags=(('tag36h11', 0), ('tag36h11', 1)))
+    assert node.load_requests == [str(tmp_path / 'floor2.yaml')]
+    assert node._cand['name'] == 'b'
+
+
+# --- hostile / damaged registries never escape the per-frame path --------------------
+
+def _write_db(path, sql):
+    db = sqlite3.connect(path)
+    for stmt in sql:
+        db.execute(stmt)
+    db.commit()
+    db.close()
+
+
+TAGS_DDL = ('CREATE TABLE tags(family, tag_id, name, role, size_m, map_x, map_y, '
+            'map_yaw, last_seen, map_name)')
+POSES_DDL = ('CREATE TABLE tag_poses(family, tag_id, map_name, map_x, map_y, '
+             'map_yaw, surveyed_at)')
+
+HOSTILE_DBS = {
+    'no tables': [],
+    'tags only, no pose columns': ['CREATE TABLE tags(family, tag_id, name)',
+                                   "INSERT INTO tags VALUES('tag36h11',0,'a')"],
+    'tag_poses with a missing column': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES('tag36h11',0,'a')",
+        'CREATE TABLE tag_poses(family, tag_id)'],
+    'text coordinates': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES('tag36h11',0,'a')",
+        POSES_DDL, "INSERT INTO tag_poses VALUES('tag36h11',0,'floor2','x','y','z',NULL)"],
+    'blob coordinates': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES('tag36h11',0,'a')",
+        POSES_DDL, "INSERT INTO tag_poses VALUES('tag36h11',0,'floor2',x'00',x'01',x'02',NULL)"],
+    'integer family': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES(7,0,'a')"],
+    'null family': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES(NULL,0,'a')"],
+    'non-str name': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES('tag36h11',0,5)",
+        POSES_DDL, "INSERT INTO tag_poses VALUES('tag36h11',0,'floor2',1,2,3,NULL)"],
+    'null map name': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES('tag36h11',0,'a')",
+        POSES_DDL, "INSERT INTO tag_poses VALUES('tag36h11',0,NULL,1,2,3,NULL)"],
+    'legacy text pose': [
+        TAGS_DDL, "INSERT INTO tags VALUES('tag36h11',0,'a','',0.1,'x',2,3,NULL,NULL)"],
+    'tag_poses is a view of garbage': [
+        TAGS_DDL, "INSERT INTO tags(family,tag_id,name) VALUES('tag36h11',0,'a')",
+        'CREATE VIEW tag_poses AS SELECT 1 AS x'],
+}
+
+
+@pytest.mark.parametrize('label', sorted(HOSTILE_DBS))
+def test_hostile_registry_is_not_registered_and_never_raises(tmp_path, tagdb, label):
+    _write_db(tmp_path / 'tags.db', HOSTILE_DBS[label])
+    node = _node(tmp_path, tagdb, active='floor1')
+    assert node._registered('tag36h11', 0) is None
+    _frames(node, n=2)
+    assert node.load_requests == [] and node.published == []
+
+
+def test_a_corrupt_file_is_not_registered(tmp_path, tagdb):
+    (tmp_path / 'tags.db').write_bytes(b'not a database at all' * 200)
+    node = _node(tmp_path, tagdb, active='floor1')
+    assert node._registered('tag36h11', 0) is None
+    _frames(node, n=1)
+    assert node.logger.warns and 'tags.db read failed' in node.logger.warns[0][0]
+    assert node.logger.warns[0][1] == 30.0
+
+
+def test_a_directory_in_place_of_the_file_is_not_registered(tmp_path, tagdb):
+    (tmp_path / 'tags.db').mkdir()
+    node = _node(tmp_path, tagdb, active='floor1')
+    assert node._registered('tag36h11', 0) is None
+
+
+def test_a_missing_file_is_silently_not_registered(tmp_path, tagdb):
+    node = _node(tmp_path, tagdb, active='floor1')
+    assert node._registered('tag36h11', 0) is None and node.logger.warns == []
+
+
+def test_a_locked_database_skips_the_frame_instead_of_blocking_or_raising(
+        tmp_path, tagdb):
+    _tag(tagdb, 0, 'elev', floor2=(3.0, 3.0, 0.0))
+    node = _node(tmp_path, tagdb, active='floor1', busy=0.05)
+    lock = sqlite3.connect(tagdb.DB_PATH, isolation_level=None)
+    lock.execute('BEGIN EXCLUSIVE')
+    try:
+        assert node._registered('tag36h11', 0) is None
+        _frames(node, n=1)
+    finally:
+        lock.execute('ROLLBACK')
+        lock.close()
+    assert node.load_requests == []
+    assert node._registered('tag36h11', 0)['poses'] == {
+        'floor2': {'x': 3.0, 'y': 3.0, 'yaw': 0.0}}
+
+
+def test_an_unmigrated_registry_with_a_named_legacy_pose_still_seeds(tmp_path, tagdb):
+    _write_db(tmp_path / 'tags.db', [
+        TAGS_DDL, "INSERT INTO tags VALUES('tag36h11',0,'a','',0.1,1.0,2.0,0.5,NULL,'floor1')"])
+    node = _frames(_node(tmp_path, tagdb, active='floor1'), n=1)
+    assert node.published and node.published[0].pose.pose.position.x == 1.0
+    db = sqlite3.connect(tmp_path / 'tags.db')
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert 'tag_poses' not in tables                    # the relocalizer never migrates
+
+
+def test_registered_opens_the_file_read_only(tmp_path, tagdb):
+    _tag(tagdb, 0, 'a', floor1=(1.0, 2.0, 0.5))
+    src = ast.get_source_segment(NODE.read_text(), next(
+        n for n in ast.walk(_CLASS) if isinstance(n, ast.FunctionDef)
+        and n.name == '_registered'))
+    assert 'mode=ro' in src and 'REGISTRY_BUSY_S' in src

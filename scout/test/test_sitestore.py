@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import sqlite3
 import sys
 import types
 
@@ -368,3 +369,59 @@ def test_site_meta_unreadable_site_json_still_reports(fleet):
     meta = server._site_meta('office')
     assert meta['maps']['orphan']['source'] == 'scan'
     assert meta['resolved_mode'] == 'new'
+
+
+# --- U11: /api/apriltags + set_tag_pose through the real fleet server module -------
+
+def _tags_db(site_dir):
+    db = sqlite3.connect(site_dir / 'maps' / 'tags.db')
+    db.execute("""CREATE TABLE tags(family TEXT NOT NULL, tag_id INTEGER NOT NULL,
+        name TEXT NOT NULL UNIQUE, role TEXT NOT NULL DEFAULT '',
+        size_m REAL NOT NULL DEFAULT 0.16, map_x REAL, map_y REAL, map_yaw REAL,
+        last_seen TEXT, map_name TEXT, PRIMARY KEY(family, tag_id))""")
+    db.execute("INSERT INTO tags VALUES('tag36h11',0,'doghouse','home',0.16,"
+               "1.0,2.0,0.5,'t','floor1')")
+    db.commit()
+    db.close()
+
+
+def test_apriltags_listing_keeps_old_keys_and_adds_poses(fleet):
+    server, site_dir = fleet
+    _tags_db(site_dir)
+    _write(site_dir, {'version': 2, 'active_map': 'floor1', 'maps': {'floor1': {}}})
+    row = server.apriltags()['tags'][0]
+    assert {'family', 'tag_id', 'name', 'role', 'size_m', 'map_x', 'map_y',
+            'map_yaw', 'map_name', 'last_seen', 'poses'} <= set(row)
+    assert (row['map_x'], row['map_name']) == (1.0, 'floor1')
+    assert row['poses'] == {'floor1': {'x': 1.0, 'y': 2.0, 'yaw': 0.5,
+                                       'surveyed_at': None}}
+    assert not (site_dir / 'maps' / 'tags.db-journal').exists()
+
+
+def test_apriltags_listing_is_unsurveyed_on_another_active_map(fleet):
+    server, site_dir = fleet
+    _tags_db(site_dir)
+    _write(site_dir, {'version': 2, 'active_map': 'floor1_plan',
+                      'maps': {'floor1_plan': {}}})
+    row = server.apriltags()['tags'][0]
+    assert (row['map_x'], row['map_name']) == (None, None)
+    assert list(row['poses']) == ['floor1']
+
+
+def test_set_tag_pose_through_the_server_surveys_the_active_map(fleet):
+    server, site_dir = fleet
+    _tags_db(site_dir)
+    _write(site_dir, {'version': 2, 'active_map': 'floor1_plan',
+                      'maps': {'floor1_plan': {}}})
+    code, out = server.set_tag_pose('doghouse', {'x': 5.0, 'y': 5.0, 'yaw': 0.0})
+    assert code == 200 and out['tag']['map_name'] == 'floor1_plan'
+    assert set(out['tag']['poses']) == {'floor1', 'floor1_plan'}
+    assert out['replaced_waypoint'] is None
+
+
+def test_apriltags_listing_survives_a_corrupt_file(fleet):
+    server, site_dir = fleet
+    (site_dir / 'maps' / 'tags.db').write_bytes(b'this is not a database' * 50)
+    _write(site_dir, {'version': 2, 'active_map': 'floor1', 'maps': {'floor1': {}}})
+    out = server.apriltags()
+    assert out['tags'] == [] and 'error' in out

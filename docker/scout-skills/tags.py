@@ -17,6 +17,7 @@ import math
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 
 import numpy as np
 
@@ -34,7 +35,8 @@ def active_map_name() -> str | None:
             data = json.load(f)
         if not isinstance(data, dict):
             return None
-        return data.get("active_map") or data.get("default_map") or None
+        active = data.get("active_map") or data.get("default_map") or None
+        return active if isinstance(active, str) else None
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -46,45 +48,189 @@ def norm_family(fam: str) -> str:
 
 
 # --- registry -----------------------------------------------------------------
+#
+# Identity is per PHYSICAL tag (`tags`: name UNIQUE, role, size_m, last_seen);
+# the surveyed pose is per (family, tag_id, map_name) in `tag_poses`, because a
+# floor can hold a scan map AND a drawing map and each needs its own survey.
+# A tag_poses.map_name of '' (LEGACY) is a pre-U11 row whose map was never
+# stamped: it meant "the active map" and still does, but only while the tag has
+# no named pose anywhere (see active_pose).
+#
+# The legacy pose columns on `tags` (map_x, map_y, map_yaw, map_name) stay in
+# place after the migration and are never read or written again: an older image
+# rolled back onto this file still finds them.
+#
+# ⚠ SCHEMA_VERSION / SCHEMA_STATEMENTS / active_pose are DUPLICATED in
+# docker/fleet-status/tagpose.py (separate images share a schema, not code,
+# ADR-0011) and mirrored in scout/core/tag_homes.py; scout/test/test_tags_db.py
+# fails when the copies drift.
+
+SCHEMA_VERSION = 3
+LEGACY = ""
+BUSY_S = 10.0   # sqlite busy wait: lets the loser of the migration race wait it out
+
+SCHEMA_STATEMENTS = (
+    """CREATE TABLE IF NOT EXISTS tags(
+         family  TEXT    NOT NULL,
+         tag_id  INTEGER NOT NULL,
+         name    TEXT    NOT NULL UNIQUE,
+         role    TEXT    NOT NULL DEFAULT '',
+         size_m  REAL    NOT NULL DEFAULT 0.16,
+         map_x   REAL, map_y REAL, map_yaw REAL,
+         last_seen TEXT,
+         map_name TEXT,
+         PRIMARY KEY(family, tag_id))""",
+    """CREATE TABLE IF NOT EXISTS tag_poses(
+         family  TEXT    NOT NULL,
+         tag_id  INTEGER NOT NULL,
+         map_name TEXT   NOT NULL,
+         map_x   REAL    NOT NULL,
+         map_y   REAL    NOT NULL,
+         map_yaw REAL    NOT NULL,
+         surveyed_at TEXT,
+         PRIMARY KEY(family, tag_id, map_name))""",
+    """INSERT OR IGNORE INTO tag_poses(
+         family, tag_id, map_name, map_x, map_y, map_yaw, surveyed_at)
+       SELECT family, tag_id, COALESCE(map_name, ''), map_x, map_y, map_yaw, NULL
+       FROM tags
+       WHERE typeof(map_x) IN ('real', 'integer')
+         AND typeof(map_y) IN ('real', 'integer')
+         AND typeof(map_yaw) IN ('real', 'integer')""",
+    """CREATE TRIGGER IF NOT EXISTS tags_delete_poses AFTER DELETE ON tags
+       BEGIN
+         DELETE FROM tag_poses WHERE family = old.family AND tag_id = old.tag_id;
+       END""",
+)
+
+
+def migrate(db: sqlite3.Connection) -> None:
+    """Bring tags.db to SCHEMA_VERSION. Idempotent and safe with several
+    processes opening the file at once: one BEGIN IMMEDIATE transaction, the
+    version re-checked inside the lock, so a loser of the race waits (BUSY_S)
+    and then finds it already done. `db` must be in autocommit mode
+    (isolation_level=None) so the explicit BEGIN is the only transaction.
+    Legacy poses are COPIED (NULL map_name -> LEGACY), never moved."""
+    if db.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+        return
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        if db.execute("PRAGMA user_version").fetchone()[0] < SCHEMA_VERSION:
+            db.execute(SCHEMA_STATEMENTS[0])
+            # pre-ADR-0029 files lack the column the fresh CREATE already has
+            cols = {r[1] for r in db.execute("PRAGMA table_info(tags)")}
+            if "map_name" not in cols:
+                db.execute("ALTER TABLE tags ADD COLUMN map_name TEXT")
+            for stmt in SCHEMA_STATEMENTS[1:]:
+                db.execute(stmt)
+            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        db.execute("COMMIT")
+    except BaseException:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+
+
+def active_pose(poses: dict, active: str | None):
+    """The pose of `poses` ({map_name: pose}) that applies to the active map:
+    (map_name | None, pose), or None. A named row for the active map wins. A
+    LEGACY row (map never recorded) applies to the active map only while the tag
+    has no named pose at all — once it is surveyed by name anywhere, an
+    unassigned pose is ambiguous and never stands in for another map's survey.
+    No active map: only a LEGACY row, same rule."""
+    if active is not None and active in poses:
+        return active, poses[active]
+    if LEGACY in poses and all(m == LEGACY for m in poses):
+        return None, poses[LEGACY]
+    return None
+
 
 def _connect() -> sqlite3.Connection:
-    db = sqlite3.connect(DB_PATH)
+    """Open + migrate. Autocommit mode: callers use _read / _write."""
+    db = sqlite3.connect(DB_PATH, timeout=BUSY_S, isolation_level=None)
     db.row_factory = sqlite3.Row
-    db.execute(
-        """CREATE TABLE IF NOT EXISTS tags(
-             family  TEXT    NOT NULL,
-             tag_id  INTEGER NOT NULL,
-             name    TEXT    NOT NULL UNIQUE,
-             role    TEXT    NOT NULL DEFAULT '',
-             size_m  REAL    NOT NULL DEFAULT 0.16,
-             map_x   REAL, map_y REAL, map_yaw REAL,
-             last_seen TEXT,
-             PRIMARY KEY(family, tag_id))"""
-    )
-    # v2 migration (ADR-0029): the map a survey was made on. NULL = legacy row
-    # = assume the active map. One surveyed pose per tag ID (the PK), so each
-    # floor's transit tag must be a distinct physical tag.
-    cols = {r["name"] for r in db.execute("PRAGMA table_info(tags)")}
-    if "map_name" not in cols:
-        db.execute("ALTER TABLE tags ADD COLUMN map_name TEXT")
+    try:
+        migrate(db)
+    except BaseException:
+        db.close()
+        raise
     return db
 
 
-def all_tags() -> list[dict]:
-    with _connect() as db:
-        return [dict(r) for r in db.execute("SELECT * FROM tags ORDER BY name")]
+@contextmanager
+def _read():
+    db = _connect()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
-def lookup(family: str, tag_id: int) -> dict | None:
+@contextmanager
+def _write():
+    """One BEGIN IMMEDIATE transaction: commit on success, roll back on error."""
+    db = _connect()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        yield db
+        db.execute("COMMIT")
+    except BaseException:
+        if db.in_transaction:
+            db.execute("ROLLBACK")
+        raise
+    finally:
+        db.close()
+
+
+def _poses_by_tag(db: sqlite3.Connection) -> dict:
+    out: dict = {}
+    for r in db.execute(
+        "SELECT family, tag_id, map_name, map_x, map_y, map_yaw, surveyed_at"
+        " FROM tag_poses"
+    ):
+        out.setdefault((r["family"], r["tag_id"]), {})[r["map_name"]] = {
+            "x": r["map_x"], "y": r["map_y"], "yaw": r["map_yaw"],
+            "surveyed_at": r["surveyed_at"],
+        }
+    return out
+
+
+def _shape(row: sqlite3.Row, poses: dict, active: str | None) -> dict:
+    """A tags row for callers: the legacy keys, with map_x/map_y/map_yaw/map_name
+    now the pose for the ACTIVE map (None where unsurveyed there — never another
+    map's pose), plus `poses` {map: {x, y, yaw, surveyed_at}} for the named
+    maps. Bare LEGACY poses surface only as the active pose, map_name None."""
+    d = dict(row)
+    chosen = active_pose(poses, active)
+    d["map_x"] = d["map_y"] = d["map_yaw"] = d["map_name"] = None
+    if chosen is not None:
+        name, pose = chosen
+        d["map_x"], d["map_y"], d["map_yaw"] = pose["x"], pose["y"], pose["yaw"]
+        d["map_name"] = name
+    d["poses"] = {m: p for m, p in poses.items() if m != LEGACY}
+    return d
+
+
+def all_tags(active: str | None = None) -> list[dict]:
+    """Every tag, active-map pose + `poses`. `active` defaults to the active map."""
+    active = active if active is not None else active_map_name()
+    with _read() as db:
+        poses = _poses_by_tag(db)
+        return [
+            _shape(r, poses.get((r["family"], r["tag_id"]), {}), active)
+            for r in db.execute("SELECT * FROM tags ORDER BY name")
+        ]
+
+
+def lookup(family: str, tag_id: int, active: str | None = None) -> dict | None:
     nf = norm_family(family)
-    for t in all_tags():
+    for t in all_tags(active):
         if t["tag_id"] == tag_id and norm_family(t["family"]) == nf:
             return t
     return None
 
 
 def upsert(name: str, tag_id: int, family: str, role: str, size_m: float) -> dict:
-    with _connect() as db:
+    with _write() as db:
         db.execute(
             """INSERT INTO tags(family, tag_id, name, role, size_m)
                VALUES(?,?,?,?,?)
@@ -93,46 +239,92 @@ def upsert(name: str, tag_id: int, family: str, role: str, size_m: float) -> dic
                      size_m=excluded.size_m""",
             (family, tag_id, name, role, size_m),
         )
-        return dict(
-            db.execute("SELECT * FROM tags WHERE name=?", (name,)).fetchone()
+    return next(t for t in all_tags() if t["name"] == name)
+
+
+def clear_pose(
+    name: str, map_name: str | None = None, all_maps: bool = False
+) -> int | None:
+    """Forget a tag's surveyed pose so the next survey starts afresh. Default:
+    the pose that applies to the ACTIVE map (and only that); `map_name` names
+    another map explicitly; `all_maps` forgets every pose. Returns how many
+    poses were removed, or None when there is no such tag. Surveyed poses are
+    otherwise immutable from sightings (the registry is the truth
+    tag_relocalizer corrects amcl against)."""
+    active = map_name if map_name is not None else active_map_name()
+    with _write() as db:
+        row = db.execute(
+            "SELECT family, tag_id FROM tags WHERE name=?", (name,)
+        ).fetchone()
+        if row is None:
+            return None
+        key = (row["family"], row["tag_id"])
+        if all_maps:
+            targets = list(_poses_by_tag(db).get(key, {}))
+        elif map_name is not None:
+            targets = [map_name]
+        else:
+            chosen = active_pose(_poses_by_tag(db).get(key, {}), active)
+            targets = [] if chosen is None else [
+                chosen[0] if chosen[0] is not None else LEGACY]
+        return sum(
+            db.execute(
+                "DELETE FROM tag_poses WHERE family=? AND tag_id=? AND map_name=?",
+                (*key, m),
+            ).rowcount
+            for m in targets
         )
 
 
-def clear_pose(name: str) -> bool:
-    """Forget a tag's surveyed map pose so the next sighting surveys it afresh.
-    Surveyed poses are otherwise immutable from sightings (the registry is the
-    truth tag_relocalizer corrects amcl against)."""
-    with _connect() as db:
-        return db.execute(
-            "UPDATE tags SET map_x=NULL, map_y=NULL, map_yaw=NULL, map_name=NULL"
-            " WHERE name=?", (name,)
-        ).rowcount > 0
-
-
 def delete(name: str) -> bool:
-    with _connect() as db:
-        return db.execute("DELETE FROM tags WHERE name=?", (name,)).rowcount > 0
+    """Remove the tag and ALL its poses (the trigger removes them even when an
+    older image does the delete)."""
+    with _write() as db:
+        row = db.execute(
+            "SELECT family, tag_id FROM tags WHERE name=?", (name,)
+        ).fetchone()
+        if row is None:
+            return False
+        db.execute("DELETE FROM tags WHERE name=?", (name,))
+        db.execute(
+            "DELETE FROM tag_poses WHERE family=? AND tag_id=?",
+            (row["family"], row["tag_id"]),
+        )
+        return True
 
 
 def record_sighting(
     family: str, tag_id: int, map_pose: tuple | None, map_name: str | None = None
-) -> None:
+) -> bool:
+    """Stamp last_seen and, given a solved pose AND the map it was seen on,
+    record that pose for THAT map only — never touching another map's survey,
+    and never replacing an existing one (surveyed poses are immutable from
+    sightings; re-survey = clear_pose first). No map_name means the map is
+    ambiguous: the pose is dropped, not stored. Returns True when a pose was
+    written."""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
-    with _connect() as db:
-        if map_pose is not None:
-            # map_name is stamped only alongside a surveyed pose — a pose-less
-            # glimpse from the wrong floor must not re-home the tag.
-            db.execute(
-                """UPDATE tags SET last_seen=?, map_x=?, map_y=?, map_yaw=?,
-                       map_name=?
-                   WHERE family=? AND tag_id=?""",
-                (stamp, *map_pose, map_name, family, tag_id),
-            )
-        else:
-            db.execute(
-                "UPDATE tags SET last_seen=? WHERE family=? AND tag_id=?",
-                (stamp, family, tag_id),
-            )
+    nf = norm_family(family)
+    with _write() as db:
+        row = next(
+            (r for r in db.execute(
+                "SELECT family, tag_id FROM tags WHERE tag_id=?", (tag_id,))
+             if norm_family(r["family"]) == nf),
+            None,
+        )
+        if row is None:
+            return False
+        db.execute(
+            "UPDATE tags SET last_seen=? WHERE family=? AND tag_id=?",
+            (stamp, row["family"], row["tag_id"]),
+        )
+        if map_pose is None or not map_name:
+            return False
+        return db.execute(
+            """INSERT OR IGNORE INTO tag_poses(
+                 family, tag_id, map_name, map_x, map_y, map_yaw, surveyed_at)
+               VALUES(?,?,?,?,?,?,?)""",
+            (row["family"], row["tag_id"], map_name, *map_pose, stamp),
+        ).rowcount > 0
 
 
 # --- geometry -----------------------------------------------------------------

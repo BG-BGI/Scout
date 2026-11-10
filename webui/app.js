@@ -1034,17 +1034,29 @@ function drawTagPreview() {
   }
   mapCtx.restore();
 }
+// A tag is surveyed per map: say which OTHER maps already hold a survey, and when
+// the active map has none. Plain text for textContent (names come from the DB).
+function tagOptionLabel(t, active) {
+  const others = Object.keys(t.poses || {}).filter((m) => m !== active);
+  if (!others.length) return t.name;
+  return t.map_x === null || t.map_x === undefined
+    ? `${t.name} - not surveyed here; surveyed on: ${others.join(', ')}`
+    : `${t.name} - also surveyed on: ${others.join(', ')}`;
+}
 async function tagSetStart() {
   tagResult.textContent = '';
   try {
     const res = await fetch(FLEET_API + '/apriltags');
     const body = await res.json();
-    const names = (body.tags || []).map((t) => t.name);
+    const tags = body.tags || [];
+    const names = tags.map((t) => t.name);
     if (!names.length) { navState.textContent = 'no registered tags'; return; }
+    const activeMap = activeSiteMeta && activeSiteMeta.active_map;
     tagNameSel.innerHTML = '';
-    for (const n of names) {
+    for (const t of tags) {
       const o = document.createElement('option');
-      o.value = o.textContent = n;
+      o.value = t.name;
+      o.textContent = tagOptionLabel(t, activeMap);
       tagNameSel.appendChild(o);
     }
     if (names.includes('doghouse')) tagNameSel.value = 'doghouse';
