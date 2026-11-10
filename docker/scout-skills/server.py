@@ -728,6 +728,16 @@ async def go_to_waypoint(name: str) -> dict:
 # path must be its, not ours (same hardcode as the webui Save Map button).
 SLAM_MAPS_DIR = "/ros_ws/src/sites/active/maps"
 
+# After a slam restart that leaves amcl running, wait up to attempts x (poll
+# window + pause) ~ 90 s for a FRESH /amcl_pose before giving up on the automatic
+# tag-relocalizer re-arm. AMCL_BASELINE_S: how long to look for the pose latched
+# before the restart.
+AMCL_POLL_S = 3.0
+AMCL_POLL_ATTEMPTS = 15
+AMCL_BASELINE_S = 2.0
+# One re-arm at a time; a newer switch replaces a pending one.
+_reseed_task: "asyncio.Task | None" = None
+
 
 def _load_site() -> dict:
     """site.json normalized to {slam_mode, active_map, maps:{name: entry}}.
@@ -752,13 +762,144 @@ def _load_site() -> dict:
     return site
 
 
+def _map_source(entry) -> str:
+    """'scan' | 'drawing' for one raw site.json map entry. Unknown, missing or
+    non-dict reads as scan (same rule as scout.core.sites.entry_source)."""
+    src = entry.get("source") if isinstance(entry, dict) else None
+    return src if src in ("scan", "drawing") else "scan"
+
+
+def _resolved_mode(payload, raw_mode: str) -> str:
+    """The active site's resolved_mode from a fleet_status /api/sites payload:
+    what `auto` actually runs as (a drawing map resolves to localization).
+    Falls back to the raw slam_mode when the payload is unusable or predates
+    the field."""
+    if isinstance(payload, dict):
+        for s in payload.get("sites") or []:
+            if isinstance(s, dict) and s.get("name") == payload.get("active"):
+                return s.get("resolved_mode") or raw_mode
+    return raw_mode
+
+
+def _switch_plan(site: dict, name: str, mode: str) -> dict:
+    """Live LoadMap or slam restart for switching to `name`. `mode` is the
+    EFFECTIVE slam mode. Live only when amcl is running and the map source is
+    unchanged: amcl's params are fixed at launch, so a cross-source switch
+    restarts slam and the launch composes the matching source overlay. Mirrors
+    webui/mapswitch.js activationPlan (a parity test pins them together)."""
+    maps = site["maps"]
+    current = _map_source(maps.get(site["active_map"]))
+    target = _map_source(maps.get(name))
+    raw = site["slam_mode"]
+    live = mode == "localization" and current == target
+    return {
+        "live": live,
+        "cross_source": current != target,
+        "current_source": current,
+        "target_source": target,
+        "needs_grid": live or raw == "localization"
+        or (raw == "auto" and target == "drawing"),
+    }
+
+
+async def _effective_mode(site: dict) -> str:
+    """What slam is running (or will run) as, per fleet_status; the raw
+    slam_mode when fleet_status is unreachable or older than resolved_mode."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http:
+            resp = await http.get(f"{FLEET_STATUS_URL}/api/sites")
+            resp.raise_for_status()
+            return _resolved_mode(resp.json(), site["slam_mode"])
+    except (httpx.HTTPError, ValueError):
+        return site["slam_mode"]
+
+
+def _amcl_stamp(msg) -> "str | None":
+    """'sec:nanosec' of a /amcl_pose message's header.stamp, or None when it
+    has no usable stamp. Mirrors webui/mapswitch.js amclStamp (parity-tested)."""
+    stamp = ((msg.get("header") or {}).get("stamp")
+             if isinstance(msg, dict) else None)
+    if not isinstance(stamp, dict):
+        return None
+    sec, nanosec = stamp.get("sec"), stamp.get("nanosec")
+    for part in (sec, nanosec):
+        if isinstance(part, bool) or not isinstance(part, (int, float)):
+            return None
+    return f"{sec}:{nanosec}"
+
+
+def _is_fresh_amcl_pose(baseline, msg) -> bool:
+    """Is `msg` a pose from the RESTARTED amcl? nav2_amcl latches /amcl_pose
+    (transient-local, KeepLast 1) and a stationary amcl does not republish, so a
+    subscriber can be handed the old amcl's last pose. header.stamp is the laser
+    scan's stamp, so only a stamp that differs from `baseline` (the stamp latched
+    BEFORE the restart; None = none) counts. Never compare to a wall clock: the
+    robot's steps at boot. Mirrors webui/mapswitch.js isFreshAmclPose."""
+    if msg is None:
+        return False
+    if baseline is None:
+        return True
+    return _amcl_stamp(msg) != baseline
+
+
+async def _amcl_baseline() -> "str | None":
+    """Stamp of the /amcl_pose latched right now (None if none arrives): taken
+    BEFORE the restart requests so the stale replay can be told from the new
+    amcl's first pose."""
+    try:
+        async with RosBridge() as rb:
+            msg = await rb.subscribe_once(
+                "/amcl_pose",
+                "geometry_msgs/msg/PoseWithCovarianceStamped",
+                timeout=AMCL_BASELINE_S,
+            )
+    except RosBridgeError:
+        return None
+    return _amcl_stamp(msg)
+
+
+async def _reseed_when_amcl_up(baseline) -> bool:
+    """Re-arm the tag relocalizer once the restarted amcl publishes a FRESH
+    /amcl_pose (stamp differs from `baseline`, see _is_fresh_amcl_pose). It
+    lives in the robot container, which a slam restart leaves running, so its
+    'already seeded' flag still describes the OLD map. True when re-armed;
+    False when amcl never came up or the call failed (the switch_map result
+    already tells the operator to set the pose by hand)."""
+    for _ in range(AMCL_POLL_ATTEMPTS):
+        try:
+            async with RosBridge(background=True) as rb:
+                msg = await rb.subscribe_once(
+                    "/amcl_pose",
+                    "geometry_msgs/msg/PoseWithCovarianceStamped",
+                    timeout=AMCL_POLL_S,
+                )
+        except RosBridgeError:
+            msg = None
+        if _is_fresh_amcl_pose(baseline, msg):
+            break
+        await asyncio.sleep(AMCL_POLL_S)
+    else:
+        return False
+    try:
+        async with RosBridge() as rb:
+            await rb.call_service(
+                "/tag_relocalizer/reseed", "std_srvs/srv/Trigger")
+    except RosBridgeError:
+        return False
+    return True
+
+
 @mcp.tool
 async def switch_map(name: str) -> dict:
-    """Switch the active site's map (e.g. to another floor). In localization
-    mode the grid swaps live (~1 s) and the pose is re-seeded at the map's
-    start pose — reseed via a registered AprilTag (or the webui) if the robot
-    isn't there. In mapping modes this RESTARTS the slam container (~20 s of
-    no /map and no map->odom). Refused mid-drive."""
+    """Switch the active site's map (e.g. to another floor). While amcl is
+    running (localization, including `auto` on a drawing map) and the target
+    has the same source (scan | drawing) as the live map, the grid swaps live
+    (~1 s) and the pose is re-seeded at the map's start pose — reseed via a
+    registered AprilTag (or the webui) if the robot isn't there. Otherwise —
+    mapping modes, or a switch across map sources — this RESTARTS the slam
+    container (~20 s of no /map and no map->odom); when amcl comes back the
+    tag relocalizer is re-armed automatically. Refused mid-drive."""
+    global _reseed_task
     site = _load_site()
     if name not in site["maps"]:
         raise ToolError(
@@ -769,18 +910,19 @@ async def switch_map(name: str) -> dict:
         return {"active_map": name, "note": "already active"}
     await _require_motion_idle()
 
-    mode = site["slam_mode"]
+    mode = await _effective_mode(site)
+    plan = _switch_plan(site, name, mode)
     out: dict = {"active_map": name, "previous": site["active_map"],
-                 "slam_mode": mode}
-    if mode == "localization":
-        # Our view of the grid file; LoadMap gets the slam container's path.
-        local = os.path.join(os.path.dirname(tagdb.SITE_JSON), "maps",
-                             f"{name}.yaml")
-        if not os.path.exists(local):
-            raise ToolError(
-                f"map {name!r} has no grid (.yaml/.pgm) — re-save it from a "
-                "mapping session (webui Save Map) before localizing on it"
-            )
+                 "slam_mode": site["slam_mode"], "effective_mode": mode}
+    # Our view of the grid file; LoadMap gets the slam container's path.
+    local = os.path.join(os.path.dirname(tagdb.SITE_JSON), "maps",
+                         f"{name}.yaml")
+    if plan["needs_grid"] and not os.path.exists(local):
+        raise ToolError(
+            f"map {name!r} has no grid (.yaml/.pgm) — re-save it from a "
+            "mapping session (webui Save Map) before localizing on it"
+        )
+    if plan["live"]:
         async with RosBridge() as rb:
             values = await rb.call_service(
                 "/map_server/load_map",
@@ -815,6 +957,16 @@ async def switch_map(name: str) -> dict:
                        "a registered tag (or set /initialpose) to refine")
     else:
         out["switched"] = "slam restart pending (~20 s)"
+        if plan["cross_source"]:
+            out["note"] = (
+                f"map source changes ({plan['current_source']} -> "
+                f"{plan['target_source']}): amcl's params are fixed at launch, "
+                "so slam restarts instead of a live swap")
+
+    # The pose amcl has latched NOW, before any restart request: the baseline a
+    # pose after the restart must differ from (see _is_fresh_amcl_pose).
+    baseline = (await _amcl_baseline()
+                if not plan["live"] and mode == "localization" else None)
 
     # Persist active_map — fleet_status owns site.json writes.
     try:
@@ -824,7 +976,7 @@ async def switch_map(name: str) -> dict:
                 json={"active_map": name},
             )
             resp.raise_for_status()
-            if mode != "localization":
+            if not plan["live"]:
                 for svc in ("slam", "behaviors"):
                     await http.post(
                         f"{FLEET_STATUS_URL}/api/containers/{svc}/restart")
@@ -833,6 +985,16 @@ async def switch_map(name: str) -> dict:
             f"map loaded but active_map not persisted ({e!r}) — the next slam "
             "restart will revert; retry switch_map or set it in the webui"
         ) from e
+    if not plan["live"] and await _effective_mode(site) == "localization":
+        if _reseed_task is not None:
+            _reseed_task.cancel()
+        _reseed_task = asyncio.create_task(_reseed_when_amcl_up(baseline))
+        out["reseed"] = (
+            "amcl restarts at the map's start pose; the tag relocalizer is "
+            "re-armed automatically once the restarted amcl publishes a fresh "
+            "/amcl_pose (up to ~90 s). "
+            "If it does not, set pose after restart (webui Set pose, or show "
+            "the robot a registered tag)")
     return out
 
 
