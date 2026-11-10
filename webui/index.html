@@ -418,7 +418,9 @@
                 <input id="imp-rotation" type="number" step="any" value="0" title="degrees, map +X counter-clockwise from the page's right">
                 <button id="imp-origin-tap" type="button">Tap map origin</button>
                 <label class="dim"><input id="imp-force-raster" type="checkbox"> read as image</label>
+                <input id="imp-close-m" type="number" step="any" min="0" max="5" placeholder="door gap to close, m (1.2)" title="Door gap to close (m): blank = 1.2, up to 5">
               </div>
+              <div id="imp-close-msg" class="imp-error" hidden></div>
               <div id="imp-origin-text" class="dim"></div>
               <div id="imp-tap-banner" class="imp-banner" hidden>
                 <span id="imp-tap-text"></span>
@@ -454,8 +456,10 @@
               <div class="grid">
                 <input id="imp-ifc-height" type="number" step="any" min="0" placeholder="slice height, m (0.241)">
                 <input id="imp-ifc-rotation" type="number" step="any" value="0" title="degrees">
+                <input id="imp-ifc-close-m" type="number" step="any" min="0" max="5" placeholder="door gap to close, m (1.2)" title="Door gap to close (m): blank = 1.2, up to 5">
                 <button id="imp-ifc-slice" type="button">Slice ticked storeys</button>
               </div>
+              <div id="imp-ifc-close-msg" class="imp-error" hidden></div>
               <div id="imp-storeys"></div>
               <div class="imp-step">3. Origin and preview</div>
               <div class="grid"><button id="imp-ifc-origin" type="button">Tap map origin</button></div>

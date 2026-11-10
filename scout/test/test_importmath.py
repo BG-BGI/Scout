@@ -610,3 +610,41 @@ def test_describe_error_passes_server_text_through():
     )
     assert _call('describeError', 500, None) == 'HTTP 500'
     assert _call('describeError', 422, {'error': ''}) == 'HTTP 422'
+
+
+# --- close_m (door gap to close) -------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    'text,expect',
+    [
+        ('', {}), ('   ', {}), (None, {}), ('1.2', {'value': 1.2}), ('0.1', {'value': 0.1}),
+        ('5', {'value': 5}), (' 2.5 ', {'value': 2.5}),
+    ],
+)
+def test_parse_close_m_blank_means_the_server_default(text, expect):
+    assert _call('parseCloseM', text) == expect
+
+
+@pytest.mark.parametrize('text', ['0', '-1', '5.01', '100', 'abc', '1,2', 'NaN', 'Infinity'])
+def test_parse_close_m_rejects_out_of_range_and_junk(text):
+    out = _call('parseCloseM', text)
+    assert out == {'error': 'Door gap must be more than 0 and at most 5 m'}
+
+
+def test_close_m_is_forwarded_in_calibrate_and_slice_bodies_only_when_set():
+    assert _call('calibrateBody', {'page': 0, 'method': 'proposal', 'close_m': 2.5})['body'][
+        'close_m'
+    ] == 2.5
+    assert 'close_m' not in _call('calibrateBody', {'page': 0, 'method': 'proposal'})['body']
+    nulled = _call('calibrateBody', {'page': 0, 'method': 'proposal', 'close_m': None})
+    assert 'close_m' not in nulled['body']
+    assert _call('sliceBody', {'close_m': 5}) == {'body': {'close_m': 5}}
+    assert _call('sliceBody', {}) == {'body': {}}
+    assert _call('sliceBody', {'close_m': None}) == {'body': {}}
+
+
+@pytest.mark.parametrize('bad', [0, -0.5, 5.5, 'x', True])
+def test_close_m_out_of_range_is_refused_by_both_body_builders(bad):
+    assert 'error' in _call('calibrateBody', {'page': 0, 'method': 'proposal', 'close_m': bad})
+    assert 'error' in _call('sliceBody', {'close_m': bad})

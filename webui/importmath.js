@@ -28,9 +28,24 @@
   var RETRY_DEFAULT_S = 2;
   var STORE_KEY = 'scout.importer.base';
   var DEFAULT_SLICE_HEIGHT = 0.241;   // m above the storey: the lidar plane
+  var MAX_CLOSE_M = 5;          // importer: 0 < close_m <= 5 (default 1.2 server side)
+  var DEFAULT_CLOSE_M = 1.2;
+  var CLOSE_M_RANGE_MSG = 'Door gap must be more than 0 and at most ' + MAX_CLOSE_M + ' m';
 
   function isNum(v) { return typeof v === 'number' && isFinite(v); }
   function isPoint(p) { return !!p && isNum(p.x) && isNum(p.y); }
+
+  function closeMOk(v) { return isNum(v) && v > 0 && v <= MAX_CLOSE_M; }
+
+  // The "door gap to close" field: blank = the server default (value undefined), else a
+  // number in (0, 5]. -> {value} or {error}; an error means no request is made.
+  function parseCloseM(text) {
+    var t = String(text === undefined || text === null ? '' : text).trim();
+    if (t === '') return { value: undefined };
+    var n = Number(t);
+    if (!closeMOk(n)) return { error: CLOSE_M_RANGE_MSG };
+    return { value: n };
+  }
 
   // --- names ---------------------------------------------------------------------
 
@@ -268,7 +283,10 @@
     var origin = originOf(o);
     if (origin) body.origin = origin;
     if (isNum(o.resolution)) body.resolution = o.resolution;
-    if (isNum(o.close_m)) body.close_m = o.close_m;
+    if (o.close_m !== undefined && o.close_m !== null) {
+      if (!closeMOk(o.close_m)) return { error: CLOSE_M_RANGE_MSG };
+      body.close_m = o.close_m;
+    }
     if (o.force_raster === true) body.force_raster = true;
     return { body: body };
   }
@@ -287,7 +305,10 @@
     var origin = originOf(o);
     if (origin) body.origin = origin;
     if (isNum(o.resolution)) body.resolution = o.resolution;
-    if (isNum(o.close_m)) body.close_m = o.close_m;
+    if (o.close_m !== undefined && o.close_m !== null) {
+      if (!closeMOk(o.close_m)) return { error: CLOSE_M_RANGE_MSG };
+      body.close_m = o.close_m;
+    }
     return { body: body };
   }
 
@@ -366,7 +387,8 @@
   var api = {
     NAME_RE: NAME_RE, TAP_MIN_PX: TAP_MIN_PX, SAME_AXIS_DEG: SAME_AXIS_DEG,
     DEFAULT_PORT: DEFAULT_PORT, RETRY_MAX: RETRY_MAX, STORE_KEY: STORE_KEY,
-    DEFAULT_SLICE_HEIGHT: DEFAULT_SLICE_HEIGHT,
+    DEFAULT_SLICE_HEIGHT: DEFAULT_SLICE_HEIGHT, MAX_CLOSE_M: MAX_CLOSE_M,
+    DEFAULT_CLOSE_M: DEFAULT_CLOSE_M, parseCloseM: parseCloseM,
     validName: validName, suggestName: suggestName, tooClose: tooClose,
     pxToPage: pxToPage, pageToPx: pageToPx,
     mapFrame: mapFrame, pageToMap: pageToMap, mapToPage: mapToPage,

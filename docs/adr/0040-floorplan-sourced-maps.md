@@ -336,8 +336,6 @@ surveyed on every map it appears on.
   read-only; `/mcp` is never CORS-open (section 6).
 - A LEGACY pose applies to whichever map is active until the tag has a named
   pose, even when that map's frame does not match (re-survey it).
-- The wizard has no `close_m` control: the importer's "little enclosed interior"
-  warning says to raise it, but only a direct API call can.
 - ifcopenshell hands back only part of a freed model's memory; the measurement was
   on macOS, **Linux is unverified**. The memory gate is the backstop, not a fix.
 - **Not yet verified on hardware** (all of it is built and unit-tested): the

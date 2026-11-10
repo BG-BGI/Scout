@@ -431,9 +431,11 @@ Health is checked only on panel open and Retry.
    interior N %" and any warnings. Check the walls land on the drawing's walls.
    "little enclosed interior (N % …)" means the walls do not close or an opening
    is ≥ 1.2 m wide (`close_m`), so the inside reads unknown. The warning says
-   "raise close_m", but the wizard has **no control for it** (the API's
-   `close_m`, ≤ 5 m, is reachable only by calling the importer yourself): fix the
-   gap in the source or use **read as image** with a cleaner sheet.
+   "raise close_m": set **door gap to close (m)** in step 4 (blank = 1.2, up to
+   5; a value outside that is refused in the panel with no request). Changing
+   it after a preview regenerates the grid like rotation does; if that is not
+   enough, fix the gap in the source or use **read as image** with a cleaner
+   sheet.
    Drag pans, wheel or +/−/Fit zooms; taps only place points.
 5. **Install** (needs a current preview and a valid name): `Installed "<name>". It
    is not active yet.` If you changed anything afterwards it says the preview
@@ -519,10 +521,11 @@ override; `require_stationary=false` is curl-only, 6.6); `503` "No lidar scan ye
   `jobs`, `busy`.
 - **Cached storey grids are capped at 128 MiB per job.** Past that the **oldest**
   sliced storey's grid is dropped (never the one just sliced); the new slice's
-  warning names it. A dropped storey is "not sliced" on the importer while the
-  panel may still show it sliced, so its install fails with the importer's `409`
-  in that storey's row: slice it again, then install. Slicing and installing in
-  small batches avoids it.
+  warning names it. After each slice the panel re-reads the job once and marks a
+  dropped storey "grid dropped by the importer (memory): slice again" (not
+  installable until you do). Slicing and installing in small batches avoids it.
+  The IFC slice row has the same **door gap to close (m)** field; changing it
+  marks sliced storeys "settings changed: slice again".
 
 ### 6.9 First-run checklist (operator, in this order)
 

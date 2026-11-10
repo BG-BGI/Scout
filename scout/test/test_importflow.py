@@ -675,6 +675,7 @@ function ifcRoutes() {
   route('POST', /\/storey\/\d+\/slice$/, { status: 200, body: SLICE(0) });
   route('GET', /\/storey\/\d+\/preview\.png$/, { status: 200, blob: 'storeypng' });
   route('POST', /\/storey\/\d+\/install$/, { status: 200, body: { ok: true, replaced: false } });
+  route('GET', /\/api\/import\/k1$/, { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [] } });
   route('DELETE', /\/api\/import\/k1$/, { status: 200, body: { ok: true, id: 'k1' } });
 }
 const SLICE = (id) => ({ storey: { id, label: 'L', elevation_m: 0, floor: 1 }, z: 0.241,
@@ -848,7 +849,8 @@ def test_ifc_origin_tap_reslices_that_storey_with_the_world_origin():
     await flow.setStoreyOrigin(0, [12.5, 7.25]);
     out({ calls: summary().slice(n), body: bodyOf(n), origin: st.ifc.storeys[0].origin });""")
     assert res['calls'] == ['POST http://10.0.0.7:9004/api/import/k1/storey/0/slice',
-                            'GET http://10.0.0.7:9004/api/import/k1/storey/0/preview.png']
+                            'GET http://10.0.0.7:9004/api/import/k1/storey/0/preview.png',
+                            'GET http://10.0.0.7:9004/api/import/k1']
     assert res['body'] == {'rotation_deg': 0, 'origin': [12.5, 7.25]}
 
 
@@ -894,6 +896,180 @@ def test_the_20_px_rule_also_applies_per_robot_pair_in_the_current_view():
                                   toScreen: () => ({{ x: 295, y: 10 }}) }});
     out({{ near }});""")
     assert res == {'near': False}
+
+
+# --- close_m (door gap to close) -------------------------------------------------------------------------
+
+
+def test_close_m_after_a_pdf_preview_regenerates_it_and_marks_the_install_stale():
+    res = _run("""
+    pdfRoutes();
+    await flow.open(); await flow.upload(FILE);
+    await flow.acceptProposal();
+    await flow.install({ name: 'plan' });
+    const n0 = summary().length;
+    await flow.setCloseM(2.5);
+    const after = summary().slice(n0);
+    const cal = calls.filter((c) => /calibrate/.test(c.url)).map((c) => JSON.parse(c.body));
+    const first = cal[0];
+    const stale = st.install.stale;
+    await flow.setCloseM(null);
+    const cal2 = calls.filter((c) => /calibrate/.test(c.url)).map((c) => JSON.parse(c.body));
+    out({ after, first, second: cal[1], third: cal2[2], stale, close: st.close_m, current: flow.previewCurrent() });""")
+    assert res['after'] == ['POST http://10.0.0.7:9004/api/import/j1/calibrate',
+                            'GET http://10.0.0.7:9004/api/import/j1/preview.png']
+    assert 'close_m' not in res['first']
+    assert res['second']['close_m'] == 2.5 and res['stale'] is True
+    assert 'close_m' not in res['third'] and res['close'] is None and res['current'] is True
+
+
+def test_close_m_is_sent_with_every_calibrate_once_set():
+    res = _run("""
+    pdfRoutes();
+    await flow.open(); await flow.upload(FILE);
+    await flow.setCloseM(3);
+    await flow.acceptProposal();
+    await flow.setRotation(10);
+    out(calls.filter((c) => /calibrate/.test(c.url)).map((c) => JSON.parse(c.body).close_m));""")
+    assert res == [3, 3]
+
+
+@pytest.mark.parametrize('value', ['0', '-1', '5.5', '"x"'])
+def test_close_m_out_of_range_is_refused_with_no_request(value):
+    res = _run(f"""
+    pdfRoutes();
+    await flow.open(); await flow.upload(FILE);
+    await flow.acceptProposal();
+    const n = calls.length;
+    const ok = await flow.setCloseM({value});
+    out({{ ok, err: st.error, none: calls.length === n, close: st.close_m }});""")
+    assert res['ok'] is False and 'at most 5 m' in res['err']
+    assert res['none'] is True and res['close'] is None
+
+
+def test_close_m_before_a_preview_only_stores_it():
+    res = _run("""
+    pdfRoutes();
+    await flow.open(); await flow.upload(FILE);
+    const n = calls.length;
+    await flow.setCloseM(1.8);
+    out({ none: calls.length === n, close: st.close_m });""")
+    assert res == {'none': True, 'close': 1.8}
+
+
+def test_ifc_close_m_is_sent_with_each_slice_and_changing_it_marks_slices_stale():
+    res = _ifc("""
+    ifcRoutes();
+    await flow.open(); await flow.upload(IFC);
+    flow.setStorey(1, 'selected', false); flow.setStorey(2, 'selected', false);
+    flow.setIfcSettings(null, 0, 2.5);
+    await flow.sliceSelected();
+    const body = JSON.parse(calls.filter((c) => /slice$/.test(c.url))[0].body);
+    flow.setIfcSettings(null, 0, 2.5);
+    const same = st.ifc.storeys[0].dirty;
+    flow.setIfcSettings(null, 0, undefined);          // omitted: keeps the value
+    const kept = st.ifc.storeys[0].dirty;
+    flow.setIfcSettings(null, 0, 4);
+    const changed = st.ifc.storeys[0].dirty;
+    flow.setIfcSettings(null, 0, null);               // blank again
+    out({ body, same, kept, changed, close: st.ifc.close_m });""")
+    assert res['body'] == {'rotation_deg': 0, 'close_m': 2.5}
+    assert res['same'] is False and res['kept'] is False and res['changed'] is True
+    assert res['close'] is None
+
+
+# --- dropped storey grids: reconcile after each slice -----------------------------------------------
+
+
+def _drop_setup(job_after_second):
+    return f"""
+    ifcRoutes();
+    await flow.open(); await flow.upload(IFC);
+    flow.setStorey(2, 'selected', false);
+    routes.find((r) => /slice\\$/.test(String(r.re))).responses = [
+      {{ status: 200, body: SLICE(0) }},
+      {{ status: 200, body: Object.assign(SLICE(1), {{ warnings: ['previews of Level 1 were dropped to stay within the memory budget; slice them again before installing', 'second warning'] }}) }}];
+    routes.find((r) => r.method === 'GET' && /k1\\$/.test(String(r.re))).responses = [
+      {{ status: 200, body: {{ id: 'k1', kind: 'ifc', storeys: [
+        {{ id: 0, slice: SLICE(0) }}, {{ id: 1, slice: SLICE(1) }}] }} }},
+      {{ status: 200, body: {job_after_second} }}];
+"""
+
+
+def test_a_storey_whose_grid_the_importer_dropped_is_reconciled_and_not_installable():
+    res = _ifc(_drop_setup("{ id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: null }, { id: 1, slice: SLICE(1) }, { id: 2, slice: null }] }") + """
+    const ok = await flow.sliceSelected();
+    const gets = summary().filter((c) => /GET .*\\/import\\/k1$/.test(c)).length;
+    const s0 = st.ifc.storeys[0], s1 = st.ifc.storeys[1];
+    const inst = await flow.installSelected();
+    const posts = calls.filter((c) => /storey\\/\\d+\\/install$/.test(c.url)).map((c) => c.url);
+    out({ ok, gets, s0: [!!s0.slice, s0.previewBlob, s0.dropped], s1: [!!s1.slice, s1.dropped],
+          warn: s1.slice.warnings.length, inst, err: st.error, posts,
+          results: st.ifc.storeys.map((s) => s.result && s.result.msg), installed });""")
+    assert res['ok'] is True and res['gets'] == 2            # one re-read per slice call
+    assert res['s0'] == [False, None, True] and res['s1'] == [True, False]
+    assert res['warn'] == 2
+    assert res['inst'] is False and 'not installed' in res['err']
+    assert res['posts'] == ['http://10.0.0.7:9004/api/import/k1/storey/1/install']
+    assert res['results'][0] == 'Slice this storey first' and res['results'][1] == 'Installed as level_2'
+    assert res['installed'] == [['level_2']]
+
+
+def test_slicing_a_dropped_storey_again_clears_the_dropped_mark():
+    res = _ifc(_drop_setup("{ id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: null }, { id: 1, slice: SLICE(1) }] }") + """
+    await flow.sliceSelected();
+    const was = st.ifc.storeys[0].dropped;
+    flow.setStorey(1, 'selected', false);
+    routes.find((r) => /slice\\$/.test(String(r.re))).responses = [{ status: 200, body: SLICE(0) }];
+    routes.find((r) => r.method === 'GET' && /k1\\$/.test(String(r.re))).responses = [
+      { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: SLICE(0) }] } }];
+    await flow.sliceSelected();
+    const s0 = st.ifc.storeys[0];
+    out({ was, now: s0.dropped, sliced: !!s0.slice });""")
+    assert res == {'was': True, 'now': False, 'sliced': True}
+
+
+def test_a_failed_reread_keeps_the_slice_and_only_adds_a_note():
+    res = _ifc("""
+    ifcRoutes();
+    await flow.open(); await flow.upload(IFC);
+    flow.setStorey(1, 'selected', false); flow.setStorey(2, 'selected', false);
+    routes.find((r) => r.method === 'GET' && /k1\\$/.test(String(r.re))).responses = [{ throw: true }];
+    const ok = await flow.sliceSelected();
+    const s0 = st.ifc.storeys[0];
+    out({ ok, err: st.error, sliced: !!s0.slice, blob: s0.previewBlob, note: st.ifc.note, dropped: s0.dropped });""")
+    assert res['ok'] is True and res['err'] is None and res['sliced'] is True
+    assert res['blob'] == {'blob': 'storeypng'} and res['dropped'] is False
+    assert 'Could not re-check the storeys' in res['note'] and 'slicing again' in res['note']
+
+
+def test_a_failed_reread_in_one_slice_does_not_fail_the_batch_and_the_note_resets():
+    res = _ifc("""
+    ifcRoutes();
+    await flow.open(); await flow.upload(IFC);
+    flow.setStorey(2, 'selected', false);
+    routes.find((r) => r.method === 'GET' && /k1\\$/.test(String(r.re))).responses = [
+      { throw: true }, { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: SLICE(0) }, { id: 1, slice: SLICE(1) }] } }];
+    const ok = await flow.sliceSelected();
+    const noteDuring = st.ifc.note;
+    flow.setStorey(1, 'selected', false);
+    await flow.sliceSelected();
+    out({ ok, noteDuring, sliced: st.ifc.storeys.map((s) => !!s.slice), noteAfter: st.ifc.note });""")
+    assert res['ok'] is True and res['noteDuring'] is not None
+    assert res['sliced'] == [True, True, False] and res['noteAfter'] is None
+
+
+def test_origin_reslice_also_reconciles():
+    res = _ifc("""
+    ifcRoutes();
+    await flow.open(); await flow.upload(IFC);
+    flow.setStorey(1, 'selected', false); flow.setStorey(2, 'selected', false);
+    await flow.sliceSelected();
+    routes.find((r) => r.method === 'GET' && /k1\\$/.test(String(r.re))).responses = [
+      { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: null }] } }];
+    await flow.setStoreyOrigin(0, [1, 2]);
+    out({ dropped: st.ifc.storeys[0].dropped, sliced: !!st.ifc.storeys[0].slice });""")
+    assert res == {'dropped': True, 'sliced': False}
 
 
 # --- the DOM layer, executed against a fake document ------------------------------------------------------
@@ -1106,6 +1282,75 @@ def test_wizard_dom_recalibrating_after_install_says_the_installed_map_is_older(
     assert res['fresh']['activate'] is False and res['stale']['activate'] is False
     assert res['activated'] == ['a_b']
     assert res['again'] == 'Installed "a_b". It is not active yet.'
+
+
+def test_wizard_dom_close_m_field_pdf_and_ifc():
+    res = _dom("""
+    pdfRoutes();
+    await click('import-open');
+    E('imp-file').files = [FILE];
+    await click('imp-upload');
+    await click('imp-accept');
+    const n = calls.length;
+    E('imp-close-m').value = '9';
+    E('imp-close-m').fire('change');
+    await settle();
+    const bad = { msg: E('imp-close-msg').textContent, hidden: E('imp-close-msg').hidden, none: calls.length === n };
+    E('imp-close-m').value = '2.5';
+    E('imp-close-m').fire('change');
+    await settle();
+    const ok = { hidden: E('imp-close-msg').hidden, body: JSON.parse(calls.filter((c) => /calibrate/.test(c.url)).pop().body) };
+    E('imp-close-m').value = '';
+    E('imp-close-m').fire('change');
+    await settle();
+    const blank = JSON.parse(calls.filter((c) => /calibrate/.test(c.url)).pop().body);
+    out({ bad, ok, blank });""")
+    assert res['bad'] == {'msg': 'Door gap must be more than 0 and at most 5 m', 'hidden': False, 'none': True}
+    assert res['ok']['hidden'] is True and res['ok']['body']['close_m'] == 2.5
+    assert 'close_m' not in res['blank']
+
+
+def test_wizard_dom_ifc_close_m_bad_value_stops_the_slice_before_any_request():
+    res = _dom("""
+    ifcRoutes();
+    await click('import-open');
+    E('imp-file').files = [IFC];
+    await click('imp-upload');
+    E('imp-ifc-close-m').value = '0';
+    const n = calls.length;
+    await click('imp-ifc-slice');
+    const bad = { msg: E('imp-ifc-close-msg').textContent, hidden: E('imp-ifc-close-msg').hidden, none: calls.length === n };
+    E('imp-ifc-close-m').value = '3';
+    await click('imp-ifc-slice');
+    out({ bad, hiddenAfter: E('imp-ifc-close-msg').hidden,
+          body: JSON.parse(calls.filter((c) => /slice$/.test(c.url))[0].body) });""")
+    assert res['bad'] == {'msg': 'Door gap must be more than 0 and at most 5 m', 'hidden': False, 'none': True}
+    assert res['hiddenAfter'] is True and res['body']['close_m'] == 3
+
+
+def test_wizard_dom_storey_rows_show_warnings_and_dropped_status_for_unfocused_storeys():
+    res = _dom("""
+    ifcRoutes();
+    routes.find((r) => /slice\\$/.test(String(r.re))).responses = [
+      { status: 200, body: SLICE(0) },
+      { status: 200, body: Object.assign(SLICE(1), { warnings: ['previews of Level 1 were dropped', 'two'] }) },
+      { status: 200, body: Object.assign(SLICE(2), { warnings: ['little enclosed interior (4 %)'] }) }];
+    routes.find((r) => r.method === 'GET' && /k1\\$/.test(String(r.re))).responses = [
+      { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: SLICE(0) }] } },
+      { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: null }, { id: 1, slice: SLICE(1) }] } },
+      { status: 200, body: { id: 'k1', kind: 'ifc', storeys: [{ id: 0, slice: null }, { id: 1, slice: SLICE(1) }, { id: 2, slice: SLICE(2) }] } }];
+    await click('import-open');
+    E('imp-file').files = [IFC];
+    await click('imp-upload');
+    await click('imp-ifc-slice');
+    const row = (i) => E('imp-storeys').children[i].children[5].textContent;
+    out({ r0: row(0), r1: row(1), r2: row(2), focus: wizard.state.ifc.focus,
+          install: E('imp-ifc-install').disabled });""")
+    assert res['focus'] == 0
+    assert res['r0'] == 'Grid dropped by the importer (memory): slice again'
+    assert res['r1'] == 'Sliced: 120 faces. Warnings (2): previews of Level 1 were dropped'
+    assert res['r2'] == 'Sliced: 120 faces. Warning: little enclosed interior (4 %)'
+    assert res['install'] is False
 
 
 # --- the wizard is plain HTTP on user action ------------------------------------------------------------------------------------

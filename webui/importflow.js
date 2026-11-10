@@ -36,7 +36,7 @@
         twoPoint: { p1: null, p2: null, s1: null, metres: null },
         typed: { scale: '', ratio: '', paper_in: null },
         robot: { fetched: false, pairs: [], flags: [], total: 0, marks: [] },
-        rotation_deg: 0, origin: null, forceRaster: false,
+        rotation_deg: 0, origin: null, forceRaster: false, close_m: null,
         calibrated: null, preview: null, warnings: [], dirty: false,
         tap: null, install: null, ifc: null, progress: null,
       };
@@ -222,7 +222,7 @@
         selected: true, name: IM.suggestName(s.label || s.name),
         floor: s.floor === null || s.floor === undefined ? '' : String(s.floor),
         slice: s.slice || null, previewBlob: null, origin: null, dirty: false,
-        result: null, error: null,
+        result: null, error: null, dropped: false,
       };
     }
 
@@ -231,7 +231,7 @@
                     pages: json.pages || [] };
       if (json.kind === 'ifc') {
         state.ifc = { storeys: (json.storeys || []).map(ifcStorey), slice_height: null,
-                      rotation_deg: 0, focus: null };
+                      rotation_deg: 0, close_m: null, focus: null, note: null };
         if (state.ifc.storeys.length) state.ifc.focus = state.ifc.storeys[0].id;
       }
     }
@@ -310,6 +310,7 @@
       return IM.calibrateBody({
         page: state.page ? state.page.index : -1, method: state.method, params: methodParams(),
         rotation_deg: state.rotation_deg, origin: state.origin, force_raster: state.forceRaster,
+        close_m: state.close_m,
       });
     }
 
@@ -395,6 +396,19 @@
 
     function setForceRaster(on) {
       state.forceRaster = !!on;
+      notify();
+      return recalibrate();
+    }
+
+    // The door-gap closing length (blank = the server's 1.2 m). Like rotation: after a
+    // preview it re-runs calibrate, which also marks an earlier install stale.
+    function setCloseM(value) {
+      if (value !== null && value !== undefined && !(typeof value === 'number' && value > 0 && value <= IM.MAX_CLOSE_M)) {
+        state.error = 'Door gap must be more than 0 and at most ' + IM.MAX_CLOSE_M + ' m';
+        notify();
+        return Promise.resolve(false);
+      }
+      state.close_m = value === undefined ? null : value;
       notify();
       return recalibrate();
     }
@@ -518,18 +532,46 @@
       if (state.ifc) { state.ifc.focus = sid; notify(); }
     }
 
-    function setIfcSettings(sliceHeight, rotationDeg) {
+    function setIfcSettings(sliceHeight, rotationDeg, closeM) {
       if (!state.ifc) return;
-      var changed = state.ifc.slice_height !== sliceHeight || state.ifc.rotation_deg !== rotationDeg;
+      var close = closeM === undefined ? state.ifc.close_m : closeM;
+      var changed = state.ifc.slice_height !== sliceHeight || state.ifc.rotation_deg !== rotationDeg
+        || state.ifc.close_m !== close;
       state.ifc.slice_height = sliceHeight;
       state.ifc.rotation_deg = rotationDeg;
+      state.ifc.close_m = close;
       if (changed) state.ifc.storeys.forEach(function (s) { if (s.slice) s.dirty = true; });
       notify();
     }
 
+    // After a slice the importer may have dropped the OLDEST sliced storey's cached grid
+    // (128 MiB per job): its `slice` is then null in the job JSON. One GET inside the same
+    // serialized call chain (no timer, no polling) reconciles what the wizard thinks is
+    // sliced; if the read fails the slice result stands and a note says so.
+    async function reconcileStoreys() {
+      var ifc = state.ifc;
+      try {
+        var r = await http('GET', jobUrl(''));
+        var list = (r.body && r.body.storeys) || [];
+        list.forEach(function (srv) {
+          var local = storeyById(srv.id);
+          if (local && local.slice && srv.slice === null) {
+            local.slice = null;
+            local.previewBlob = null;
+            local.dropped = true;
+            local.dirty = false;
+          }
+        });
+      } catch (e) {
+        ifc.note = 'Could not re-check the storeys on the importer (' + e.message
+          + '). A storey may need slicing again before it installs.';
+      }
+    }
+
     async function sliceInner(st) {
       var built = IM.sliceBody({ slice_height: state.ifc.slice_height === null ? undefined : state.ifc.slice_height,
-                                 rotation_deg: state.ifc.rotation_deg, origin: st.origin });
+                                 rotation_deg: state.ifc.rotation_deg, origin: st.origin,
+                                 close_m: state.ifc.close_m });
       if (built.error) throw new Error(built.error);
       var base = jobUrl('/storey/' + st.id);
       var r = await http('POST', base + '/slice', { body: JSON.stringify(built.body), headers: JSON_HEADERS });
@@ -537,6 +579,8 @@
       st.slice = r.body;
       st.previewBlob = p.blob;
       st.dirty = false;
+      st.dropped = false;
+      await reconcileStoreys();
     }
 
     // One storey at a time, in list order. A storey that fails keeps its message; the rest go on.
@@ -544,6 +588,7 @@
       return run('Slicing', async function () {
         var todo = state.ifc.storeys.filter(function (s) { return s.selected; });
         if (!todo.length) throw new Error('Tick at least one storey');
+        state.ifc.note = null;
         var failed = 0;
         for (var i = 0; i < todo.length; i++) {
           state.progress = { i: i + 1, n: todo.length, label: todo[i].label };
@@ -561,6 +606,7 @@
       if (!st) return Promise.resolve(false);
       st.origin = [worldXY[0], worldXY[1]];
       return run('Slicing', function () {
+        state.ifc.note = null;
         state.progress = { i: 1, n: 1, label: st.label };
         return sliceInner(st);
       });
@@ -617,7 +663,7 @@
       calibrationRequired: calibrationRequired, acceptProposal: acceptProposal,
       applyTwoPoint: applyTwoPoint, applyTyped: applyTyped, applyRobot: applyRobot,
       fetchWallSpans: fetchWallSpans, setRotation: setRotation, setOrigin: setOrigin,
-      setForceRaster: setForceRaster, beginTap: beginTap, cancelTap: cancelTap,
+      setForceRaster: setForceRaster, setCloseM: setCloseM, beginTap: beginTap, cancelTap: cancelTap,
       handleTap: handleTap, install: install, previewCurrent: previewCurrent,
       calibrate: calibrate, buildCalibrate: buildCalibrate, robotSpans: robotSpans,
       setStorey: setStorey, focusStorey: focusStorey, setIfcSettings: setIfcSettings,
