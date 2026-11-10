@@ -1,0 +1,43 @@
+# amcl overlay for DRAWING maps (floorplan site maps, R9): a map rasterised from an
+# architect's floor plan, not a scan of the room. Applied by the launch file AFTER
+# any operator profile (SCOUT_PROFILE), so on a shared key this file wins.
+#
+# Lives under source_overlays/, NOT overlays/: known_profiles() lists every subdir
+# of overlays/ as an operator-selectable profile and a map source must never
+# appear there.
+#
+# Why different from scan maps: the drawing shows walls only, so a live scan sees
+# furniture, stored material and equipment the map does not contain. Those beams
+# must be skipped or down-weighted, not allowed to drag the particle cloud off the
+# walls. Starting values from the plan — tune on the robot.
+
+amcl:
+  ros__parameters:
+    # Probabilistic likelihood field + beam skipping: beams that disagree with
+    # the map (clutter) are dropped from the weight instead of penalised.
+    laser_model_type: likelihood_field_prob
+    do_beamskip: true
+    beam_skip_distance: 0.5
+    beam_skip_threshold: 0.3
+    beam_skip_error_threshold: 0.9
+    max_beams: 90
+
+    # Far returns mostly hit things the drawing lacks (or glass/door gaps the
+    # drawing shows as wall); trust only the nearer structure.
+    laser_max_range: 10.0
+
+    # More weight on the random-measurement term, wider hit sigma: a drawn wall
+    # is only as accurate as the drawing and the calibration clicks.
+    z_hit: 0.6
+    z_rand: 0.4
+    sigma_hit: 0.15
+
+    # Absent from scout/config/amcl.yaml; equals the nav2_amcl default, pinned
+    # here so the drawing profile does not move if the upstream default does.
+    laser_likelihood_max_dist: 2.0
+
+    # Recovery injects random particles when the average weight drops. On a
+    # drawing map the weight is always low (clutter), so recovery would scatter
+    # the cloud constantly; 0.0 disables it.
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
