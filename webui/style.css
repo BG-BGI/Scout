@@ -962,3 +962,19 @@ select.txt:disabled { opacity: 0.5; }
 .poi-row .rm:hover { color: var(--danger); border-color: var(--danger); }
 .poi-row button { height: 22px; padding: 0 var(--s2); font-size: 0.65rem; }
 .poi-row .nm:hover { background: none; }
+
+/* import drawing wizard (importwizard.js) */
+#import-panel h2 { display: flex; align-items: center; justify-content: space-between; }
+.imp-x { font-size: 0.65rem; padding: 2px 8px; }
+.imp-step { margin-top: var(--s3); font-weight: 600; font-size: 0.78rem; }
+.imp-sub { margin-top: var(--s2); font-size: 0.72rem; color: var(--dim); }
+.imp-error { padding: var(--s2) var(--s3); font-size: 0.74rem; color: var(--warn); border: 1px solid var(--warn); border-radius: var(--r); }
+.imp-note { padding: var(--s2) var(--s3); font-size: 0.72rem; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r); }
+.imp-banner { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3); font-size: 0.74rem; color: var(--text); background: var(--surface-2); border: 2px solid var(--accent); border-radius: var(--r); }
+.imp-banner button { margin-left: auto; }
+.imp-canvas-wrap { position: relative; margin-top: var(--s2); }
+.imp-canvas-wrap canvas { width: 100%; aspect-ratio: 1 / 1; background: #fff; border: 1px solid var(--border); border-radius: var(--r); touch-action: none; display: block; }
+.imp-zoom { position: absolute; right: 6px; top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.imp-pair, .imp-storey { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-top: var(--s2); font-size: 0.74rem; }
+.imp-storey input[type=text], .imp-storey input[type=number] { width: 7.5rem; }
+.imp-storey > div { flex-basis: 100%; }
