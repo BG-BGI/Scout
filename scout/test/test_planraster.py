@@ -429,3 +429,93 @@ def test_degenerate_fill_is_refused():
 def test_non_positive_closing_length_is_refused():
     with pytest.raises(pr.PlanRasterError):
         pr.rasterize(room(), IDENT, RES, close_m=0)
+
+
+# --- pre-rasterized masks (raster pages) --------------------------------------------------
+
+def mask_of(x0, y0, x1, y1, pixel, bounds=(0.0, 0.0, 12.0, 8.0)):
+    """Bool bitmap (row 0 = top) covering `bounds` with the box (x0, y0)-(x1, y1) set."""
+    bx0, by0, bx1, by1 = bounds
+    cols, rows = round((bx1 - bx0) / pixel), round((by1 - by0) / pixel)
+    xs = bx0 + (np.arange(cols) + 0.5) * pixel
+    ys = by1 - (np.arange(rows) + 0.5) * pixel
+    bitmap = ((xs[None, :] >= x0) & (xs[None, :] <= x1)
+              & (ys[:, None] >= y0) & (ys[:, None] <= y1))
+    return pr.Mask(bitmap=bitmap, left=bx0, top=by1, pixel_w=pixel, pixel_h=pixel)
+
+
+def test_mask_pixels_become_wall_cells_at_the_right_place():
+    mask = mask_of(2.0, 3.0, 2.4, 6.0, 0.0125)
+    grid, meta = pr.rasterize(pr.Geometry(masks=(mask,)), IDENT, RES)
+    v = View(grid, meta)
+    xs, ys = v.centres(pr.OCCUPIED)
+    assert xs.min() == pytest.approx(2.0, abs=RES) and xs.max() == pytest.approx(2.4, abs=RES)
+    assert ys.min() == pytest.approx(3.0, abs=RES) and ys.max() == pytest.approx(6.0, abs=RES)
+    assert int((grid == pr.OCCUPIED).sum()) == pytest.approx(0.4 * 3.0 / RES**2, rel=0.1)
+
+
+def test_mask_room_with_a_door_seals_like_vector_walls():
+    ring = np.zeros((640, 960), dtype=bool)
+    ring[100:540, 100:112] = ring[100:540, 848:860] = True
+    ring[528:540, 100:860] = True
+    ring[100:112, 100:400] = ring[100:112, 490:860] = True
+    mask = pr.Mask(bitmap=ring, left=0.0, top=8.0, pixel_w=0.0125, pixel_h=0.0125)
+    grid, meta = pr.rasterize(pr.Geometry(masks=(mask,)), IDENT, RES)
+    v = View(grid, meta)
+    assert v.at(6.0, 4.0) == pr.FREE
+    assert v.at(5.5, 6.7) == pr.FREE
+    assert v.at(5.5, 7.2) == pr.UNKNOWN
+    assert v.at(1.0, 1.0) == pr.UNKNOWN
+
+
+def test_mask_follows_the_transform():
+    mask = mask_of(2.0, 3.0, 2.4, 6.0, 0.0125)
+    transform = (2.0, rot(90), np.array([10.0, 0.0]))
+    grid, meta = pr.rasterize(pr.Geometry(masks=(mask,)), transform, RES)
+    xs, ys = View(grid, meta).centres(pr.OCCUPIED)
+    tol = 2 * RES
+    assert xs.min() == pytest.approx(10 - 12.0, abs=tol)
+    assert xs.max() == pytest.approx(10 - 6.0, abs=tol)
+    assert ys.min() == pytest.approx(4.0, abs=tol) and ys.max() == pytest.approx(4.8, abs=tol)
+
+
+def test_mask_and_vector_geometry_combine():
+    mask = mask_of(8.0, 1.0, 8.4, 5.0, 0.0125)
+    geo = pr.Geometry(polylines=room().polylines, masks=(mask,))
+    grid, meta = pr.rasterize(geo, IDENT, RES)
+    v = View(grid, meta)
+    assert v.at(8.2, 3.0) == pr.OCCUPIED and v.at(5.0, 3.0) == pr.FREE
+
+
+def test_coarse_mask_pixels_are_supersampled_not_skipped():
+    mask = mask_of(2.0, 2.0, 3.0, 2.2, 0.1)
+    grid, meta = pr.rasterize(pr.Geometry(masks=(mask,)), IDENT, RES)
+    v = View(grid, meta)
+    for x in np.arange(2.025, 3.0, RES):
+        assert v.at(x, 2.1) == pr.OCCUPIED
+
+
+def test_mask_pixels_too_coarse_for_the_resolution_are_refused():
+    mask = mask_of(2.0, 2.0, 3.0, 2.2, 0.4)
+    with pytest.raises(pr.PlanRasterError, match='too coarse'):
+        pr.rasterize(pr.Geometry(masks=(mask,)), IDENT, RES)
+
+
+def test_empty_mask_alone_is_no_geometry_but_does_not_hide_other_geometry():
+    empty = pr.Mask(bitmap=np.zeros((10, 10), dtype=bool), left=0, top=1, pixel_w=0.1, pixel_h=0.1)
+    with pytest.raises(pr.PlanRasterError, match='no geometry'):
+        pr.rasterize(pr.Geometry(masks=(empty,)), IDENT, RES)
+    grid, _ = pr.rasterize(pr.Geometry(polylines=room().polylines, masks=(empty,)), IDENT, RES)
+    assert free_count(grid) == round(9.8 / RES) * round(5.8 / RES)
+
+
+@pytest.mark.parametrize('mask', [
+    pr.Mask(bitmap=np.ones(5, dtype=bool), left=0, top=1, pixel_w=0.1, pixel_h=0.1),
+    pr.Mask(bitmap=np.ones((3, 3), dtype=bool), left=0, top=1, pixel_w=0.0, pixel_h=0.1),
+    pr.Mask(bitmap=np.ones((3, 3), dtype=bool), left=0, top=1, pixel_w=0.1, pixel_h=-0.1),
+    pr.Mask(bitmap=np.ones((3, 3), dtype=bool), left=float('nan'), top=1,
+            pixel_w=0.1, pixel_h=0.1),
+])
+def test_bad_mask_is_refused(mask):
+    with pytest.raises(pr.PlanRasterError):
+        pr.rasterize(pr.Geometry(masks=(mask,)), IDENT, RES)
