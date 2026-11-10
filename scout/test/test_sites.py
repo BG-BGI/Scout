@@ -61,7 +61,8 @@ def test_load_site_v1_upgrades(tmp_path):
         map_start_pose=[1.0, 2.0, 0.5]))
     assert site['active_map'] == 'office'
     assert site['maps'] == {'office': {
-        'label': 'office', 'floor': None, 'map_start_pose': [1.0, 2.0, 0.5]}}
+        'label': 'office', 'floor': None, 'source': 'scan',
+        'map_start_pose': [1.0, 2.0, 0.5]}}
 
 
 def test_load_site_v2_roundtrip(tmp_path):
@@ -72,10 +73,12 @@ def test_load_site_v2_roundtrip(tmp_path):
               'yard': {}}))
     assert site['active_map'] == 'floor1'
     assert site['maps']['floor1'] == {
-        'label': 'Lobby', 'floor': 1, 'map_start_pose': [1.0, 0.0, 0.0]}
+        'label': 'Lobby', 'floor': 1, 'source': 'scan',
+        'map_start_pose': [1.0, 0.0, 0.0]}
     # Per-map defaults fill in; label defaults to the map name.
     assert site['maps']['yard'] == {
-        'label': 'yard', 'floor': None, 'map_start_pose': [0.0, 0.0, 0.0]}
+        'label': 'yard', 'floor': None, 'source': 'scan',
+        'map_start_pose': [0.0, 0.0, 0.0]}
 
 
 def test_load_site_active_map_must_exist(tmp_path):
@@ -103,11 +106,12 @@ def test_load_site_null_values_fall_back(tmp_path):
 
 # --- resolve_slam: the auto policy ---------------------------------------------
 
-def _site(active_map=None, slam_mode='auto', pose=(0.0, 0.0, 0.0), **maps):
-    all_maps = {active_map: {'label': active_map, 'floor': None,
+def _site(active_map=None, slam_mode='auto', pose=(0.0, 0.0, 0.0), source='scan',
+          **maps):
+    all_maps = {active_map: {'label': active_map, 'floor': None, 'source': source,
                              'map_start_pose': list(pose)}} if active_map else {}
     for name, entry in maps.items():
-        all_maps[name] = {'label': name, 'floor': None,
+        all_maps[name] = {'label': name, 'floor': None, 'source': 'scan',
                           'map_start_pose': [0.0, 0.0, 0.0], **entry}
     return {'active_map': active_map, 'slam_mode': slam_mode, 'maps': all_maps}
 
@@ -158,3 +162,112 @@ def test_bad_start_pose_raises(tmp_path):
     with pytest.raises(ValueError):
         sites.resolve_slam(_site(active_map='office', pose=(1.0, 2.0)),
                            str(tmp_path))
+
+
+# --- map source (scan | drawing) -------------------------------------------------
+
+def test_load_site_keeps_drawing_source(tmp_path):
+    site = sites.load_site(_write_site(
+        tmp_path, version=2, active_map='plan',
+        maps={'plan': {'source': 'drawing'}, 'scanned': {}}))
+    assert site['maps']['plan']['source'] == 'drawing'
+    assert site['maps']['scanned']['source'] == 'scan'
+
+
+@pytest.mark.parametrize('raw', ['bim', 'Drawing', '', 7, ['drawing'], None])
+def test_load_site_unknown_source_reads_as_scan(tmp_path, raw):
+    site = sites.load_site(_write_site(
+        tmp_path, version=2, maps={'plan': {'source': raw}}))
+    assert site['maps']['plan']['source'] == 'scan'
+
+
+def test_source_is_a_known_map_key():
+    assert sites.SOURCES == ('scan', 'drawing')
+    assert sites._MAP_DEFAULTS['source'] == 'scan'
+
+
+def test_auto_drawing_with_grid_is_localization(tmp_path):
+    (tmp_path / 'plan.yaml').touch()
+    (tmp_path / 'plan.pgm').touch()
+    mode, map_name, pose = sites.resolve_slam(
+        _site(active_map='plan', source='drawing', pose=(4.0, -2.5, 1.57)),
+        str(tmp_path))
+    assert (mode, map_name, pose) == ('localization', 'plan', [4.0, -2.5, 1.57])
+
+
+def test_auto_drawing_without_grid_is_not_localization(tmp_path):
+    mode, _, _ = sites.resolve_slam(
+        _site(active_map='plan', source='drawing'), str(tmp_path))
+    assert mode == 'new'
+
+
+def test_auto_drawing_without_grid_but_with_posegraph_is_continue(tmp_path):
+    (tmp_path / 'plan.posegraph').touch()
+    mode, _, _ = sites.resolve_slam(
+        _site(active_map='plan', source='drawing'), str(tmp_path))
+    assert mode == 'continue'
+
+
+def test_auto_drawing_with_grid_and_posegraph_is_localization(tmp_path):
+    # Source decides: a force-installed drawing over an old scan keeps localizing.
+    (tmp_path / 'plan.yaml').touch()
+    (tmp_path / 'plan.posegraph').touch()
+    mode, _, _ = sites.resolve_slam(
+        _site(active_map='plan', source='drawing'), str(tmp_path))
+    assert mode == 'localization'
+
+
+def test_auto_scan_with_grid_only_is_still_new(tmp_path):
+    # The old "no posegraph" signature must not flip a scan map to localization.
+    (tmp_path / 'office.yaml').touch()
+    (tmp_path / 'office.pgm').touch()
+    mode, _, _ = sites.resolve_slam(_site(active_map='office'), str(tmp_path))
+    assert mode == 'new'
+
+
+def test_auto_scan_with_grid_and_posegraph_is_continue(tmp_path):
+    (tmp_path / 'office.yaml').touch()
+    (tmp_path / 'office.posegraph').touch()
+    mode, _, _ = sites.resolve_slam(_site(active_map='office'), str(tmp_path))
+    assert mode == 'continue'
+
+
+def test_auto_scan_with_quarantined_graph_and_autosave_is_unchanged(tmp_path):
+    # Posegraph pair quarantined, a valid _autosave beside it, grid still on
+    # disk: resolves exactly as before this change (new; the launch adopts the
+    # autosave), never localization.
+    (tmp_path / 'office.yaml').touch()
+    (tmp_path / '_autosave.posegraph').write_bytes(b'x' * 60_000)
+    (tmp_path / '_autosave.data').write_bytes(b'x' * 5_000)
+    quarantine = tmp_path / '_quarantine'
+    quarantine.mkdir()
+    (quarantine / 'office.posegraph').write_bytes(b'x' * 60_000)
+    (quarantine / 'office.data').write_bytes(b'x' * 5_000)
+    legacy = {'active_map': 'office', 'slam_mode': 'auto', 'maps': {
+        'office': {'label': 'office', 'floor': None,
+                   'map_start_pose': [0.0, 0.0, 0.0]}}}
+    assert sites.resolve_slam(_site(active_map='office'), str(tmp_path)) == \
+        sites.resolve_slam(legacy, str(tmp_path)) == ('new', 'office', [0.0] * 3)
+
+
+def test_auto_keyed_on_active_source_not_others(tmp_path):
+    (tmp_path / 'plan.yaml').touch()
+    mode, _, _ = sites.resolve_slam(
+        _site(active_map='floor1', plan={'source': 'drawing'}), str(tmp_path))
+    assert mode == 'new'
+
+
+@pytest.mark.parametrize('want', ['new', 'localization', 'continue'])
+def test_explicit_modes_ignore_source(tmp_path, want):
+    (tmp_path / 'plan.yaml').touch()
+    mode, _, _ = sites.resolve_slam(
+        _site(active_map='plan', source='drawing', slam_mode=want),
+        str(tmp_path))
+    assert mode == want
+
+
+def test_hand_built_entry_without_source_resolves_as_scan(tmp_path):
+    (tmp_path / 'office.yaml').touch()
+    site = {'active_map': 'office', 'slam_mode': 'auto', 'maps': {
+        'office': {'map_start_pose': [0.0, 0.0, 0.0]}}}
+    assert sites.resolve_slam(site, str(tmp_path))[0] == 'new'
