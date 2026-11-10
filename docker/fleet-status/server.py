@@ -495,8 +495,11 @@ def list_sites():
 def apriltags():
     """Registered AprilTags from the active site's tags.db (read-only) — the
     webui draws surveyed ones as map markers. scout-skills owns the writes;
-    mode=ro so a mid-write read can't corrupt anything. Rows may predate
-    ADR-0029 (no map_name column) — SELECT * tolerates both schemas."""
+    mode=ro so a mid-write read can't corrupt anything. Per tag, map_x/map_y/
+    map_yaw/map_name are the pose for the ACTIVE map (null when unsurveyed
+    there) and `poses` lists every named map it is surveyed on. Works on files
+    that predate the per-map table (tagpose.list_tags falls back to the legacy
+    columns, which a read-only open cannot migrate)."""
     active = _active_site()
     if active is None:
         return {"tags": []}
@@ -504,13 +507,11 @@ def apriltags():
     if not os.path.exists(path):
         return {"tags": []}
     try:
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        db.row_factory = sqlite3.Row
-        rows = [dict(r) for r in db.execute("SELECT * FROM tags")]
-        db.close()
+        return {"tags": tagpose.list_tags(
+            path, tagpose.active_map_name(
+                os.path.join(SITES_DIR, active, "site.json")))}
     except sqlite3.Error as e:
         return {"tags": [], "error": str(e)}
-    return {"tags": rows}
 
 
 def _poi_paths():
