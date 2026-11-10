@@ -1598,6 +1598,210 @@ def _poi_hint(name: str) -> tuple[float, float]:
     return (poi["map_x"], poi["map_y"])
 
 
+# --- wall_spans: lidar wall-to-wall spans in base_link (floorplan scale) ------
+#
+# Read-only and map-free: calibrating a drawing's scale happens before any map
+# exists, so nothing here needs map->odom or localization. Subscribe-only
+# (/scan, /tf_static, /odom through collect_multi): no cmd_vel, no nav tool, no
+# action goal. The MCP tool and the browser's plain GET share _wall_spans.
+# CORS is `*` on the REST route's own responses ONLY — never app-wide
+# middleware, and never on /mcp, which exposes motion tools (a CORS /mcp would
+# let any web page in the operator's browser drive the robot).
+
+from starlette.requests import Request  # noqa: E402
+from starlette.responses import JSONResponse, Response  # noqa: E402
+from websockets.exceptions import WebSocketException  # noqa: E402
+
+WALL_SPANS_PATH = "/api/wall_spans"
+WALL_SPANS_METHODS = ["GET", "OPTIONS"]
+WALL_SPANS_QUERY = (
+    "scans", "max_range_m", "min_length_m", "require_stationary", "include_points",
+)
+WALL_SPANS_CORS = {"Access-Control-Allow-Origin": "*"}
+WALL_SPANS_PREFLIGHT = WALL_SPANS_CORS | {
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Max-Age": "600",
+}
+WALL_SPANS_MAX_SCANS = 10
+WALL_SPANS_RANGE_LIMITS_M = (0.5, 30.0)
+WALL_SPANS_LENGTH_LIMITS_M = (0.1, 20.0)
+_QUERY_TRUE = {"1", "true", "yes", "on"}
+_QUERY_FALSE = {"0", "false", "no", "off"}
+
+
+class _WallSpansError(Exception):
+    """wall_spans failure carrying the HTTP status the REST route answers with;
+    the MCP tool re-raises it as ToolError."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
+
+
+def _check_wall_spans_args(scans: int, max_range_m: float, min_length_m: float) -> None:
+    if isinstance(scans, bool) or not 1 <= scans <= WALL_SPANS_MAX_SCANS:
+        raise _WallSpansError(400, f"scans must be 1-{WALL_SPANS_MAX_SCANS}")
+    lo, hi = WALL_SPANS_RANGE_LIMITS_M
+    if not (math.isfinite(max_range_m) and lo <= max_range_m <= hi):
+        raise _WallSpansError(400, f"max_range_m must be {lo:g}-{hi:g}")
+    lo, hi = WALL_SPANS_LENGTH_LIMITS_M
+    if not (math.isfinite(min_length_m) and lo <= min_length_m <= hi):
+        raise _WallSpansError(400, f"min_length_m must be {lo:g}-{hi:g}")
+
+
+def _spans_stationary(odom: list[dict], scan_msgs: list[dict]) -> tuple[bool, str, list[str]]:
+    """(stationary, why-not, flags): /odom twist plus first-vs-last scan
+    agreement. No TF-drift check — there is no map frame to drift in."""
+    twists = [o["twist"]["twist"] for o in odom]
+    v = max(
+        (max(abs(t["linear"]["x"]), abs(t["linear"].get("y", 0.0)), abs(t["angular"]["z"]))
+         for t in twists),
+        default=None,
+    )
+    agree = sm.scan_agreement(scan_msgs)
+    flags = []
+    if v is None:
+        flags.append("no /odom traffic: stationary judged from scan agreement only")
+    if agree is None:
+        flags.append("scan agreement unavailable (one scan, or no overlapping beams)")
+    if v is None and agree is None:
+        return False, "stationarity unverifiable (no /odom traffic, no scan pair)", flags
+    moving = (v is not None and v > sm.STATIONARY_V) or (
+        agree is not None and agree > sm.STATIONARY_AGREE_M
+    )
+    why = (
+        f"robot moving (scan-to-scan {'n/a' if agree is None else f'{agree * 100:.1f} cm'}, "
+        f"max twist {'n/a' if v is None else f'{v:.3f}'})"
+    )
+    return not moving, why, flags
+
+
+async def _wall_spans(
+    scans: int = 3,
+    max_range_m: float = 10.0,
+    min_length_m: float = sm.WALL_MIN_LENGTH_M,
+    require_stationary: bool = True,
+    include_points: bool = False,
+) -> dict:
+    _check_wall_spans_args(scans, max_range_m, min_length_m)
+    window = 1.0 + scans / 8.0
+    try:
+        async with RosBridge(heavy=True) as rb:
+            got = await rb.collect_multi(
+                {SCAN_TOPIC: SCAN_TYPE, "/tf_static": TF_TYPE, ODOM_TOPIC: ODOM_TYPE},
+                duration=window,
+            )
+    except (RosBridgeError, WebSocketException, OSError) as e:
+        raise _WallSpansError(503, f"rosbridge unavailable: {e}") from e
+    scan_msgs = got[SCAN_TOPIC][-scans:]
+    if not scan_msgs:
+        raise _WallSpansError(503, f"no {SCAN_TOPIC} traffic in {window:.1f} s — lidar down?")
+
+    laser, fallback = sm.base_laser(
+        sm.index_tf(got["/tf_static"]), scan_msgs[-1]["header"].get("frame_id", "laser")
+    )
+    stationary, why, flags = _spans_stationary(got[ODOM_TOPIC], scan_msgs)
+    if not stationary:
+        if require_stationary:
+            raise _WallSpansError(409, why + " — park it and retry, or require_stationary=False")
+        flags.append(why)
+    if fallback:
+        flags.append("base_link->laser from URDF constants (/tf_static not replayed)")
+    if len(scan_msgs) < scans:
+        flags.append(f"only {len(scan_msgs)}/{scans} scans arrived in {window:.1f} s")
+
+    points = [sm.scan_points(m, laser, max_range_m) for m in scan_msgs]
+    found = sm.wall_spans(points, laser[:2], min_length_m)
+    out = {
+        "ok": True,
+        "frame": "base_link",
+        "stamp": round(sm.stamp_s(scan_msgs[-1]["header"]), 3),
+        "scans_used": len(scan_msgs),
+        "stationary": stationary,
+        "walls": found["walls"],
+        "pairs": found["pairs"],
+        "flags": flags + found["flags"],
+    }
+    if include_points:
+        out["points_xy"] = sm.points_xy(points[-1])
+    return out
+
+
+@mcp.tool(annotations={"readOnlyHint": True})
+async def wall_spans(
+    scans: int = 3,
+    max_range_m: float = 10.0,
+    min_length_m: float = sm.WALL_MIN_LENGTH_M,
+    require_stationary: bool = True,
+    include_points: bool = False,
+) -> dict:
+    """Measure straight walls and wall-to-wall spans from the live lidar, in
+    base_link, with NO map or localization (floorplan scale calibration:
+    compare these spans with the same walls marked on a drawing). Robot must be
+    parked; nothing is ever commanded. Fits straight segments to `scans` /scan
+    messages (clutter rejected: min_length_m, point count, residual), fuses
+    them (mean + spread per wall), then pairs near-parallel walls with the
+    laser between them: span_m is the perpendicular distance along the mean
+    normal. A lone wall of an axis is flagged, never paired; flags also say
+    when no two pairs are roughly orthogonal (calibration wants two
+    non-parallel spans). include_points adds the decimated base_link scan
+    points. The same JSON is served at GET http://<pi>:9001/api/wall_spans."""
+    try:
+        return await _wall_spans(
+            scans, max_range_m, min_length_m, require_stationary, include_points
+        )
+    except _WallSpansError as e:
+        raise ToolError(str(e)) from e
+
+
+def _query_flag(raw: str, name: str) -> bool:
+    word = raw.strip().lower()
+    if word in _QUERY_TRUE:
+        return True
+    if word in _QUERY_FALSE:
+        return False
+    raise _WallSpansError(400, f"{name} must be 1/0 or true/false, got {raw!r}")
+
+
+def _wall_spans_args(query: dict[str, str]) -> dict:
+    unknown = sorted(set(query) - set(WALL_SPANS_QUERY))
+    if unknown:
+        raise _WallSpansError(
+            400, f"unknown parameter(s) {unknown} — have: {list(WALL_SPANS_QUERY)}"
+        )
+    args: dict = {}
+    for name, cast, kind in (
+        ("scans", int, "an integer"),
+        ("max_range_m", float, "a number"),
+        ("min_length_m", float, "a number"),
+    ):
+        if name in query:
+            try:
+                args[name] = cast(query[name])
+            except ValueError as e:
+                raise _WallSpansError(400, f"{name} must be {kind}, got {query[name]!r}") from e
+    for name in ("require_stationary", "include_points"):
+        if name in query:
+            args[name] = _query_flag(query[name], name)
+    return args
+
+
+@mcp.custom_route(WALL_SPANS_PATH, methods=WALL_SPANS_METHODS)
+async def wall_spans_rest(request: Request) -> Response:
+    """GET /api/wall_spans?scans=&max_range_m=&min_length_m=&require_stationary=
+    &include_points= -> the wall_spans dict. Errors are {"error": "..."}: 400 bad
+    params, 409 robot moving, 503 no /scan or rosbridge down. CORS `*` on this
+    route's responses only."""
+    if request.method == "OPTIONS":
+        return Response(status_code=204, headers=WALL_SPANS_PREFLIGHT)
+    try:
+        body = await _wall_spans(**_wall_spans_args(dict(request.query_params)))
+    except _WallSpansError as e:
+        return JSONResponse({"error": str(e)}, status_code=e.status, headers=WALL_SPANS_CORS)
+    return JSONResponse(body, headers=WALL_SPANS_CORS)
+
+
 # --- RFID (Flipper Zero, ADR-0025) --------------------------------------------
 #
 # flipper_node (robot service) owns the Flipper's USB CLI and loops
