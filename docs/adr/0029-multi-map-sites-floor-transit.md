@@ -1,5 +1,12 @@
 # ADR-0029: multi-map sites (floors) + AprilTag floor transit
 
+> **Amended by [ADR-0040](0040-floorplan-sourced-maps.md):** the `tags.db` bullet's "The PK
+> stays `(family, tag_id)` — one surveyed pose per tag, so **each floor's transit tag must
+> be a distinct physical tag ID**" and "NULL = legacy = assume active map" are superseded:
+> tag poses are stored per tag **per map** (`tag_poses`), the same physical tag can be
+> surveyed on every map, and a NULL-map legacy pose applies to the active map only while
+> the tag has no named pose. The transit rule picks the one same-source map (ADR-0040 §7).
+
 Status: accepted · Date: 2026-09-01
 
 ## Context

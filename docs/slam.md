@@ -3,7 +3,8 @@
 slam_toolbox 2.6.10 (apt), config `scout/config/slam.yaml`, launch
 `scout/launch/slam.launch.py`. Operating recipes and the mode/serialization
 traps live in CLAUDE.md (SLAM section) — this doc covers mechanism, measured
-quality, tuning rationale, and where to go next.
+quality, tuning rationale, and where to go next. Drawing-sourced (floorplan)
+maps: operating recipe in §6 (decisions: ADR-0040).
 
 ## 1. How this pipeline actually works
 
@@ -173,3 +174,179 @@ the mission needs 3D capture. Do not run RTAB-Map on the Pi.**
   retryable chunks (the Pi ethernet flaps under sustained load). The existing
   patrol_capture flow is the natural trigger point.
 - Re-evaluate onboard only if compute changes (Jetson-class or offload).
+
+## 6. Drawing-sourced maps (floorplan) — operating recipe for what exists today
+
+Decisions and limits: ADR-0040. **Nothing in this section has run on the robot
+yet** — steps are written from the merged code; the first on-robot pass will
+correct them. A drawing map is an ordinary amcl grid map (`<name>.yaml` +
+`.pgm`, no posegraph) whose `site.json` entry has `source: drawing`. The
+importer that produces the pair from a PDF/IFC is not merged yet (see the stub
+at the end), so today you install a pair you made yourself.
+
+### 6.1 Install a drawing grid via the API
+
+`POST http://<pi>:9003/api/maps/install` (fleet_status; only on the Pi, where
+`SITE_SCAFFOLD=pi`, otherwise 404). Writes into the **active site**, never
+changes `active_map`, never touches a scan map. Body is one JSON object:
+
+```bash
+# floor1_plan.yaml (nav2 map_server yaml; `image:` is ignored and rewritten)
+#   image: floor1_plan.pgm
+#   mode: trinary
+#   resolution: 0.05
+#   origin: [-12.0, -8.0, 0.0]
+#   negate: 0
+#   occupied_thresh: 0.65
+#   free_thresh: 0.196
+python3 -c '
+import base64, json
+print(json.dumps({
+    "name": "floor1_plan",              # ^[a-z0-9][a-z0-9_-]{0,31}$, no leading "_"
+    "label": "Floor 1 (plan)", "floor": 1,
+    "map_start_pose": [0.0, 0.0, 0.0],  # where amcl starts; seed the real pose later
+    "yaml": open("floor1_plan.yaml").read(),
+    "pgm_b64": base64.b64encode(open("floor1_plan.pgm", "rb").read()).decode(),
+    "sidecar": {"source_file": "A-101.pdf", "note": "hand-installed"},
+    "source": "drawing",                # optional; only "drawing" is accepted
+}))' > install.json
+curl -sS -X POST http://<pi>:9003/api/maps/install \
+     -H 'Content-Type: application/json' --data-binary @install.json
+```
+
+- pgm: binary P5, maxval 255, ≤ 4000×4000 cells, ≤ 16 MiB decoded. Use the
+  importer's grid convention: walls **0**, free **254**, unknown **205**,
+  `free_thresh: 0.196` (so 205 stays unknown).
+- `200` → `{"ok": true, "name", "replaced", "source": "drawing", "width",
+  "height", "resolution", "origin", "bytes", "entry", "active_map"}`.
+  Installing the same name again **replaces it in place** (that is how you
+  recalibrate) — only because its `.drawing.json` sidecar exists.
+- Refusals leave nothing changed: `400` bad field / name / any `force` field
+  (there is no `force`); `409` a `.posegraph`/`.data` exists for the name, the
+  entry is not a drawing, files/entry exist without a sidecar, no active site;
+  `411`/`413` missing/too large body; `422` bad pgm/yaml.
+- Check it: `GET http://<pi>:9003/api/sites` shows the map with `source`,
+  `grid: true`, `posegraph: false`; `GET /api/maps/floor1_plan.pgm|.yaml`
+  returns the raw files.
+
+### 6.2 Activate, and what `auto` does
+
+Activate from the webui Site panel (Activate), or the scout-skills
+`switch_map(name)` tool. Both pick the right path (6.4). Under the default
+`slam_mode: auto` the **active map's `source` decides the mode**:
+
+| active map | `auto` runs as |
+|---|---|
+| `drawing`, `<name>.yaml` exists | `localization` (amcl + map_server on the grid) |
+| `drawing`, no grid | `continue` if a posegraph exists, else `new` |
+| `scan` | `continue` if a posegraph exists, else `new` — never localization |
+
+`GET /api/sites` reports it as `resolved_mode` next to the raw `slam_mode`. A
+pinned `slam_mode` (e.g. `localization`) is used as set. In localization the
+drawing amcl overlay (`scout/config/source_overlays/drawing/amcl.yaml`) loads on
+top of any `SCOUT_PROFILE`; scan maps keep the unchanged `amcl.yaml`.
+
+### 6.3 Set pose — mandatory
+
+There is **no global localization on a drawing** (ADR-0040): amcl starts at the
+map's `map_start_pose` and will not find the robot by itself. After the map is
+live, use the webui **Set pose** (tap the position, then the heading →
+`/initialpose`),
+or show the robot a surveyed AprilTag (6.5). Then **look at the scan against the
+map** before sending a goal — a tight numeric correction does not prove the
+pose. (The scan-over-drawing overlay in the web UI is decided but not built yet:
+UI pending.)
+
+### 6.4 Switching maps
+
+- **Same source** (drawing → drawing, scan → scan under localization): live
+  `/map_server/load_map` swap, ~1 s, pose re-seeded at the new map's
+  `map_start_pose`.
+- **Across sources** (scan ↔ drawing): amcl's parameters are fixed at launch, so
+  it **POSTs `active_map` then restarts slam + behaviors** (~20 s; driving and
+  camera stay up). When amcl comes back the tag relocalizer is re-armed
+  automatically once a *fresh* `/amcl_pose` appears (up to ~90 s); if it does not,
+  the UI/`switch_map` says **"Set pose after restart"** — do that.
+- Refused before any change: a target that will run amcl but has no grid.
+- A floor-transit tag that points at a map of the *other* source is never
+  switched live: tag_relocalizer logs one throttled line; switch manually.
+
+### 6.5 Survey one tag on a second map of the same floor
+
+A tag's pose is stored **per map**, so the same physical tag can be surveyed on
+`floor1` (scan) and `floor1_plan` (drawing) and each map relocalizes from its
+own. A sighting alone only first-surveys a tag with **no pose on any map**, so
+for the second map do it explicitly, with the robot **verifiably well
+localized on the active map** and the tag in view:
+
+1. Activate the second map (6.2) and set pose (6.3).
+2. `resurvey_apriltag(name)` (scout-skills) — clears the tag's pose on the
+   *active map only* and arms the next sighting to survey it there; the watcher
+   records it within a couple of seconds of the tag being in view (the passive
+   watcher is on by default; `apriltag_watch`). Arming is in memory: a
+   scout-skills restart disarms — call it again.
+   **Or** webui **Set tag position** (tap the tag, tap where the robot stands in
+   front of it): writes the active map's pose directly, and replaces the tag's
+   waypoint (the response says which map's waypoint it replaced).
+3. `list_apriltags` shows the pose for the active map in `map_x/map_y/map_yaw`
+   and every surveyed map in `poses`. Surveying map B never touches map A.
+
+Floor transit: a tag with a pose on the active map relocalizes there; with none
+but poses elsewhere, the robot transits to the **one** other map of the same
+source, and to none when that is ambiguous (a warning names the candidates).
+
+**Legacy-pose caveat.** A pose surveyed before per-map poses (stored with no
+map, shown with `map_name: null`) applies to **whichever map is active** until
+the tag has any named pose. If you add a drawing map of a floor whose tags were
+surveyed on the scan map and the drawing's frame differs, **re-survey those tags
+on the drawing map (6.5)** — until then the old pose is also used there.
+
+### 6.6 Measure a wall span with the robot (`wall_spans`)
+
+Robot-measured scale reference: straight walls and wall-to-wall spans from the
+live lidar, in `base_link`, with no map or localization. Subscribe-only; nothing
+is commanded. Park the robot with two **non-parallel** wall pairs in view (e.g. a
+corridor and its end wall), then:
+
+```bash
+curl -sS 'http://<pi>:9001/api/wall_spans?scans=3&max_range_m=10&min_length_m=0.6' \
+  | python3 -m json.tool
+```
+
+Query (all optional): `scans` 1–10 (default 3), `max_range_m` 0.5–30 (10),
+`min_length_m` 0.1–20 (0.6; shorter clutter is dropped), `require_stationary`
+(default true), `include_points` (default false; adds the decimated scan points
+as `points_xy`). Same JSON from the MCP tool `wall_spans`.
+
+Response: `ok`, `frame` (`base_link`), `stamp`, `scans_used`, `stationary`,
+`flags` (read these), and:
+
+- `walls[]` — `id` (`w0`, longest first), `bearing_rad`, `distance_m`,
+  `spread_m` (disagreement across scans), `length_m`, `points`, `rms_m`, `p0`,
+  `p1` (segment ends in `base_link`).
+- `pairs[]` — `a`, `b` (wall ids), `span_m` (perpendicular distance between two
+  near-parallel walls with the laser between them), `spread_m`, `axis_rad`,
+  `parallel_err_deg`.
+
+Using it: compare each `span_m` with the same two walls measured on the drawing.
+**Take the top pair per axis.** `pairs` is sorted by the shorter wall's length
+(longest first), then by spread, and a doorway splits one wall into two segments,
+so the same axis often shows near-duplicate pairs with almost the same span —
+the first pair on an axis is the best-supported one. Calibration wants two
+pairs on roughly orthogonal axes; the `flags` say when a wall has no partner or
+no orthogonal pair exists.
+
+Errors, always `{"error": "..."}`: `400` bad parameter; `409` the robot is
+moving — park it and retry, or pass `require_stationary=false` (the moving
+reason is then added to `flags` and the spans are less trustworthy); `503` no
+`/scan` traffic or rosbridge down. The route answers CORS `*` for the web wizard;
+`/mcp` never does. The stationary threshold (0.04 m scan-to-scan) is untuned on
+the real lidar.
+
+### 6.7 Import wizard (pending)
+
+*Stub — a later docs pass fills this in once the importer HTTP server and the web
+wizard merge:* PDF upload and page choice, the scale proposal and the three
+calibration methods (two-click, robot-measured via 6.6, typed scale), rotation
+and origin, occupancy preview, IFC storey picker, naming/floor, and the
+scan-over-drawing overlay check. Until then 6.1 is the only way in.

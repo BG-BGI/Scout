@@ -34,10 +34,11 @@ forking a config no longer forks — and drifts — the reasoning).
 | [0025](0025-flipper-rfid-companion-store.md) | Flipper Zero RFID — webui-gated scan loop, reads over zenoh, companion sqlite DB |
 | [0026](0026-flipper-nfc.md) | Flipper Zero NFC read/store mirroring the RFID pipeline |
 | [0027](0027-cicd-github-actions-deploy.md) | CI/CD — GHCR sha-pinned images, dispatch-only deploy on self-hosted runners |
-| [0028](0028-amcl-localization.md) | amcl + map_server replace slam_toolbox's localization mode |
-| [0029](0029-multi-map-sites-floor-transit.md) | Multi-map sites (floors) + AprilTag floor transit |
+| [0028](0028-amcl-localization.md) | amcl + map_server replace slam_toolbox's localization mode (`auto` sentence amended by 0040) |
+| [0029](0029-multi-map-sites-floor-transit.md) | Multi-map sites (floors) + AprilTag floor transit (one-pose-per-tag rule amended by 0040) |
 | [0030](0030-schindler-elevator-api.md) | Schindler RBL elevator rides — schindler-rbl SDK + scout-skills tools |
 | 0031 | (retired — reverted BIM/OpenSpace integration) |
 | [0032](0032-uhf-rfid-pipeline.md) | UHF RFID (M7E Hecto) — batched pose-stamped reads, companion centroid localization |
 | [0038](0038-poi-registry-and-tag-family-naming.md) | POI registry + AprilTag/RFID/POI tag-family naming |
 | [0039](0039-rosbridge-handshake-gate.md) | rosbridge handshake gate: concurrent light calls, heavy fence, yielding tag watcher |
+| [0040](0040-floorplan-sourced-maps.md) | Floorplan-sourced maps: a drawing is a normal amcl grid map (grid-only install, `source`, drawing profile, per-map tag poses) |
