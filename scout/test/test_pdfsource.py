@@ -1,8 +1,9 @@
 """PDF ingestion (docker/floorplan-importer/pdfsource.py): open, pages, scale, walls, raster, PNG.
 
 Committed tests build their PDFs in-process with PyMuPDF. The sample-backed tests at the bottom
-read the real A-101 sheets from $SCOUT_FLOORPLAN_SAMPLES (default: the main checkout's
-docs/floorplans) and skip when they are absent; those PDFs are never committed.
+read the real A-101 sheets from $SCOUT_FLOORPLAN_SAMPLES (default: <repo>/docs/floorplans,
+untracked, so absent in a fresh worktree) and skip when they are absent; those PDFs are never
+committed.
 """
 import importlib
 import json
@@ -768,7 +769,7 @@ def test_bad_raster_arguments_are_refused(raster_pdf, args, opts):
 # --- sample-backed (real A-101 sheets; skipped when absent) --------------------------------
 
 SAMPLES = pathlib.Path(os.environ.get(
-    'SCOUT_FLOORPLAN_SAMPLES', '/Users/cdrew/Documents/GitHub/Scout/docs/floorplans'))
+    'SCOUT_FLOORPLAN_SAMPLES', str(_DIR.parents[1] / 'docs' / 'floorplans')))
 SAMPLE_FILES = sorted(SAMPLES.glob('*.pdf')) if SAMPLES.is_dir() else []
 EXISTING = SAMPLES / 'the_zone_A-101_existing_conditions.pdf'
 BAR_GRAY = 74
