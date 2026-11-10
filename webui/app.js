@@ -545,6 +545,7 @@ function onPose(msg) {
     x: p.position.x, y: p.position.y,
     yaw: 2 * Math.atan2(p.orientation.z, p.orientation.w),
   };
+  ScanLayer.notePose(robotPose);
   drawMap();
 }
 // Only one of these publishes per session (slam vs localization mode).
@@ -553,6 +554,16 @@ function onPose(msg) {
     ros, name, messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
     throttle_rate: 500,
   }).subscribe(onPose);
+});
+// Scan-over-drawing overlay (R10): all of its logic lives in scanlayer.js. It only
+// subscribes to /scan while a drawing map runs under localization, reads the /map
+// grid held in liveMsg, and never blocks or sends a goal.
+ScanLayer.init({
+  ros, ROSLIB, getGrid: () => liveMsg, occThreshold: () => OCC_THRESHOLD,
+  redraw: drawMap, nextAmclPose,
+  banner: document.getElementById('scan-banner'),
+  fitEl: document.getElementById('scan-fit'),
+  dismissBtn: document.getElementById('scan-banner-dismiss'),
 });
 
 const planTopic = new ROSLIB.Topic({
@@ -727,6 +738,7 @@ function drawMap() {
   mapCtx.restore();
 
   drawStructGrid();
+  ScanLayer.draw(mapCtx, worldToCanvas);
 
   if (plan && plan.length > 1) {
     mapCtx.strokeStyle = '#F2B200';
@@ -2846,6 +2858,7 @@ function renderSites(data) {
     ? `${mapCount} map${mapCount === 1 ? '' : 's'}`
     : 'no active site';
   renderActiveCard(data.active);
+  ScanLayer.sync(activeSiteMeta);
   renderSlamMode();
   siteList.innerHTML = '';
   for (const s of data.sites || []) {

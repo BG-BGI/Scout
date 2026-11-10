@@ -175,6 +175,23 @@ aside  { order: 3; }
 }
 
 
+/* scan-over-drawing banner (scanlayer.js): neutral on purpose, the fit is a hint */
+.scan-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3);
+  padding: var(--s2) var(--s3); margin-bottom: var(--s2);
+  font-size: 0.72rem; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r);
+}
+.scan-banner[hidden] { display: none; }
+.scan-banner-fit { font-size: 0.66rem; color: var(--dim); }
+.scan-banner-fit b { color: var(--text); font-weight: 600; }
+.scan-banner-fit i { font-style: normal; }
+.scan-banner.stale .scan-banner-fit { opacity: 0.55; }
+.scan-banner button {
+  margin-left: auto; font-family: var(--mono); font-size: 0.65rem; padding: 3px 8px;
+  cursor: pointer; color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: 2px;
+}
 #map-frame { min-width: 0; position: relative; aspect-ratio: 1 / 1; }
 @media (min-width: 940px) {
   #map-frame {
