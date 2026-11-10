@@ -24,6 +24,7 @@ MAX_CELLS = 4000 * 4000
 CLOSE_M = 1.2
 CLOSE_ORIENTATIONS = 16
 MIN_HALF_CELLS = math.sqrt(0.5)
+MAX_MASK_SUPERSAMPLE = 4
 ORIGIN_DECIMALS = 6
 EPS = 1e-9
 PGM_MAXVAL = 255
@@ -54,18 +55,32 @@ class Fill:
 
 
 @dataclass(frozen=True, eq=False)
+class Mask:
+    """Pre-rasterized wall pixels (a rendered raster page). `bitmap` is bool with row 0 at the
+    top; (`left`, `top`) is the source-frame position of its top-left corner (y-up) and
+    (`pixel_w`, `pixel_h`) the source size of one pixel."""
+
+    bitmap: np.ndarray
+    left: float
+    top: float
+    pixel_w: float
+    pixel_h: float
+
+
+@dataclass(frozen=True, eq=False)
 class Geometry:
     polylines: tuple = ()
     fills: tuple = ()
+    masks: tuple = ()
 
 
 def rasterize(geometry, transform, resolution, *, close_m=CLOSE_M):
     res = _positive(resolution, "resolution")
     close_m = _positive(close_m, "close_m")
     s, rot, trans = _check_transform(transform)
-    lines, fills = _to_world(geometry, s, rot, trans)
-    ox, oy, h, w = _frame(lines, fills, res, close_m)
-    walls = _wall_mask(lines, fills, np.array([ox, oy]), res, (h, w))
+    lines, fills, masks = _to_world(geometry, s, rot, trans)
+    ox, oy, h, w = _frame(lines, fills, masks, res, close_m)
+    walls = _wall_mask(lines, fills, masks, np.array([ox, oy]), res, (h, w))
     if not walls.any():
         raise PlanRasterError("geometry produced no occupied cells")
     exterior = _exterior(walls, res, close_m)
@@ -160,14 +175,35 @@ def _to_world(geometry, s, rot, trans):
         if not rings:
             raise PlanRasterError("fill has no rings")
         fills.append(rings)
-    if not lines and not fills:
+    masks = [m for m in (_mask_points(mask, xf, s) for mask in geometry.masks) if m is not None]
+    if not lines and not fills and not masks:
         raise PlanRasterError("no geometry to rasterize")
-    return lines, fills
+    return lines, fills, masks
 
 
-def _frame(lines, fills, res, close_m):
+def _mask_points(mask, xf, s):
+    """(centres in map metres, pixel edge in metres) of a mask's set pixels, None if empty."""
+    bitmap = np.asarray(mask.bitmap)
+    sizes = (mask.left, mask.top, mask.pixel_w, mask.pixel_h)
+    if bitmap.ndim != 2 or not all(math.isfinite(v) for v in sizes):
+        raise PlanRasterError("mask needs a 2-D bitmap and finite placement")
+    if mask.pixel_w <= 0 or mask.pixel_h <= 0:
+        raise PlanRasterError("mask pixel size must be > 0")
+    rows, cols = np.nonzero(bitmap)
+    if len(rows) == 0:
+        return None
+    x = mask.left + (cols + 0.5) * mask.pixel_w
+    y = mask.top - (rows + 0.5) * mask.pixel_h
+    src = np.stack([x, y], axis=1)
+    return xf(src), s * max(mask.pixel_w, mask.pixel_h)
+
+
+def _frame(lines, fills, masks, res, close_m):
     lo = np.full(2, np.inf)
     hi = np.full(2, -np.inf)
+    for centres, edge in masks:
+        lo = np.minimum(lo, centres.min(axis=0) - edge)
+        hi = np.maximum(hi, centres.max(axis=0) + edge)
     for pts, width in lines:
         lo = np.minimum(lo, pts.min(axis=0) - width / 2)
         hi = np.maximum(hi, pts.max(axis=0) + width / 2)
@@ -188,15 +224,31 @@ def _frame(lines, fills, res, close_m):
     return ox, oy, int(h), int(w)
 
 
-def _wall_mask(lines, fills, origin, res, shape):
+def _wall_mask(lines, fills, masks, origin, res, shape):
     h, w = shape
     diff = np.zeros((h, w + 1), dtype=np.int32)
     filled = np.zeros(shape, dtype=bool)
+    for centres, edge in masks:
+        _stamp_mask(filled, (centres - origin) / res, edge / res)
     for pts, width in lines:
         _stroke(diff, (pts - origin) / res, width / (2 * res))
     for rings in fills:
         _fill(filled, diff, [(r - origin) / res for r in rings])
     return (np.cumsum(diff, axis=1)[:, :w] > 0) | filled
+
+
+def _stamp_mask(filled, cells, edge):
+    """Mark the cell under each mask pixel; coarse pixels are supersampled so none are skipped."""
+    k = max(1, math.ceil(edge / (0.5 + EPS)))
+    if k > MAX_MASK_SUPERSAMPLE:
+        raise PlanRasterError("mask pixels are too coarse for this resolution; render finer")
+    h, w = filled.shape
+    offsets = (np.arange(k) + 0.5) / k - 0.5
+    for dx in offsets:
+        for dy in offsets:
+            c = np.floor(cells + np.array([dx, dy]) * edge).astype(np.int64)
+            ok = (c[:, 0] >= 0) & (c[:, 0] < w) & (c[:, 1] >= 0) & (c[:, 1] < h)
+            filled[c[ok, 1], c[ok, 0]] = True
 
 
 def _dedupe(pts):

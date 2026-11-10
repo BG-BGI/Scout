@@ -1,0 +1,8 @@
+# floorplan-importer runtime. Versions are the ones the tests ran against.
+# PyMuPDF is AGPL-3.0 (internal service; see the plan's licence note).
+# pymupdf 2.x declares networkx, onnxruntime, pyyaml, psutil, tabulate, pymupdf-layout and
+# pymupdf4llm as dependencies, but `import pymupdf` plus drawings/text/render needs none of
+# them. Install with `pip install --no-deps -r requirements.txt` to keep onnxruntime (large)
+# out of the image; numpy has no dependencies of its own.
+numpy>=2.0,<3
+pymupdf>=2.1,<3
