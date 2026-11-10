@@ -6,9 +6,11 @@ handler for the install integration. Skipped when ifcopenshell, shapely or PyMuP
 """
 import base64
 import hashlib
+import http.client
 import json
 import math
 import pathlib
+import time
 
 import numpy as np
 import pytest
@@ -856,3 +858,97 @@ def test_the_cgroup_limit_reader(tmp_path):
 def test_memory_limit_comes_from_the_environment_first():
     imp = srv.importer_from_env({'IMPORTER_MEMORY_LIMIT_MB': '1536'})
     assert imp.memory_limit_mb == 1536
+
+
+# --- follow-ups: gate after eviction, in-flight uploads, stale temp dirs ----------------------
+
+def test_a_replacing_upload_is_gated_on_the_post_eviction_size(make_app):
+    recycle = Recycle()
+    holder = {}
+
+    def rss():
+        """High while an IFC model is held, low once reserve() has released it."""
+        held = any(j.kind == 'ifc' for j in holder['app'].importer.jobs.values())
+        return 950.0 if held else 100.0
+
+    app = make_app(None, memory_limit_mb=1000, rss_reader=rss, recycle=recycle)
+    holder['app'] = app
+    first = new_ifc(app)['id']
+    assert app.importer.jobs[first].kind == 'ifc'
+    pdf = app.upload(tiny_pdf())[1]['id']
+    second = app.upload(IFC)
+    assert second[0] == 201 and recycle.calls == 0
+    assert app.call('GET', f'/api/import/{first}')[0] == 404
+    assert app.call('GET', f'/api/import/{pdf}')[0] == 200
+
+
+def test_a_gate_that_stays_high_after_eviction_still_recycles(make_app):
+    recycle = Recycle()
+    app = make_app(None, memory_limit_mb=1000, rss_reader=lambda: 950.0, recycle=recycle)
+    status, err, _ = app.upload(IFC)
+    assert status == 503 and recycle.calls == 1
+
+
+def test_an_upload_in_flight_blocks_the_recycle_with_429(make_app):
+    recycle = Recycle()
+    calls = []
+
+    def rss():
+        calls.append(1)
+        return 100.0 if len(calls) == 1 else 950.0
+
+    app = make_app(None, memory_limit_mb=1000, rss_reader=rss, recycle=recycle)
+    conn = http.client.HTTPConnection('127.0.0.1', app.port, timeout=30)
+    conn.putrequest('POST', '/api/import')
+    conn.putheader('Content-Length', str(len(IFC)))
+    conn.endheaders()
+    conn.send(IFC[:3000])
+    for _ in range(200):
+        if app.importer._uploads:
+            break
+        time.sleep(0.01)
+    assert app.importer._uploads == 1
+    status, err, resp = app.upload(IFC)
+    assert status == 429 and resp.getheader('Retry-After') == '15' and 'upload' in err['error']
+    assert recycle.calls == 0
+    conn.send(IFC[3000:])
+    first = conn.getresponse()
+    assert first.status == 201
+    first.read()
+    conn.close()
+    assert app.importer._uploads == 0 and recycle.calls == 0
+
+
+def test_the_upload_counter_returns_to_zero_after_refusals(make_app):
+    app = make_app(None)
+    assert app.upload(b'junk')[0] == 415
+    assert app.upload(IFC[:len(IFC) // 2])[0] == 422
+    assert app.importer._uploads == 0
+
+
+def test_stale_temp_dirs_are_removed_at_startup_and_only_those(tmp_path):
+    stale = tmp_path / 'importer-ifc-abc'
+    stale.mkdir()
+    (stale / 'model.ifc').write_bytes(b'x' * 1000)
+    (stale / 'sub').mkdir()
+    keep_dir = tmp_path / 'other-dir'
+    keep_dir.mkdir()
+    keep_file = tmp_path / 'importer-ifc-file'
+    keep_file.write_text('a file, not a directory')
+    target = tmp_path / 'precious'
+    target.mkdir()
+    (target / 'data').write_text('keep')
+    link = tmp_path / 'importer-ifc-link'
+    link.symlink_to(target, target_is_directory=True)
+    assert srv.clean_stale_tempdirs(str(tmp_path)) == 1
+    assert not stale.exists() and keep_dir.exists() and keep_file.exists()
+    assert link.is_symlink() and (target / 'data').read_text() == 'keep'
+
+
+def test_startup_cleanup_uses_the_tempdir_and_survives_a_missing_one(tmp_path, monkeypatch):
+    stale = tmp_path / 'importer-ifc-zzz'
+    stale.mkdir()
+    monkeypatch.setattr(srv.tempfile, 'tempdir', str(tmp_path))
+    assert srv.clean_stale_tempdirs() == 1 and not stale.exists()
+    assert srv.clean_stale_tempdirs(str(tmp_path / 'does-not-exist')) == 0
+    assert srv.TEMP_PREFIX == 'importer-ifc-'
