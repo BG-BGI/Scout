@@ -5,6 +5,7 @@ index.html actually use it. R9/AE6: a cross-source switch restarts slam.
 Skips the Node cases when `node` is absent (Pi container) — CI / the dev Mac
 run them."""
 
+import importlib.util
 import json
 import pathlib
 import re
@@ -17,6 +18,8 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
 MAPSWITCH = REPO_ROOT / 'webui' / 'mapswitch.js'
 APP_JS = REPO_ROOT / 'webui' / 'app.js'
 INDEX_HTML = REPO_ROOT / 'webui' / 'index.html'
+STYLE_CSS = REPO_ROOT / 'webui' / 'style.css'
+SITESTORE = REPO_ROOT / 'docker' / 'fleet-status' / 'sitestore.py'
 
 RUNNER = """
 const MS = require(process.argv[1]);
@@ -284,3 +287,151 @@ def test_app_js_waits_for_a_fresh_pose_not_just_any_pose():
     body = src[start:src.index('\n}\n', start)]
     assert 'MapSwitch.freshPoseGate(baselineStamp)' in body
     assert 'throttle_rate' not in src[src.index('function amclPoseTopic('):start]
+
+
+# --- U5a: source chips + the mode the UI guards reason about (R12) ----------------
+
+def _sitestore():
+    spec = importlib.util.spec_from_file_location('fleet_sitestore_u5a', SITESTORE)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _ui(meta):
+    return _call('uiSlamMode', meta)
+
+
+def test_ui_mode_reads_a_drawing_under_auto_as_localization():
+    meta = _meta('plan', 'auto', 'localization', plan='drawing')
+    assert _ui(meta) == 'localization'
+
+
+@pytest.mark.parametrize('raw', ['new', 'continue', 'localization'])
+def test_ui_mode_keeps_a_pinned_mode(raw):
+    assert _ui(_meta('plan', raw, 'localization', plan='drawing')) == raw
+    assert _ui(_meta('plan', raw, raw, plan='drawing')) == raw
+
+
+def test_ui_mode_keeps_auto_when_auto_did_not_resolve_to_localization():
+    # drawing without a grid resolves to new/continue: the toggle must not say Navigate
+    assert _ui(_meta('plan', 'auto', 'new', plan='drawing')) == 'auto'
+
+
+@pytest.mark.parametrize('meta', [None, {}, {'maps': {}}])
+def test_ui_mode_defaults_to_auto(meta):
+    assert _ui(meta) == 'auto'
+
+
+def test_ui_mode_without_resolved_mode_is_the_raw_mode():
+    # older fleet_status: nothing to resolve with
+    assert _ui(_meta('plan', 'auto', plan='drawing')) == 'auto'
+    assert _ui(_meta('plan', 'localization', plan='drawing')) == 'localization'
+
+
+def test_scan_sourced_sites_see_the_raw_mode_for_every_state_fleet_status_can_report():
+    """No behaviour change for scan sites: for every (slam_mode, posegraph, grid)
+    on a scan map, with resolved_mode computed by fleet_status's own rule (and with
+    the field absent, as from an older fleet_status), the UI mode is the raw one."""
+    ss = _sitestore()
+    seen = 0
+    for raw in ss.SLAM_MODES:
+        for graph in (False, True):
+            for grid in (False, True):
+                files = {'floor': {'posegraph': graph, 'grid': grid}}
+                resolved = ss.resolved_mode(
+                    raw, 'floor', {'floor': {'source': 'scan'}}, files)
+                for meta in (_meta('floor', raw, resolved, floor='scan'),
+                             _meta('floor', raw, floor='scan')):
+                    assert _ui(meta) == raw, (raw, graph, grid, meta)
+                    seen += 1
+    assert seen == 32
+
+
+def test_drawing_sourced_auto_localizes_exactly_when_the_grid_is_there():
+    ss = _sitestore()
+    for grid in (False, True):
+        files = {'plan': {'grid': grid}}
+        resolved = ss.resolved_mode(
+            'auto', 'plan', {'plan': {'source': 'drawing'}}, files)
+        want = 'localization' if grid else 'auto'
+        assert _ui(_meta('plan', 'auto', resolved, plan='drawing')) == want
+
+
+def _js_block(src, start_marker, end_marker='\n}\n'):
+    start = src.index(start_marker)
+    return src[start:src.index(end_marker, start)]
+
+
+def test_app_js_guards_use_the_ui_mode_not_the_raw_slam_mode():
+    src = APP_JS.read_text()
+    blocks = {
+        'renderActiveCard': _js_block(src, 'function renderActiveCard('),
+        'renderIntent': _js_block(src, 'function renderIntent('),
+        'set pose': _js_block(src, "setPoseBtn.addEventListener('click'", '\n});\n'),
+        'save map': _js_block(
+            src, "document.getElementById('site-save-map').addEventListener",
+            '\n});\n'),
+    }
+    for name, body in blocks.items():
+        assert 'MapSwitch.uiSlamMode(activeSiteMeta)' in body, name
+    for name in ('renderActiveCard', 'renderIntent', 'set pose'):
+        assert '.slam_mode' not in blocks[name], name
+
+
+def test_app_js_save_map_refuses_a_drawing_map_with_an_accurate_message():
+    body = _js_block(
+        APP_JS.read_text(),
+        "document.getElementById('site-save-map').addEventListener", '\n});\n')
+    pinned = body.index('This site is pinned to localization mode')
+    drawing = body.index('The active map is a drawing')
+    assert pinned < drawing
+    assert 'return;' in body[drawing:drawing + 400]
+    # the pinned message is unchanged (scan sites see it exactly as before)
+    assert ("alert('This site is pinned to localization mode: slam_toolbox is not "
+            'running (amcl localizes instead), so there is nothing to save. Set '
+            "slam_mode to auto/continue first.');") in body
+
+
+def test_app_js_slam_mode_selector_keeps_the_raw_pinned_value():
+    src = APP_JS.read_text()
+    render = _js_block(src, 'function renderSlamMode(')
+    assert "const current = activeSiteMeta.slam_mode || 'auto';" in render
+    assert "if (mode === current) btn.classList.add('selected');" in render
+    assert "mode === (activeSiteMeta.slam_mode || 'auto')" in _js_block(
+        src, 'async function setSlamMode(')
+    assert 'body: JSON.stringify({ slam_mode: mode })' in src
+
+
+def test_app_js_slam_mode_note_says_drawing_maps_run_localization():
+    render = _js_block(APP_JS.read_text(), 'function renderSlamMode(')
+    assert "MapSwitch.mapSource(activeEntry) === 'drawing'" in render
+    assert 'under auto it always runs' in render and 'localization (amcl on the drawing)' in render
+    assert 'innerHTML' not in render.split("siteModeEl.innerHTML = ''")[1]
+
+
+def test_app_js_drawing_chip_is_static_markup_only_on_drawing_entries():
+    body = _js_block(APP_JS.read_text(), 'function renderSiteMaps(')
+    line = next(ln for ln in body.splitlines() if 'cap drawing' in ln)
+    assert "MapSwitch.mapSource(m) === 'drawing'" in line
+    assert '${' not in line
+    assert line.count('chips.push') == 1
+    # scan entries get exactly the chips they had before
+    assert 'Localize-ready' in body and 'Extendable' in body
+
+
+def test_app_js_floor_stack_and_now_card_show_the_source():
+    src = APP_JS.read_text()
+    stack = _js_block(src, 'function renderFloorStack(')
+    assert "MapSwitch.mapSource(m) === 'drawing'" in stack
+    assert "btn.classList.add('drawing')" in stack
+    card = _js_block(src, 'function renderActiveCard(')
+    assert "getElementById('active-map-source')" in card
+    assert "sourceEl.textContent = 'drawing'" in card
+    assert 'id="active-map-source"' in INDEX_HTML.read_text()
+
+
+def test_style_css_has_the_drawing_marks():
+    css = STYLE_CSS.read_text()
+    assert '.cap.drawing' in css and '#active-map-source' in css
+    assert '.mo-floors button.drawing' in css

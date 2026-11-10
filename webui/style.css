@@ -213,6 +213,10 @@ aside  { order: 3; }
   border: 1px solid rgba(242,178,0,.4); background: var(--accent-bg);
   border-radius: 2px; padding: 0 4px;
 }
+#active-map-source {
+  font-size: 0.56rem; font-weight: 600; color: var(--dim);
+  border: 1px solid var(--border); border-radius: 2px; padding: 0 4px;
+}
 #active-mode-line { font-size: 0.6rem; color: var(--dim); }
 #active-mode-line b { color: var(--text); font-weight: 600; }
 
@@ -236,6 +240,7 @@ aside  { order: 3; }
   border: 1px solid var(--border); border-radius: 2px;
 }
 .mo-floors button.on { color: #000; background: var(--accent); border-color: var(--accent); }
+.mo-floors button.drawing { border-bottom-style: dashed; border-bottom-width: 2px; }
 
 /* layer toggles — app.js toggles .selected (UHF tag markers, ADR-0032) */
 
@@ -724,6 +729,7 @@ code { font-family: var(--mono); font-size: 0.85em; color: var(--dim); }
 .cap.off  { color: var(--dim); border: 1px solid var(--border); opacity: 0.6; }
 .cap.live { color: #000; background: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
 .cap.warn { color: var(--warn); border: 1px solid var(--warn); }
+.cap.drawing { color: var(--dim); border: 1px dashed var(--dim); }
 
 /* capability legend + group labels */
 .legend { display: flex; gap: var(--s3); flex-wrap: wrap; font-size: 0.64rem; color: var(--dim); }
