@@ -3,9 +3,14 @@
 # socket. It turns a PDF into an occupancy-grid pair and POSTs it to the Pi's fleet_status
 # over HTTP; nothing here touches the robot, so it needs no privileges.
 #
-# numpy and pymupdf ship manylinux wheels for amd64 and arm64 (nothing compiles). pymupdf 2.x
-# declares onnxruntime/networkx/... as dependencies but plain `import pymupdf` needs none of
-# them, hence --no-deps (requirements.txt lists numpy, which has no dependencies of its own).
+# numpy, pymupdf, shapely and ifcopenshell ship manylinux wheels for amd64 and arm64 (nothing
+# compiles; ifcopenshell bundles OpenCASCADE). pymupdf 2.x declares onnxruntime/networkx/...
+# as dependencies but plain `import pymupdf` needs none of them, hence --no-deps. That also
+# drops ifcopenshell's own dependencies, so requirements.txt lists the two it imports
+# (lark, typing_extensions); its isodate / python-dateutil / pyparsing are never imported by
+# the slicing path. Memory: an open IFC model is ~7x its file and a slice peaks near 15x (see
+# server.py MAX_IFC_BYTES),
+# which is why the default IFC upload cap is 80 MiB under the compose 2g limit.
 FROM python:3.12-slim
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin importer
