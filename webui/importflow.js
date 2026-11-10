@@ -317,6 +317,7 @@
       var built = buildCalibrate();
       if (built.error) throw new Error(built.error);
       state.dirty = true;
+      if (state.install) state.install.stale = true;
       var r = await http('POST', jobUrl('/calibrate'),
                          { body: JSON.stringify(built.body), headers: JSON_HEADERS });
       state.calibrated = r.body;
@@ -413,7 +414,8 @@
       notify();
     }
 
-    // t = {page: {x, y} (page frame), screen: {x, y} (canvas CSS px)}
+    // t = {page: {x, y} (page frame), screen: {x, y} (canvas CSS px),
+    //      toScreen: page point -> canvas CSS px under the CURRENT view}
     function handleTap(t) {
       var tap = state.tap;
       if (!tap) return false;
@@ -430,7 +432,10 @@
         tap.step = 1;
         state.message = null;
       } else {
-        if (IM.tooClose(rec.s1, t.screen)) {
+        // Compare in ONE view: P1 where it is on screen now (the operator may have
+        // zoomed or panned since the first tap), not where it was.
+        var first = t.toScreen ? t.toScreen(rec.p1) : rec.s1;
+        if (IM.tooClose(first, t.screen)) {
           state.message = 'Those taps are closer than ' + IM.TAP_MIN_PX + ' px. Tap a point further away.';
           notify();
           return false;
@@ -594,7 +599,7 @@
           try {
             var r = await http('POST', jobUrl('/storey/' + st.id + '/install'),
                                { body: JSON.stringify(built.body), headers: JSON_HEADERS });
-            st.result = { ok: true, msg: 'Installed as ' + built.body.name, response: r.body };
+            st.result = { ok: true, name: built.body.name, msg: 'Installed as ' + built.body.name, response: r.body };
             done.push(built.body.name);
           } catch (e) {
             st.result = { ok: false, msg: installMessage(e) };

@@ -862,6 +862,40 @@ def test_ifc_server_not_merged_yet_shows_the_415_verbatim():
     assert res == {'err': 'IFC import is not available yet', 'job': None}
 
 
+def test_the_20_px_rule_compares_in_the_current_view_after_a_pan_or_zoom():
+    res = _run("""
+    pdfRoutes(RASTER);
+    await flow.open(); await flow.upload(FILE);
+    // (a) far-apart page points; the view changed so P1 now sits 288 px from the 2nd tap,
+    // although the OLD screen coords (10,10) and (12,10) are only 2 px apart
+    flow.beginTap('two');
+    tap(100, 100, 10, 10);
+    const a = flow.handleTap({ page: { x: 900, y: 100 }, screen: { x: 12, y: 10 },
+                               toScreen: () => ({ x: 300, y: 10 }) });
+    const aP2 = st.twoPoint.p2;
+    // (b) close page points; the view changed so the OLD coords look 190 px apart
+    flow.beginTap('two');
+    tap(100, 100, 10, 10);
+    const b = flow.handleTap({ page: { x: 102, y: 100 }, screen: { x: 200, y: 10 },
+                               toScreen: () => ({ x: 205, y: 10 }) });
+    out({ a, aP2, b, msg: st.message, p2: st.twoPoint.p2 });""")
+    assert res['a'] is True and res['aP2'] == {'x': 900, 'y': 100}
+    assert res['b'] is False and 'closer than 20 px' in res['msg'] and res['p2'] is None
+
+
+def test_the_20_px_rule_also_applies_per_robot_pair_in_the_current_view():
+    res = _run(f"""
+    pdfRoutes(RASTER);
+    route('GET', /wall_spans/, {{ status: 200, body: {json.dumps(WALLS)} }});
+    await flow.open(); await flow.upload(FILE);
+    await flow.fetchWallSpans();
+    flow.beginTap('robot', 0); tap(100, 100, 10, 10);
+    const near = flow.handleTap({{ page: {{ x: 105, y: 100 }}, screen: {{ x: 300, y: 10 }},
+                                  toScreen: () => ({{ x: 295, y: 10 }}) }});
+    out({{ near }});""")
+    assert res == {'near': False}
+
+
 # --- the DOM layer, executed against a fake document ------------------------------------------------------
 
 DOM = r"""
@@ -1029,6 +1063,49 @@ def test_wizard_dom_importer_down_shows_the_url_and_stays_usable():
     assert res['down'] == 'Importer not reachable at http://10.0.0.7:9004/api/health'
     assert res['up'] == 'Importer ready at http://laptop:9004/api (z)'
     assert res['stored'] == 'http://laptop:9004/api'
+
+
+def test_wizard_dom_ifc_activate_targets_the_installed_name_not_the_edited_one():
+    res = _dom("""
+    ifcRoutes();
+    await click('import-open');
+    E('imp-file').files = [IFC];
+    await click('imp-upload');
+    await click('imp-ifc-slice');
+    await click('imp-ifc-install');
+    const row = E('imp-storeys').children[0];
+    row.children[2].value = 'edited_after_install';
+    row.children[2].fire('input');
+    const label = E('imp-ifc-activate').children[0].textContent;
+    E('imp-ifc-activate').children[0].fire('click');
+    out({ label, activated, now: wizard.state.ifc.storeys[0].name, kept: wizard.state.ifc.storeys[0].result.name });""")
+    assert res['now'] == 'edited_after_install'
+    assert res['kept'] == 'level_1' and res['label'] == 'Activate level_1'
+    assert res['activated'] == ['level_1']
+
+
+def test_wizard_dom_recalibrating_after_install_says_the_installed_map_is_older():
+    res = _dom("""
+    pdfRoutes();
+    await click('import-open');
+    E('imp-file').files = [FILE];
+    await click('imp-upload');
+    await click('imp-accept');
+    await click('imp-install');
+    const fresh = { text: E('imp-result').textContent, activate: E('imp-activate').hidden };
+    E('imp-rotation').value = '10';
+    E('imp-rotation').fire('change');
+    await settle();
+    const stale = { text: E('imp-result').textContent, activate: E('imp-activate').hidden };
+    await click('imp-activate');
+    await click('imp-install');
+    out({ fresh, stale, activated, again: E('imp-result').textContent });""")
+    assert res['fresh']['text'] == 'Installed "a_b". It is not active yet.'
+    assert 'earlier, before the current calibration' in res['stale']['text']
+    assert 'install again' in res['stale']['text']
+    assert res['fresh']['activate'] is False and res['stale']['activate'] is False
+    assert res['activated'] == ['a_b']
+    assert res['again'] == 'Installed "a_b". It is not active yet.'
 
 
 # --- the wizard is plain HTTP on user action ------------------------------------------------------------------------------------

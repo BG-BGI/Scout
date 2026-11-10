@@ -337,7 +337,9 @@
     el.install.disabled = !!st.busy || !flow.previewCurrent() || !IM.validName(name);
     var inst = st.install;
     if (inst && inst.ok) {
-      setText(el.result, 'Installed "' + inst.name + '". It is not active yet.');
+      setText(el.result, inst.stale
+        ? 'Installed "' + inst.name + '" earlier, before the current calibration. The preview has changed since: install again to update it.'
+        : 'Installed "' + inst.name + '". It is not active yet.');
       activateName = inst.name;
     } else {
       setText(el.result, '');
@@ -412,8 +414,8 @@
       if (s.result && s.result.ok) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.textContent = 'Activate ' + s.name;
-        b.addEventListener('click', function () { cfg.activateMap(s.name); });
+        b.textContent = 'Activate ' + s.result.name;
+        b.addEventListener('click', function () { cfg.activateMap(s.result.name); });
         el.ifcActivate.appendChild(b);
       }
     });
@@ -478,7 +480,10 @@
       drag = null;
       if (!d || d.moved || !flow.state.tap) return;
       var p = canvasPoint(ev);
-      flow.handleTap({ page: IM.canvasToPage(view, pageSize(), p.x, p.y), screen: p });
+      flow.handleTap({
+        page: IM.canvasToPage(view, pageSize(), p.x, p.y), screen: p,
+        toScreen: function (pt) { return IM.pageToCanvas(view, pageSize(), pt); },
+      });
     });
     el.canvas.addEventListener('wheel', function (ev) {
       ev.preventDefault();
