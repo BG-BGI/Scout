@@ -59,10 +59,16 @@ POST /api/import[?filename=<name>]
   else is 415. An IFC is streamed to a private temp file (nothing of it is held in memory),
   parsed from that file and the file is deleted as soon as the parse ends: only sha256 and
   size are kept.
-  An IFC upload is first checked against the importer's memory: if the current resident size
-  plus ~15x the file would pass 90 % of the container limit it is 503 {"error", "rss_mb",
+  Order of checks for an upload: Content-Length (411, 400, 413 above every cap) -> heavy slot
+  busy (429) -> first 2 KiB read, kind sniffed (415) -> that kind's cap (413) -> reserve: an
+  IFC evicts the open IFC model and idle jobs for a free slot (even if the upload is refused
+  or fails later) -> memory gate -> body streamed -> parse under the heavy slot.
+  The memory gate sees the resident size AFTER that eviction (and malloc_trim): if it plus
+  ~15x the file would pass 90 % of the container limit the IFC upload is 503 {"error", "rss_mb",
   "needed_mb", "limit_mb"} with Retry-After 15, every open import is dropped and the process
-  restarts itself (compose brings it back); 429 instead when an import is mid-operation.
+  restarts itself (compose brings it back); 429 instead, nothing killed, when an import is
+  mid-operation or another upload is in flight (it has no job yet but would die with the
+  restart). On startup stale importer-ifc-* temp dirs from a previous process are removed.
   201 {"id", "kind": "pdf", "filename", "sha256", "bytes", "pages": [<page>], "storeys": []}
   or, for an IFC, {"id", "kind": "ifc", "filename", "sha256", "bytes", "pages": [],
   "storeys": [<storey>]} (see IFC jobs below).
@@ -226,6 +232,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import socket
 import socketserver
 import sys
@@ -308,6 +315,7 @@ IFC_GRID_BUDGET = 128 * 1024 * 1024
 # working set; one thread is also what the numbers above were measured with.
 IFC_THREADS = 1
 UPLOAD_CHUNK = 1024 * 1024
+TEMP_PREFIX = "importer-ifc-"
 MIN_SLICE_HEIGHT = 0.01
 MAX_SLICE_HEIGHT = 5.0
 PREVIEW_GRAY = {planraster.OCCUPIED: 20, planraster.FREE: 255, planraster.UNKNOWN: 170}
@@ -698,6 +706,7 @@ class Importer:
         self.version = version
         self.heavy = threading.Lock()
         self._registry = threading.Lock()
+        self._uploads = 0
         self.jobs = OrderedDict()
         self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
@@ -826,10 +835,24 @@ class Importer:
         """The largest body any kind may carry; anything bigger is 413 before a byte is read."""
         return max(pdfsource.MAX_PDF_BYTES, self.ifc_max_bytes if ifcjob else 0)
 
+    @contextlib.contextmanager
+    def upload_slot(self):
+        """Count an upload from its start (streaming and parsing included): it has no job yet,
+        so nothing else shows that it would die with a recycle."""
+        with self._registry:
+            self._uploads += 1
+        try:
+            yield
+        finally:
+            with self._registry:
+                self._uploads -= 1
+
     def memory_gate(self, kind, length):
         """Refuse an IFC that cannot fit on top of the current resident size (see the CAVEAT
-        by IFC_PEAK_FACTOR). Idle jobs are dropped and the process recycles itself; if a job
-        is mid-operation it is not killed, the caller is told to retry."""
+        by IFC_PEAK_FACTOR). Called after reserve() has evicted, so the resident size it sees is
+        the post-eviction one. Idle jobs are dropped and the process recycles itself; if a job
+        is mid-operation or another upload is in flight (inside upload_slot, this one
+        included) nothing is killed and the caller is told to retry."""
         if kind != "ifc" or not self.memory_limit_mb:
             return
         rss = self.rss_reader()
@@ -841,9 +864,9 @@ class Importer:
         retry = {"Retry-After": "15"}
         detail = {"rss_mb": rss, "needed_mb": round(need, 1), "limit_mb": self.memory_limit_mb}
         with self._registry:
-            if any(j.lock.locked() for j in self.jobs.values()):
+            if self._uploads > 1 or any(j.lock.locked() for j in self.jobs.values()):
                 raise ApiError(429, "not enough free memory for this IFC while another import "
-                                    "is busy; retry shortly", retry, detail)
+                                    "or upload is busy; retry shortly", retry, detail)
             for job in list(self.jobs.values()):
                 self._drop(job)
         self.recycle()
@@ -1360,7 +1383,7 @@ def _body_source(h, kind, head, length):
         yield head + h._read(length - len(head)) if length > len(head) else head
         return
     digest = hashlib.sha256(head)
-    with tempfile.TemporaryDirectory(prefix="importer-ifc-") as tmp:
+    with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as tmp:
         path = os.path.join(tmp, "model.ifc")
         left = length - len(head)
         with open(path, "wb") as fh:
@@ -1376,16 +1399,18 @@ def _body_source(h, kind, head, length):
 def _upload(h, imp, m, query):
     """Order matters: sizes and capacity are refused before the big body is read. Only the
     first HEADER_SNIFF bytes are read to learn the kind; a too-large PDF or IFC is 413
-    without reading the rest."""
+    without reading the rest. reserve() evicts first (an IFC replaces the open one), then
+    memory_gate() judges the post-eviction resident size."""
     length = h._length(imp.max_upload_bytes())
-    imp.check_idle()
-    head = h._read(min(length, HEADER_SNIFF))
-    kind = imp.sniff(head)
-    imp.check_size(kind, length)
-    imp.memory_gate(kind, length)
-    imp.reserve(kind)
-    with _body_source(h, kind, head, length) as source, imp.heavy_slot():
-        job = imp.upload(kind, source, query.get("filename", [""])[-1])
+    with imp.upload_slot():
+        imp.check_idle()
+        head = h._read(min(length, HEADER_SNIFF))
+        kind = imp.sniff(head)
+        imp.check_size(kind, length)
+        imp.reserve(kind)
+        imp.memory_gate(kind, length)
+        with _body_source(h, kind, head, length) as source, imp.heavy_slot():
+            job = imp.upload(kind, source, query.get("filename", [""])[-1])
     return 201, imp.upload_json(job)
 
 
@@ -1509,7 +1534,30 @@ def importer_from_env(env):
         return Importer(None, **knobs)
 
 
+def clean_stale_tempdirs(root=None):
+    """Remove importer-ifc-* directories left by a process that exited (os._exit in a recycle,
+    or a kill) without its TemporaryDirectory cleanup; /tmp survives a container restart.
+    Only real directories with that prefix; a symlink is left alone and never followed."""
+    root = root or tempfile.gettempdir()
+    removed = 0
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return removed
+    for entry in entries:
+        if not entry.name.startswith(TEMP_PREFIX):
+            continue
+        with contextlib.suppress(OSError):
+            if entry.is_dir(follow_symlinks=False):
+                shutil.rmtree(entry.path)
+                removed += 1
+    return removed
+
+
 def main():
+    cleaned = clean_stale_tempdirs()
+    if cleaned:
+        print(f"removed {cleaned} stale {TEMP_PREFIX}* temp dir(s)", flush=True)
     port = int(os.environ.get("IMPORTER_PORT", DEFAULT_PORT))
     importer = importer_from_env(os.environ)
     server = ImporterServer(("0.0.0.0", port), importer,
