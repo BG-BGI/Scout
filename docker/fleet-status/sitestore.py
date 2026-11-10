@@ -14,12 +14,15 @@ floorplan, grid pair with no posegraph). An unknown value reads as `scan` and is
 rejected on write.
 """
 
+import json
 import os
 import re
+import threading
 
 SITE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 SLAM_MODES = ("auto", "new", "localization", "continue")
 SOURCES = ("scan", "drawing")
+SITE_LOCK = threading.Lock()
 
 _MAP_DEFAULTS = {
     "label": "",
@@ -154,3 +157,12 @@ def describe_site(meta, files):
     meta["resolved_mode"] = resolved_mode(
         meta.get("slam_mode", "auto"), meta.get("active_map"), maps, files)
     return meta
+
+
+def write_site_json(site_dir, data):
+    """Atomic site.json write (tmp + os.replace). Callers that read-modify-write
+    hold SITE_LOCK across the read and this write."""
+    tmp = os.path.join(site_dir, ".site.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, os.path.join(site_dir, "site.json"))

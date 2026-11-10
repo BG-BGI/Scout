@@ -35,6 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import bluetooth as btctl
 import gridstore
+import mapinstall
 import mapsafe
 import poi as poidb
 import requests
@@ -614,6 +615,24 @@ def map_safety_api(action, body=None):
     return 404, {"error": "not found"}
 
 
+def map_install_api(raw):
+    """POST /api/maps/install on the active site (grid-only, drawing maps)."""
+    if SITE_SCAFFOLD != "pi":
+        return 404, {"error": "map install not managed on this box"}
+    active = _active_site()
+    if active is None:
+        return 409, {"error": "no active site"}
+    return mapinstall.install_request(os.path.join(SITES_DIR, active), raw)
+
+
+def map_file_api(filename):
+    """GET /api/maps/<name>.pgm|.yaml -> (code, bytes | error payload, content type)."""
+    maps = _active_maps_dir()
+    if maps is None or not os.path.isdir(maps):
+        return 404, {"error": "no active site maps dir"}, None
+    return mapinstall.get_file(maps, filename)
+
+
 def create_site(name, display_name=""):
     if not _valid_site_name(name):
         return 400, {"error": "invalid site name (a-z0-9_-, max 32, "
@@ -624,7 +643,7 @@ def create_site(name, display_name=""):
     if SITE_SCAFFOLD == "pi":
         os.makedirs(os.path.join(site_dir, "maps"))
         os.makedirs(os.path.join(site_dir, "captures", "bags"))
-        _write_site_json(site_dir, {
+        sitestore.write_site_json(site_dir, {
             "version": 2,
             "display_name": display_name or name,
             "active_map": None,
@@ -638,14 +657,12 @@ def create_site(name, display_name=""):
     return 200, {"ok": True, "site": _site_meta(name)}
 
 
-def _write_site_json(site_dir, data):
-    tmp = os.path.join(site_dir, ".site.json.tmp")
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, os.path.join(site_dir, "site.json"))
-
-
 def update_active_site(patch):
+    with sitestore.SITE_LOCK:
+        return _update_active_site(patch)
+
+
+def _update_active_site(patch):
     if SITE_SCAFFOLD != "pi":
         return 404, {"error": "site metadata not managed on this box"}
     active = _active_site()
@@ -694,7 +711,7 @@ def update_active_site(patch):
             return 400, {"error": "map_start_pose must be [x, y, theta]"}
         site["maps"][site["active_map"]]["map_start_pose"] = pose
     site["default_map"] = site["active_map"]  # legacy mirror
-    _write_site_json(site_dir, site)
+    sitestore.write_site_json(site_dir, site)
     return 200, {"ok": True, "site": _site_meta(active)}
 
 
@@ -760,6 +777,42 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, code, data, content_type):
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _map_file(self, filename):
+        if not SITES_DIR:
+            self._send_json(404, {"error": "sites not configured here"})
+            return
+        code, body, content_type = map_file_api(filename)
+        if content_type is None:
+            self._send_json(code, body)
+        else:
+            self._send_bytes(code, body, content_type)
+
+    def _install_map(self):
+        if not SITES_DIR or SITE_SCAFFOLD != "pi":
+            self._send_json(404, {"error": "map install not managed on this box"})
+            return
+        refusal = mapinstall.check_body_length(self.headers.get("Content-Length"))
+        if refusal:
+            self._send_json(*refusal)
+            return
+        length = int(self.headers["Content-Length"])
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            self._send_json(400, {"error": "body shorter than Content-Length"})
+            return
+        code, payload = map_install_api(raw)
+        self._send_json(code, payload)
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -812,6 +865,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(404, {"error": "sites not configured here"})
             else:
                 self._send_json(200, apriltags())
+        elif urllib.parse.urlsplit(self.path).path.startswith("/api/maps/"):
+            path = urllib.parse.urlsplit(self.path).path
+            self._map_file(urllib.parse.unquote(path[len("/api/maps/"):]))
         else:
             self._send_json(404, {"error": "not found"})
 
@@ -885,6 +941,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 code, payload = 404, {"error": "not found"}
             self._send_json(code, payload)
+            return
+
+        if parts == ["api", "maps", "install"]:
+            self._install_map()
             return
 
         if (parts[:2] == ["api", "map"] and len(parts) == 3
