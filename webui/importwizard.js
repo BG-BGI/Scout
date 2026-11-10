@@ -350,8 +350,19 @@
 
   function storeySignature(ifc) {
     return ifc.storeys.map(function (s) {
-      return [s.id, s.selected ? 1 : 0, s.slice ? 1 : 0, s.dirty ? 1 : 0, s.error || '', s.result ? s.result.msg : '', ifc.focus === s.id ? 1 : 0].join('|');
+      return [s.id, s.selected ? 1 : 0, s.slice ? 1 : 0, s.dirty ? 1 : 0, s.error || '', s.result ? s.result.msg : '', ifc.focus === s.id ? 1 : 0,
+        s.dropped ? 1 : 0, s.slice && s.slice.warnings ? s.slice.warnings.join('~') : ''].join('|');
     }).join(';');
+  }
+
+  // Sliced storeys show their first warning and the count, focused or not.
+  function storeyStatus(s) {
+    if (s.dropped) return 'Grid dropped by the importer (memory): slice again';
+    if (!s.slice) return 'Not sliced yet';
+    var text = s.dirty ? 'Sliced (settings changed: slice again)' : 'Sliced: ' + s.slice.faces + ' faces';
+    var w = s.slice.warnings || [];
+    if (w.length) text += '. Warning' + (w.length > 1 ? 's (' + w.length + ')' : '') + ': ' + w[0];
+    return text;
   }
 
   function storeyRow(s, ifc) {
@@ -380,8 +391,7 @@
     see.addEventListener('click', function () { flow.focusStorey(s.id); });
     var status = document.createElement('div');
     status.className = s.error || (s.result && !s.result.ok) ? 'imp-error' : 'dim';
-    status.textContent = s.result ? s.result.msg : s.error ? s.error
-      : s.slice ? (s.dirty ? 'Sliced (settings changed: slice again)' : 'Sliced: ' + s.slice.faces + ' faces') : 'Not sliced yet';
+    status.textContent = s.result ? s.result.msg : s.error ? s.error : storeyStatus(s);
     [tick, title, name, floor, see, status].forEach(function (n) { row.appendChild(n); });
     return row;
   }
@@ -407,6 +417,7 @@
         + f.slice.preview.width + ' x ' + f.slice.preview.height + ' cells';
       if (f.slice.warnings && f.slice.warnings.length) info += '. ' + f.slice.warnings.join(' | ');
     }
+    if (st.ifc.note) info += ' ' + st.ifc.note;
     if (ifcTapping) info = 'Tap the preview where map (0, 0) should be. ' + info;
     setText(el.ifcInfo, info);
     el.ifcActivate.textContent = '';
@@ -544,6 +555,12 @@
     el.rotation.addEventListener('change', function () { flow.setRotation(Number(el.rotation.value)); });
     el.originTap.addEventListener('click', function () { flow.beginTap('origin'); });
     el.forceRaster.addEventListener('change', function () { flow.setForceRaster(el.forceRaster.checked); });
+    el.closeM.addEventListener('change', function () {
+      var c = IM.parseCloseM(el.closeM.value);
+      setText(el.closeMsg, c.error || '');
+      show(el.closeMsg, !!c.error);
+      if (!c.error) flow.setCloseM(c.value === undefined ? null : c.value);
+    });
     el.tapCancel.addEventListener('click', function () { flow.cancelTap(); });
     el.name.addEventListener('input', renderInstall);
     el.install.addEventListener('click', function () {
@@ -552,7 +569,12 @@
     el.activate.addEventListener('click', function () { if (activateName) cfg.activateMap(activateName); });
     el.ifcSlice.addEventListener('click', function () {
       var h = el.ifcHeight.value.trim();
-      flow.setIfcSettings(h === '' ? null : Number(h), Number(el.ifcRotation.value || 0));
+      var c = IM.parseCloseM(el.ifcCloseM.value);
+      setText(el.ifcCloseMsg, c.error || '');
+      show(el.ifcCloseMsg, !!c.error);
+      if (c.error) return;
+      flow.setIfcSettings(h === '' ? null : Number(h), Number(el.ifcRotation.value || 0),
+                          c.value === undefined ? null : c.value);
       flow.sliceSelected();
     });
     el.ifcOrigin.addEventListener('click', function () { ifcTapping = true; render(); });
@@ -579,6 +601,8 @@
     ifcRotation: 'imp-ifc-rotation', ifcSlice: 'imp-ifc-slice', storeys: 'imp-storeys',
     ifcOrigin: 'imp-ifc-origin', ifcCanvas: 'imp-ifc-canvas', ifcInfo: 'imp-ifc-info',
     ifcInstall: 'imp-ifc-install', ifcActivate: 'imp-ifc-activate',
+    closeM: 'imp-close-m', closeMsg: 'imp-close-msg', ifcCloseM: 'imp-ifc-close-m',
+    ifcCloseMsg: 'imp-ifc-close-msg',
   };
 
   // opts: {fleetApi, hostname, fetch, storage, refreshSites, activateMap}
