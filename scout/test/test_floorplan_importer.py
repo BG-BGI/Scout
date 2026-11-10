@@ -243,9 +243,10 @@ def closed_port_url():
 
 def test_health_reports_configuration_and_load(app):
     status, out, resp = app.jcall('GET', '/api/health')
+    assert out.pop('rss_mb') is None or out.get('ok')
     assert status == 200 and out == {
         'ok': True, 'version': 'dev', 'fleet_status_url': 'http://127.0.0.1:9',
-        'jobs': 0, 'busy': False}
+        'jobs': 0, 'busy': False, 'ifc': srv.ifcjob is not None}
     app.new_job()
     assert app.jcall('GET', '/api/health')[1]['jobs'] == 1
     with app.importer.heavy:
@@ -322,11 +323,13 @@ def test_non_pdf_and_empty_uploads_are_415(app):
         assert status == 415 and 'error' in out, blob
 
 
-def test_ifc_header_is_415_with_a_clear_message(app):
+def test_ifc_upload_without_ifc_support_is_415_with_a_clear_message(app, monkeypatch):
+    monkeypatch.setattr(srv, 'ifcjob', None)
     ifc = b"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition'),'2;1');\nENDSEC;\n"
     status, out, _ = app.upload(ifc)
-    assert status == 415 and out == {'error': 'IFC import is not available yet'}
+    assert status == 415 and 'IFC import is not available' in out['error']
     assert app.jcall('GET', '/api/health')[1]['jobs'] == 0
+    assert app.jcall('GET', '/api/health')[1]['ifc'] is False
 
 
 def test_pdf_failures_map_to_their_status(app):
@@ -339,14 +342,38 @@ def test_pdf_failures_map_to_their_status(app):
         assert status == want and out['code'] == code, out
 
 
-def test_oversize_declared_length_is_413_without_reading_the_body(app, monkeypatch):
+def test_oversize_pdf_is_413_after_the_sniff_without_reading_the_rest(app, monkeypatch):
+    """Only the first 2 KiB are read to learn the kind; the declared 5000 bytes never arrive."""
     monkeypatch.setattr(ps, 'MAX_PDF_BYTES', 1000)
     conn = http.client.HTTPConnection('127.0.0.1', app.port, timeout=5)
     conn.putrequest('POST', '/api/import')
     conn.putheader('Content-Length', '5000')
     conn.endheaders()
+    conn.send(b'%PDF-1.4\n' + b'x' * (srv.HEADER_SNIFF - 9))
     resp = conn.getresponse()
     assert resp.status == 413 and 'max 1000' in json.loads(resp.read())['error']
+    conn.close()
+
+
+def test_a_body_above_every_cap_is_413_before_a_byte_is_read(app, monkeypatch):
+    monkeypatch.setattr(ps, 'MAX_PDF_BYTES', 1000)
+    conn = http.client.HTTPConnection('127.0.0.1', app.port, timeout=5)
+    conn.putrequest('POST', '/api/import')
+    conn.putheader('Content-Length', str(srv.MAX_IFC_BYTES + 1))
+    conn.endheaders()
+    resp = conn.getresponse()
+    assert resp.status == 413
+    conn.close()
+
+
+def test_unsniffable_upload_is_415_without_reading_the_rest(app):
+    conn = http.client.HTTPConnection('127.0.0.1', app.port, timeout=5)
+    conn.putrequest('POST', '/api/import')
+    conn.putheader('Content-Length', '9000')
+    conn.endheaders()
+    conn.send(b'hello ' * 400)
+    resp = conn.getresponse()
+    assert resp.status == 415
     conn.close()
 
 
