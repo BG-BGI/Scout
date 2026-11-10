@@ -2,11 +2,14 @@
 
 Status: accepted · Date: 2026-11-10 · Amends ADR-0028, ADR-0029
 
-Written from the code as merged (units U1 U2 U3 U4a U6a U6b U8a U9a U11). Where
-the planning document (`docs/plans/2026-11-10-001-feat-floorplan-site-maps-plan.md`)
-says something else, the code is the truth and the difference is stated.
+Written from the code as merged (units U1 U2 U3 U4a U4b U5a U5b U6a U6b U7 U8a
+U8b U9a U11). The feature was built from a planning document
+(`2026-11-10-001-feat-floorplan-site-maps-plan`) that is **not in the
+repository** — a working document, so there is nothing to link; where it said
+something else, the code is the truth and the difference is stated.
 **Nothing in this feature has run on the robot yet** — every number below that
-says "tune on the robot" is a starting value.
+says "tune on the robot" is a starting value; the short list of what is built
+but unverified on hardware is at the end of Known limits.
 
 ## Context
 
@@ -150,10 +153,14 @@ Planning research found seeded AMCL on a plan tracks at about 5 cm while global
 initialization fails on cluttered plans. So on a drawing map the operator (Set
 pose, `/initialpose`) or a registered tag seeds the pose; amcl restarts at the
 map's `map_start_pose`; `reinitialize_global_localization` is not offered as a
-drawing recovery. **Scan-over-drawing check (decided; UI: pending):** before the
-first goal the web UI draws the live scan over the drawing with a fit indicator.
-It is an alignment hint, not proof — mislocalization looks valid (CLAUDE.md), and
-a tight numeric correction does not show the pose is right.
+drawing recovery. **Scan-over-drawing check (built: `webui/scanlayer.js`,
+`scanoverlay.js`):** while the active map is a drawing and slam runs as
+localization, the web UI holds one `/scan` subscription (2 Hz, queue 1) and draws
+the live scan over the grid under a banner with a fit indicator (share of scan
+points within 0.15 m of a wall cell). It never blocks or delays a goal. It is an
+alignment hint, not proof — mislocalization looks valid (CLAUDE.md), and a tight
+numeric correction does not show the pose is right. The laser mount it uses
+(0.073 m forward, yawed π) is a constant in the page, not read from `/tf_static`.
 
 ### 5. Importer: placement, grid semantics, sources
 
@@ -161,11 +168,19 @@ a tight numeric correction does not show the pose is right.
   companion host, **port 9004, HTTP only**: Pi CPU is protected, PyMuPDF and
   ifcopenshell never enter the Pi or fleet_status images, and no zenoh
   allowlist changes (ADR-0022). Multi-arch so the same image can run on a
-  laptop. **Status: the library layer is merged** in `docker/floorplan-importer/`
-  (`calib.py`, `planraster.py`, `pdfsource.py`, `ifcsource.py` — pure, no HTTP,
-  no module state); **the HTTP server, Dockerfile, compose service and port
-  wiring are pending** — none exist in the repo yet. (The plan's file list put
-  the importer docs under `companion/`; the code lives under `docker/`.)
+  laptop. **Status: built.** `docker/floorplan-importer/` holds the pure library
+  (`calib.py`, `planraster.py`, `pdfsource.py`, `ifcsource.py` — no HTTP, no
+  module state), the HTTP server (`server.py`, `ifcjob.py`; stdlib
+  `http.server`, its docstring is the contract the web UI is written against),
+  a `Dockerfile` (`python:3.12-slim`, non-root, health check on
+  `/api/health`) and `requirements.txt`. Compose service `floorplan_importer`
+  (`companion/docker-compose.yaml`: `network_mode: host`, `cpus: 1.0`,
+  `mem_limit: 2g`, `restart: unless-stopped`, no volumes — uploads live in
+  memory); CI job `importer-tests` and the multi-arch
+  `floorplan-importer-image.yml` (amd64 + arm64, called from `deploy.yml`). The
+  importer installs by POSTing to fleet_status at `FLEET_STATUS_URL`, which comes
+  only from its environment, never from a request. (The plan's file list put the
+  importer docs under `companion/`; the code lives under `docker/`.)
 - **Grid semantics** (`planraster.py`; trinary pgm). Walls **occupied (0)**,
   enclosed interior **free (254)**, everything outside the building
   **unknown (205)**; `occupied_thresh` 0.65, `free_thresh` 0.196 (nav2 reads
@@ -198,10 +213,25 @@ a tight numeric correction does not show the pose is right.
   IfcStairFlight, IfcWindow, IfcCurtainWall. **IfcDoor is excluded on purpose**
   (a door leaf is solid at 0.241 m and would seal every doorway; planraster
   bridges door gaps itself for inside/outside). Excluded: IfcSpace,
-  IfcOpeningElement, IfcFurnishingElement, IfcDistributionElement. Memory is
-  about 6× the IFC size per open model; face budget 3,000,000; input cap 256 MiB.
-  The ifcopenshell/shapely pins are **not yet in the repo's `requirements.txt`**
-  (it lists numpy and pymupdf only).
+  IfcOpeningElement, IfcFurnishingElement, IfcDistributionElement. Memory (as
+  measured through the server on an entity-dense synthetic model, so real exports
+  can differ): an open model is ~7× its file and a slice peaks near 15× — not the
+  6× in `ifcsource.py`'s docstring, which the server's numbers replace. Face
+  budget 3,000,000 triangles. The library's own input cap is 256 MiB, but the
+  server's default is **80 MiB** (`IMPORTER_MAX_IFC_BYTES`) under the compose
+  `mem_limit: 2g` (raise the limit first: ~128 MiB at 3g, ~256 MiB at 6g).
+  ifcopenshell hands back only part of a freed model's memory, so the server also
+  runs a **memory gate**: an IFC that would not fit on top of the resident size
+  (judged after the open model is evicted, so replacing one IFC with another
+  normally passes) is refused `503` + `Retry-After: 15`, every open import is
+  dropped and the process restarts itself (compose brings it back) rather than
+  be OOM-killed mid-slice; with another import or upload in flight it answers
+  `429` instead and kills nothing. One IFC model is open at a time; cached storey
+  grids are capped at 128 MiB per job. Pins are in
+  `docker/floorplan-importer/requirements.txt` (`ifcopenshell==0.9.0.post1`,
+  `shapely==2.2.0`, `lark`, `typing_extensions`, alongside `numpy` and
+  `pymupdf`), installed with `--no-deps` so the packages the code really imports
+  are all listed.
 
 ### 6. Operator decisions, 2026-11-10
 
@@ -215,7 +245,10 @@ a tight numeric correction does not show the pose is right.
    operator's browser drive the robot. Rejected: relaying through the importer
    (it would need robot access — a new bridged topic).
 3. **The web wizard owns the IFC storey picker;** the importer server stays
-   UI-free (JSON API only).
+   UI-free (JSON API only). Built: `webui/importwizard.js` (DOM),
+   `importflow.js` (state + HTTP), `importmath.js` (pure maths). The wizard reads
+   `wall_spans` with a plain GET and no query string, and its install never
+   activates a map.
 
 ### 7. Per-map tag poses (amends ADR-0029)
 
@@ -294,22 +327,40 @@ surveyed on every map it appears on.
 - The `wall_spans` stationary check (`STATIONARY_AGREE_M` 0.04 m, 75th-percentile
   first-vs-last scan disagreement; `STATIONARY_V` 0.02) is **untuned on the real
   lidar**.
-- The webui Save Map button and mode selector still read the raw `slam_mode`:
-  under `auto` on a drawing map Save Map falls through to a slam_toolbox service
-  that is not running (fix pending with the UI units).
+- **The importer (`:9004`) has no auth and answers CORS `*`**
+  (`IMPORTER_CORS_ORIGIN`, default `*`): any page open in a browser that can reach
+  it can upload, calibrate and install a drawing map. It cannot activate a map or
+  replace a scan map (fleet_status refuses a scan map's name), and it adds nothing
+  beyond fleet_status `:9003`, which is likewise CORS `*` with no auth
+  (LAN-trust) and can activate maps. `GET :9001/api/wall_spans` is CORS `*`,
+  read-only; `/mcp` is never CORS-open (section 6).
 - A LEGACY pose applies to whichever map is active until the tag has a named
   pose, even when that map's frame does not match (re-survey it).
-- **Pending:** importer HTTP server / image / compose service, web import wizard
-  and IFC storey picker, source chips in the map list, the scan-over-drawing
-  overlay UI, robot-measured calibration UI.
+- The wizard has no `close_m` control: the importer's "little enclosed interior"
+  warning says to raise it, but only a direct API call can.
+- ifcopenshell hands back only part of a freed model's memory; the measurement was
+  on macOS, **Linux is unverified**. The memory gate is the backstop, not a fix.
+- **Not yet verified on hardware** (all of it is built and unit-tested): the
+  importer image build on amd64 and arm64; the compose caps (`cpus: 1.0`,
+  `mem_limit: 2g`) under a real import; the scan-over-drawing overlay on the
+  robot (including its laser-mount constant); the `wall_spans` stationarity
+  threshold; the real companion → Pi install path (the box reaching
+  `http://<PI_IP>:9003`; the zenoh bridge only proves `:7447`); and the web UI's
+  drawing-map guards (source chip, Save Map and mode selector on a drawing map)
+  against a real site.
 
 ## Consequences
 
-- Operating recipe for what exists today: `docs/slam.md` §6.
+- Operating recipe: `docs/slam.md` §6 (API 6.1–6.6, import wizard 6.7, IFC notes
+  6.8, first-run checklist 6.9, known limits 6.10). Importer service and its
+  environment: `companion/README.md`.
 - A site can hold `floor1` (scan) and `floor1_plan` (drawing) side by side; each
   keeps its own tag surveys and relocalizes from its own.
 - Deploy: fleet_status and scout-skills images and the scout package together;
   the first process to open each tags.db migrates it (a migrated file is not
   touched again). Existing single-map sites need nothing.
+- The importer is optional: it runs from the companion compose stack (image
+  `ghcr.io/bg-bgi/scout-floorplan-importer`), the Pi never depends on it, and a
+  drawing pair can always be installed by hand (slam.md 6.1).
 - Scan-map behaviour is unchanged: same amcl file, same `auto` result, same
   commit path.
