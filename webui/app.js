@@ -545,7 +545,6 @@ function onPose(msg) {
     x: p.position.x, y: p.position.y,
     yaw: 2 * Math.atan2(p.orientation.z, p.orientation.w),
   };
-  ScanLayer.notePose(robotPose);
   drawMap();
 }
 // Only one of these publishes per session (slam vs localization mode).
@@ -560,7 +559,7 @@ function onPose(msg) {
 // grid held in liveMsg, and never blocks or sends a goal.
 ScanLayer.init({
   ros, ROSLIB, getGrid: () => liveMsg, occThreshold: () => OCC_THRESHOLD,
-  redraw: drawMap, nextAmclPose,
+  getPose: () => robotPose, redraw: drawMap,
   banner: document.getElementById('scan-banner'),
   fitEl: document.getElementById('scan-fit'),
   dismissBtn: document.getElementById('scan-banner-dismiss'),

@@ -27,7 +27,7 @@
 
   var MAX_BEAMS = 360;        // beams considered per scan (valid or not)
   var FIT_RADIUS_M = 0.15;    // a point "fits" within this of an occupied cell
-  var STALE_MS = 2000;        // /scan or /amcl_pose older than this: grey, no number
+  var STALE_MS = 2000;        // /scan older than this: grey, no number
   // Mirrors robot_profile.yaml occupied_threshold (the page passes its own).
   var DEFAULT_OCC_THRESHOLD = 50;
   var MAX_DILATE_CELLS = 40;  // guards a pathologically fine grid
@@ -164,7 +164,7 @@
 
   // --- staleness -----------------------------------------------------------------
 
-  // atMs: arrival time (the page's own clock) of the last /scan or /amcl_pose; never
+  // atMs: arrival time (the page's own clock) of the last /scan; never
   // compared with a message stamp, the robot's clock is not the browser's.
   function isStale(nowMs, atMs, limitMs) {
     if (atMs === null || atMs === undefined) return true;

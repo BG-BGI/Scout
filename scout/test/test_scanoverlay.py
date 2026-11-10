@@ -400,13 +400,11 @@ const banner = { hidden: true, classList: { s: new Set(),
 const fitEl = { textContent: '' };
 const dismissBtn = { addEventListener: (ev, fn) => { clicks = fn; } };
 let redraws = 0;
-let poseReply = null;
-let polls = 0;
-const nextAmclPose = () => { polls++; return Promise.resolve(poseReply); };
+let POSE = null;
 let GRID = { info: { width: 10, height: 10, resolution: 0.05,
   origin: { position: { x: 0, y: 0 } } }, data: new Array(100).fill(0) };
 SL.init({ ros: { id: 'ros' }, ROSLIB: { Topic: FakeTopic }, getGrid: () => GRID,
-  occThreshold: 50, redraw: () => { redraws++; }, nextAmclPose, banner, fitEl,
+  occThreshold: 50, getPose: () => POSE, redraw: () => { redraws++; }, banner, fitEl,
   dismissBtn, storage, timers, now: () => clock });
 const poseMsg = (p) => ({ pose: { pose: { position: { x: p.x, y: p.y, z: 0 },
   orientation: { x: 0, y: 0, z: Math.sin(p.yaw / 2), w: Math.cos(p.yaw / 2) } } } });
@@ -475,7 +473,7 @@ def test_layer_map_switch_resubscribes_and_resets():
 def test_layer_drawn_points_are_live_then_grey_and_fit_is_a_dash_when_stale():
     res = _layer("""
     GRID = grid;
-    poseReply = poseMsg(truth);
+    POSE = truth;
     SL.sync(DRAWING);
     await tick(0);
     topics[0].cb(scan);
@@ -485,7 +483,7 @@ def test_layer_drawn_points_are_live_then_grey_and_fit_is_a_dash_when_stale():
     const liveLog = ctxLog.splice(0);
     await tick(600);                 // scan older than 0.6 s: still live
     const stillLive = SL.snapshot().stale;
-    await tick(2000);                // scan older than 2 s: stale (pose keeps answering)
+    await tick(2000);                // scan older than 2 s: stale
     const stale = SL.snapshot();
     const staleText = fitEl.textContent;
     SL.draw(ctx, w2c);
@@ -503,41 +501,49 @@ def test_layer_drawn_points_are_live_then_grey_and_fit_is_a_dash_when_stale():
     assert res['greyClass'] is True
 
 
-def test_layer_keeps_a_stationary_robots_pose_fresh_by_polling_the_latched_pose():
-    # amcl publishes only after motion, so a pose that no message refreshes would
-    # grey the layer on a robot standing still; the poll re-asks for the latched one
+def test_stationary_robot_stays_live_with_a_numeric_fit_and_only_scan_is_subscribed():
+    # pose set once before start and never again (amcl is silent while stationary)
     res = _layer("""
     GRID = grid;
-    poseReply = poseMsg(truth);
+    POSE = truth;
     SL.sync(DRAWING);
-    await tick(0);
     const states = [];
-    for (let i = 0; i < 12; i++) {       // 6 s of scans every 500 ms, no pose message
+    for (let i = 0; i < 12; i++) {       // 6 s of scans every 500 ms, no pose update
       topics[0].cb(scan);
       await tick(500);
       states.push(SL.snapshot().stale);
     }
-    out({ states, polls, fit: SL.snapshot().fit });""", rooms=True)
+    out({ states, fit: SL.snapshot().fit, text: fitEl.textContent,
+          names: topics.map((t) => t.o.name), n: topics.length });""", rooms=True)
     assert res['states'] == [False] * 12
-    assert res['polls'] >= 4 and res['fit'] >= 0.99
+    assert res['fit'] >= 0.99 and res['text'] == '100%'
+    assert res['names'] == ['/scan'] and res['n'] == 1
 
 
-def test_layer_goes_stale_when_amcl_stops_answering():
+def test_layer_goes_stale_when_scan_stops_even_with_a_pose():
     res = _layer("""
     GRID = grid;
-    poseReply = poseMsg(truth);
+    POSE = truth;
     SL.sync(DRAWING);
-    await tick(0);
-    poseReply = null;                    // amcl gone: no latched pose either
+    topics[0].cb(scan);
     const states = [];
-    for (let i = 0; i < 10; i++) {
-      topics[0].cb(scan);
-      await tick(500);
-      states.push(SL.snapshot().stale);
-    }
+    for (let i = 0; i < 10; i++) { await tick(500); states.push(SL.snapshot().stale); }
     out({ states, text: fitEl.textContent });""", rooms=True)
     assert res['states'][0] is False and res['states'][-1] is True
     assert res['text'] == '–'
+
+
+def test_layer_follows_the_pages_pose_as_it_changes():
+    res = _layer("""
+    GRID = grid;
+    POSE = truth;
+    SL.sync(DRAWING);
+    topics[0].cb(scan);
+    const good = SL.snapshot().fit;
+    POSE = { x: truth.x + 3.1, y: truth.y + 1.7, yaw: truth.yaw };
+    topics[0].cb(scan);
+    out({ good, off: SL.snapshot().fit });""", rooms=True)
+    assert res['good'] >= 0.99 and res['off'] < 0.30
 
 
 def test_layer_without_any_pose_shows_a_dash_not_a_number():
@@ -548,27 +554,16 @@ def test_layer_without_any_pose_shows_a_dash_not_a_number():
     topics[0].cb(scan);
     out({ snap: SL.snapshot(), text: fitEl.textContent });""", rooms=True)
     assert res['snap']['fit'] is None and res['snap']['points'] == 0
-    assert res['text'] == '–' and res['snap']['stale'] is True
+    assert res['text'] == '–' and res['snap']['stale'] is False
 
 
-def test_layer_notepose_from_the_page_handler_feeds_the_fit():
-    res = _layer("""
-    GRID = grid;
-    SL.sync(DRAWING);
-    SL.notePose(truth);
-    topics[0].cb(scan);
-    out({ fit: SL.snapshot().fit, text: fitEl.textContent });""", rooms=True)
-    assert res['fit'] >= 0.99 and res['text'] == '100%'
-
-
-def test_layer_ignores_scans_and_poses_after_it_stopped():
+def test_layer_ignores_scans_after_it_stopped():
     res = _layer("""
     GRID = grid;
     SL.sync(DRAWING);
     const t = topics[0];
     SL.sync(SCANMAP);
     t.cb(scan);
-    SL.notePose(truth);
     out({ snap: SL.snapshot(), unsubs: t.unsubs });""", rooms=True)
     assert res['snap']['active'] is False and res['snap']['points'] == 0
     assert res['unsubs'] == 1
@@ -675,13 +670,13 @@ def _fn(src, marker, end='\n}\n'):
 
 def test_app_js_hooks_are_small_and_in_the_named_places():
     src = APP_JS.read_text()
-    assert src.count('ScanLayer.') == 4
+    assert src.count('ScanLayer.') == 3
     init = _fn(src, 'ScanLayer.init({', '});')
     for piece in ('ros', 'getGrid: () => liveMsg', 'occThreshold: () => OCC_THRESHOLD',
-                  'redraw: drawMap', 'nextAmclPose', "getElementById('scan-banner')",
+                  'redraw: drawMap', 'getPose: () => robotPose', "getElementById('scan-banner')",
                   "getElementById('scan-fit')", "getElementById('scan-banner-dismiss')"):
         assert piece in init, piece
-    assert 'ScanLayer.notePose(robotPose)' in _fn(src, 'function onPose(')
+    assert 'ScanLayer' not in _fn(src, 'function onPose(')
     assert 'ScanLayer.sync(activeSiteMeta)' in _fn(src, 'function renderSites(')
     draw = _fn(src, 'function drawMap(')
     assert 'ScanLayer.draw(mapCtx, worldToCanvas)' in draw
@@ -701,3 +696,5 @@ def test_app_js_has_one_scan_consumer_path_and_no_other_scan_subscription():
     src = APP_JS.read_text()
     assert "'/scan'" not in src and '"/scan"' not in src
     assert "name: '/scan'" in SCANLAYER.read_text()
+    assert len(re.findall(r'new cfg\.ROSLIB\.Topic', SCANLAYER.read_text())) == 1
+    assert 'nextAmclPose' not in _code(SCANLAYER) and 'POSE_POLL' not in _code(SCANLAYER)

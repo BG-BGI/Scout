@@ -2,10 +2,9 @@
  * Classic script; exposes window.ScanLayer (and module.exports under Node for
  * scout/test/test_scanoverlay.py, which injects fakes for everything below).
  *
- * app.js calls four hooks and owns nothing else of this feature:
- *   ScanLayer.init({...})         once, with the page's ros / grid / redraw
+ * app.js calls three hooks and owns nothing else of this feature:
+ *   ScanLayer.init({...})         once, with the page's ros / grid / pose getters / redraw
  *   ScanLayer.sync(activeSiteMeta) whenever the site status is re-rendered
- *   ScanLayer.notePose(pose)      from the existing /amcl_pose handler
  *   ScanLayer.draw(ctx, w2c)      from drawMap(), above the grid, below the robot
  *
  * The layer is active only while the effective mode is localization AND the active
@@ -25,14 +24,9 @@
 
   var SCAN_THROTTLE_MS = 500;   // 2 Hz on the wire
   var REFRESH_MS = 500;         // staleness re-check + redraw cadence
-  // amcl publishes /amcl_pose only after the robot has moved (update_min_d/a), so a
-  // robot standing still after Set pose sends nothing for minutes, and "no message
-  // for 2 s" would grey the layer in exactly the situation it exists for. While the
-  // layer is active the page therefore re-asks for the LATCHED pose (a fresh
-  // subscription gets the latest one at once); a pose that answers is current, one
-  // that does not (amcl down) goes stale like any other input.
-  var POSE_POLL_MS = 1500;
-  var POSE_POLL_WAIT_MS = 700;
+  // Pose = the page's own robotPose (what the robot arrow is drawn from). Its age is
+  // NOT a staleness input: amcl publishes only after motion, so it is silent while the
+  // robot stands still by design. Only /scan arrival age decides stale.
   var POINT_LIVE = 'rgba(60, 235, 120, 0.9)';
   var POINT_STALE = 'rgba(150, 150, 150, 0.55)';
 
@@ -44,8 +38,8 @@
   function blank() {
     return {
       active: false, key: null, scanTopic: null, scanMsg: null, scanAt: null,
-      pose: null, poseAt: null, points: [], fit: null, mask: null, maskFor: null,
-      timer: null, polling: false, lastPollAt: null, wasStale: null,
+      points: [], fit: null, mask: null, maskFor: null,
+      timer: null, wasStale: null,
     };
   }
 
@@ -92,8 +86,7 @@
   // --- derived state --------------------------------------------------------------
 
   function stale() {
-    var t = now();
-    return SO.isStale(t, st.scanAt) || SO.isStale(t, st.poseAt);
+    return SO.isStale(now(), st.scanAt);
   }
 
   function recompute() {
@@ -103,12 +96,13 @@
       st.mask = SO.buildMask(grid, thr);
       st.maskFor = grid;
     }
-    if (!st.scanMsg || !st.pose) {
+    var pose = cfg.getPose ? cfg.getPose() : null;
+    if (!st.scanMsg || !pose) {
       st.points = [];
       st.fit = null;
       return;
     }
-    st.points = SO.projectScan(st.scanMsg, st.pose, cfg.laser);
+    st.points = SO.projectScan(st.scanMsg, pose, cfg.laser);
     st.fit = st.mask ? SO.fit(st.points, st.mask) : null;
   }
 
@@ -138,32 +132,8 @@
     redraw();
   }
 
-  function notePose(pose) {
-    if (!st.active || !pose) return;
-    st.pose = pose;
-    st.poseAt = now();
-    recompute();
-  }
-
-  function pollPose() {
-    if (st.polling || !cfg.nextAmclPose) return;
-    st.polling = true;
-    st.lastPollAt = now();
-    var mine = st;
-    cfg.nextAmclPose(POSE_POLL_WAIT_MS).then(function (msg) {
-      mine.polling = false;
-      if (st !== mine || !msg) return;
-      notePose(SO.poseFromMsg(msg));
-      renderBanner();
-      redraw();
-    }, function () {
-      mine.polling = false;
-    });
-  }
-
   function refresh() {
     if (!st.active) return;
-    if (st.lastPollAt === null || now() - st.lastPollAt >= POSE_POLL_MS) pollPose();
     var nowStale = stale();
     renderBanner();
     if (nowStale !== st.wasStale) {
@@ -183,7 +153,6 @@
     st.scanTopic.subscribe(onScan);
     var timers = cfg.timers || root;
     st.timer = timers.setInterval(refresh, REFRESH_MS);
-    pollPose();
   }
 
   function stop() {
@@ -243,8 +212,7 @@
 
   var api = {
     SCAN_THROTTLE_MS: SCAN_THROTTLE_MS, REFRESH_MS: REFRESH_MS,
-    POSE_POLL_MS: POSE_POLL_MS,
-    init: init, sync: sync, notePose: notePose, draw: draw, refresh: refresh,
+    init: init, sync: sync, draw: draw, refresh: refresh,
     snapshot: snapshot,
   };
   root.ScanLayer = api;
