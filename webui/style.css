@@ -175,6 +175,23 @@ aside  { order: 3; }
 }
 
 
+/* scan-over-drawing banner (scanlayer.js): neutral on purpose, the fit is a hint */
+.scan-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3);
+  padding: var(--s2) var(--s3); margin-bottom: var(--s2);
+  font-size: 0.72rem; color: var(--text);
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r);
+}
+.scan-banner[hidden] { display: none; }
+.scan-banner-fit { font-size: 0.66rem; color: var(--dim); }
+.scan-banner-fit b { color: var(--text); font-weight: 600; }
+.scan-banner-fit i { font-style: normal; }
+.scan-banner.stale .scan-banner-fit { opacity: 0.55; }
+.scan-banner button {
+  margin-left: auto; font-family: var(--mono); font-size: 0.65rem; padding: 3px 8px;
+  cursor: pointer; color: var(--dim); background: transparent;
+  border: 1px solid var(--border); border-radius: 2px;
+}
 #map-frame { min-width: 0; position: relative; aspect-ratio: 1 / 1; }
 @media (min-width: 940px) {
   #map-frame {
@@ -213,6 +230,10 @@ aside  { order: 3; }
   border: 1px solid rgba(242,178,0,.4); background: var(--accent-bg);
   border-radius: 2px; padding: 0 4px;
 }
+#active-map-source {
+  font-size: 0.56rem; font-weight: 600; color: var(--dim);
+  border: 1px solid var(--border); border-radius: 2px; padding: 0 4px;
+}
 #active-mode-line { font-size: 0.6rem; color: var(--dim); }
 #active-mode-line b { color: var(--text); font-weight: 600; }
 
@@ -236,6 +257,7 @@ aside  { order: 3; }
   border: 1px solid var(--border); border-radius: 2px;
 }
 .mo-floors button.on { color: #000; background: var(--accent); border-color: var(--accent); }
+.mo-floors button.drawing { border-bottom-style: dashed; border-bottom-width: 2px; }
 
 /* layer toggles — app.js toggles .selected (UHF tag markers, ADR-0032) */
 
@@ -724,6 +746,7 @@ code { font-family: var(--mono); font-size: 0.85em; color: var(--dim); }
 .cap.off  { color: var(--dim); border: 1px solid var(--border); opacity: 0.6; }
 .cap.live { color: #000; background: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
 .cap.warn { color: var(--warn); border: 1px solid var(--warn); }
+.cap.drawing { color: var(--dim); border: 1px dashed var(--dim); }
 
 /* capability legend + group labels */
 .legend { display: flex; gap: var(--s3); flex-wrap: wrap; font-size: 0.64rem; color: var(--dim); }

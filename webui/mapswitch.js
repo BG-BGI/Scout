@@ -24,6 +24,21 @@
     return (meta && (meta.resolved_mode || meta.slam_mode)) || 'auto';
   }
 
+  // The mode the UI's guards and labels (Set pose, Save Map, the NOW card, the
+  // Navigate|Map toggle) reason about. It is the raw slam_mode, except that `auto`
+  // is read as localization when fleet_status resolved it to localization, which
+  // only happens for a drawing map with a grid. `auto` on a scan map stays `auto`
+  // even though it resolves to continue/new, so a scan-only site sees exactly what it
+  // saw before drawing maps existed. effectiveSlamMode (above) is the strict "what
+  // runs" for the switch decision; this is the display/guard view of it.
+  function uiSlamMode(meta) {
+    var raw = (meta && meta.slam_mode) || 'auto';
+    if (raw === 'auto' && meta && meta.resolved_mode === 'localization') {
+      return 'localization';
+    }
+    return raw;
+  }
+
   function activationPlan(meta, name) {
     var maps = (meta && meta.maps) || {};
     var target = maps[name] || {};
@@ -95,6 +110,7 @@
   var api = {
     mapSource: mapSource,
     effectiveSlamMode: effectiveSlamMode,
+    uiSlamMode: uiSlamMode,
     activationPlan: activationPlan,
     needsReseed: needsReseed,
     amclStamp: amclStamp,

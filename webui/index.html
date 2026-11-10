@@ -124,6 +124,13 @@
         <button id="gd-cancel">Cancel</button>
         <div id="gd-result" class="dim"></div>
       </div>
+      <!-- Scan-over-drawing hint (R10): shown by scanlayer.js only while a drawing map
+           runs under localization. Advice, not a gate: goals are never blocked. -->
+      <div id="scan-banner" class="scan-banner" hidden>
+        <span class="scan-banner-text">Confirm the scan sits on the walls before sending a goal</span>
+        <span class="scan-banner-fit">fit <b id="scan-fit">–</b> <i>alignment hint, not localization proof</i></span>
+        <button id="scan-banner-dismiss" type="button">Dismiss</button>
+      </div>
       <div id="map-frame">
         <canvas id="map-canvas" width="300" height="300"></canvas>
 
@@ -136,6 +143,7 @@
             <span id="active-site-name"></span>
             <span id="active-map-name"></span>
             <span id="active-map-floor" style="display:none"></span>
+            <span id="active-map-source" style="display:none"></span>
           </div>
           <span id="active-mode-line"></span>
         </div>
@@ -456,6 +464,8 @@
 <script src="vendor/roslib.min.js"></script>
 <script src="mapview.js"></script>
 <script src="mapswitch.js"></script>
+<script src="scanoverlay.js"></script>
+<script src="scanlayer.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

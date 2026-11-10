@@ -554,6 +554,16 @@ function onPose(msg) {
     throttle_rate: 500,
   }).subscribe(onPose);
 });
+// Scan-over-drawing overlay (R10): all of its logic lives in scanlayer.js. It only
+// subscribes to /scan while a drawing map runs under localization, reads the /map
+// grid held in liveMsg, and never blocks or sends a goal.
+ScanLayer.init({
+  ros, ROSLIB, getGrid: () => liveMsg, occThreshold: () => OCC_THRESHOLD,
+  getPose: () => robotPose, redraw: drawMap,
+  banner: document.getElementById('scan-banner'),
+  fitEl: document.getElementById('scan-fit'),
+  dismissBtn: document.getElementById('scan-banner-dismiss'),
+});
 
 const planTopic = new ROSLIB.Topic({
   ros, name: '/plan', messageType: 'nav_msgs/msg/Path', throttle_rate: 1000,
@@ -727,6 +737,7 @@ function drawMap() {
   mapCtx.restore();
 
   drawStructGrid();
+  ScanLayer.draw(mapCtx, worldToCanvas);
 
   if (plan && plan.length > 1) {
     mapCtx.strokeStyle = '#F2B200';
@@ -1729,7 +1740,7 @@ setPoseBtn.addEventListener('click', () => {
   // /initialpose is consumed only by amcl (localization mode, ADR-0028). In
   // continue/new mode slam_toolbox runs instead and has no such subscriber, so
   // the pose would be published to nobody — say so instead of "succeeding".
-  const slamMode = activeSiteMeta && activeSiteMeta.slam_mode;
+  const slamMode = activeSiteMeta && MapSwitch.uiSlamMode(activeSiteMeta);
   if (!poseMode && (slamMode === 'continue' || slamMode === 'new')) {
     navState.textContent = 'Set pose needs localization mode (amcl) — current mode: '
       + slamMode + ' (slam_toolbox self-localizes and ignores /initialpose). '
@@ -2770,7 +2781,7 @@ function renderActiveCard(activeName) {
   if (!activeSiteMeta || !activeName) { card.hidden = true; return; }
   const map = activeSiteMeta.active_map;
   const entry = (map && (activeSiteMeta.maps || {})[map]) || {};
-  const mode = activeSiteMeta.slam_mode || 'auto';
+  const mode = MapSwitch.uiSlamMode(activeSiteMeta);
   document.getElementById('active-site-name').textContent =
     (activeSiteMeta.display_name || activeName) + ' /';
   document.getElementById('active-map-name').textContent =
@@ -2782,6 +2793,9 @@ function renderActiveCard(activeName) {
   } else {
     floorEl.style.display = 'none';
   }
+  const sourceEl = document.getElementById('active-map-source');
+  sourceEl.textContent = 'drawing';
+  sourceEl.style.display = MapSwitch.mapSource(entry) === 'drawing' ? '' : 'none';
   let line = MODE_PHRASE[mode] || mode;
   document.getElementById('active-mode-line').innerHTML = line;
   card.hidden = false;
@@ -2795,7 +2809,7 @@ function renderIntent() {
   const wrap = document.getElementById('mo-intent');
   if (!activeSiteMeta || !activeSiteMeta.active_map) { wrap.hidden = true; return; }
   wrap.hidden = false;
-  const mode = activeSiteMeta.slam_mode || 'auto';
+  const mode = MapSwitch.uiSlamMode(activeSiteMeta);
   const navBtn = wrap.querySelector('[data-intent="nav"]');
   const mapBtn = wrap.querySelector('[data-intent="map"]');
   navBtn.classList.toggle('on', mode === 'localization');
@@ -2831,6 +2845,10 @@ function renderFloorStack() {
     const btn = document.createElement('button');
     btn.textContent = (m.floor != null) ? String(m.floor) : name.slice(0, 3);
     btn.title = m.label || name;
+    if (MapSwitch.mapSource(m) === 'drawing') {
+      btn.classList.add('drawing');
+      btn.title += ' (drawing)';
+    }
     if (name === active) btn.classList.add('on');
     btn.addEventListener('click', () => activateMap(name));
     wrap.appendChild(btn);
@@ -2851,6 +2869,7 @@ function renderSites(data) {
     ? `${mapCount} map${mapCount === 1 ? '' : 's'}`
     : 'no active site';
   renderActiveCard(data.active);
+  ScanLayer.sync(activeSiteMeta);
   renderSlamMode();
   siteList.innerHTML = '';
   for (const s of data.sites || []) {
@@ -2899,6 +2918,7 @@ function renderSiteMaps() {
     chips.push(m.grid
       ? '<span class="cap on">Localize-ready</span>'
       : '<span class="cap off">Not localizable</span>');
+    if (MapSwitch.mapSource(m) === 'drawing') chips.push('<span class="cap drawing">drawing</span>');
     if (m.posegraph) chips.push('<span class="cap on">Extendable</span>');
     if (m.unregistered) chips.push('<span class="cap warn">unregistered</span>');
     const nameHtml = m.label && m.label !== name
@@ -3106,6 +3126,11 @@ function renderSlamMode() {
     siteModeEl.appendChild(btn);
   }
   siteModeDesc.textContent = `${current}: ${SLAM_MODES.find(([m]) => m === current)[1]}`;
+  const activeEntry = (activeSiteMeta.maps || {})[activeSiteMeta.active_map];
+  if (MapSwitch.mapSource(activeEntry) === 'drawing') {
+    siteModeDesc.textContent += ' — The active map is a drawing: under auto it always runs '
+      + 'localization (amcl on the drawing). It has no saved graph to continue or extend.';
+  }
   renderIntent();   // keep the map's Navigate|Map toggle in sync
 }
 
@@ -3215,8 +3240,12 @@ const saveGridSrv = new ROSLIB.Service({
   serviceType: 'slam_toolbox/srv/SaveMap',
 });
 document.getElementById('site-save-map').addEventListener('click', () => {
-  if (activeSiteMeta && activeSiteMeta.slam_mode === 'localization') {
-    alert('This site is pinned to localization mode: slam_toolbox is not running (amcl localizes instead), so there is nothing to save. Set slam_mode to auto/continue first.');
+  if (activeSiteMeta && MapSwitch.uiSlamMode(activeSiteMeta) === 'localization') {
+    if (activeSiteMeta.slam_mode === 'localization') {
+      alert('This site is pinned to localization mode: slam_toolbox is not running (amcl localizes instead), so there is nothing to save. Set slam_mode to auto/continue first.');
+    } else {
+      alert('The active map is a drawing: under auto slam_toolbox is not running (amcl localizes on it), so there is nothing to save. A drawing map comes from a floorplan, not a scan. Switch to a scan map to save one.');
+    }
     return;
   }
   const name = siteMapName.value.trim()
