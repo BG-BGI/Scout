@@ -728,10 +728,13 @@ async def go_to_waypoint(name: str) -> dict:
 # path must be its, not ours (same hardcode as the webui Save Map button).
 SLAM_MAPS_DIR = "/ros_ws/src/sites/active/maps"
 
-# After a slam restart that leaves amcl running, wait this long (attempts x poll)
-# for /amcl_pose before giving up on the automatic tag-relocalizer re-arm.
-AMCL_POLL_S = 5.0
-AMCL_POLL_ATTEMPTS = 18
+# After a slam restart that leaves amcl running, wait up to attempts x (poll
+# window + pause) ~ 90 s for a FRESH /amcl_pose before giving up on the automatic
+# tag-relocalizer re-arm. AMCL_BASELINE_S: how long to look for the pose latched
+# before the restart.
+AMCL_POLL_S = 3.0
+AMCL_POLL_ATTEMPTS = 15
+AMCL_BASELINE_S = 2.0
 # One re-arm at a time; a newer switch replaces a pending one.
 _reseed_task: "asyncio.Task | None" = None
 
@@ -811,12 +814,57 @@ async def _effective_mode(site: dict) -> str:
         return site["slam_mode"]
 
 
-async def _reseed_when_amcl_up() -> bool:
-    """Re-arm the tag relocalizer once the restarted amcl publishes
-    /amcl_pose. It lives in the robot container, which a slam restart leaves
-    running, so its 'already seeded' flag still describes the OLD map. True
-    when re-armed; False when amcl never came up or the call failed (the
-    switch_map result already tells the operator to set the pose by hand)."""
+def _amcl_stamp(msg) -> "str | None":
+    """'sec:nanosec' of a /amcl_pose message's header.stamp, or None when it
+    has no usable stamp. Mirrors webui/mapswitch.js amclStamp (parity-tested)."""
+    stamp = ((msg.get("header") or {}).get("stamp")
+             if isinstance(msg, dict) else None)
+    if not isinstance(stamp, dict):
+        return None
+    sec, nanosec = stamp.get("sec"), stamp.get("nanosec")
+    for part in (sec, nanosec):
+        if isinstance(part, bool) or not isinstance(part, (int, float)):
+            return None
+    return f"{sec}:{nanosec}"
+
+
+def _is_fresh_amcl_pose(baseline, msg) -> bool:
+    """Is `msg` a pose from the RESTARTED amcl? nav2_amcl latches /amcl_pose
+    (transient-local, KeepLast 1) and a stationary amcl does not republish, so a
+    subscriber can be handed the old amcl's last pose. header.stamp is the laser
+    scan's stamp, so only a stamp that differs from `baseline` (the stamp latched
+    BEFORE the restart; None = none) counts. Never compare to a wall clock: the
+    robot's steps at boot. Mirrors webui/mapswitch.js isFreshAmclPose."""
+    if msg is None:
+        return False
+    if baseline is None:
+        return True
+    return _amcl_stamp(msg) != baseline
+
+
+async def _amcl_baseline() -> "str | None":
+    """Stamp of the /amcl_pose latched right now (None if none arrives): taken
+    BEFORE the restart requests so the stale replay can be told from the new
+    amcl's first pose."""
+    try:
+        async with RosBridge() as rb:
+            msg = await rb.subscribe_once(
+                "/amcl_pose",
+                "geometry_msgs/msg/PoseWithCovarianceStamped",
+                timeout=AMCL_BASELINE_S,
+            )
+    except RosBridgeError:
+        return None
+    return _amcl_stamp(msg)
+
+
+async def _reseed_when_amcl_up(baseline) -> bool:
+    """Re-arm the tag relocalizer once the restarted amcl publishes a FRESH
+    /amcl_pose (stamp differs from `baseline`, see _is_fresh_amcl_pose). It
+    lives in the robot container, which a slam restart leaves running, so its
+    'already seeded' flag still describes the OLD map. True when re-armed;
+    False when amcl never came up or the call failed (the switch_map result
+    already tells the operator to set the pose by hand)."""
     for _ in range(AMCL_POLL_ATTEMPTS):
         try:
             async with RosBridge(background=True) as rb:
@@ -827,9 +875,9 @@ async def _reseed_when_amcl_up() -> bool:
                 )
         except RosBridgeError:
             msg = None
-            await asyncio.sleep(AMCL_POLL_S)
-        if msg is not None:
+        if _is_fresh_amcl_pose(baseline, msg):
             break
+        await asyncio.sleep(AMCL_POLL_S)
     else:
         return False
     try:
@@ -915,6 +963,11 @@ async def switch_map(name: str) -> dict:
                 f"{plan['target_source']}): amcl's params are fixed at launch, "
                 "so slam restarts instead of a live swap")
 
+    # The pose amcl has latched NOW, before any restart request: the baseline a
+    # pose after the restart must differ from (see _is_fresh_amcl_pose).
+    baseline = (await _amcl_baseline()
+                if not plan["live"] and mode == "localization" else None)
+
     # Persist active_map — fleet_status owns site.json writes.
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
@@ -935,10 +988,11 @@ async def switch_map(name: str) -> dict:
     if not plan["live"] and await _effective_mode(site) == "localization":
         if _reseed_task is not None:
             _reseed_task.cancel()
-        _reseed_task = asyncio.create_task(_reseed_when_amcl_up())
+        _reseed_task = asyncio.create_task(_reseed_when_amcl_up(baseline))
         out["reseed"] = (
             "amcl restarts at the map's start pose; the tag relocalizer is "
-            "re-armed automatically once /amcl_pose publishes (up to ~90 s). "
+            "re-armed automatically once the restarted amcl publishes a fresh "
+            "/amcl_pose (up to ~90 s). "
             "If it does not, set pose after restart (webui Set pose, or show "
             "the robot a registered tag)")
     return out

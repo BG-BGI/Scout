@@ -76,7 +76,7 @@ class _Self:
 
 
 def _track(maps_dir, maps, active, home, *, sightings=3, slam_mode='localization',
-           ready=True):
+           ready=True, mode=None):
     node = _Self(maps_dir, ready)
     fake_loadmap = types.SimpleNamespace(
         Request=lambda: types.SimpleNamespace(map_url=None),
@@ -85,8 +85,8 @@ def _track(maps_dir, maps, active, home, *, sightings=3, slam_mode='localization
                     time=types.SimpleNamespace(monotonic=lambda: NOW),
                     LoadMap=fake_loadmap)
     for _ in range(sightings):
-        track(node, home, 1.0, 'tag7', 0.0, 'pose',
-              slam_mode=slam_mode, active_map=active, maps=maps)
+        track(node, home, 1.0, 'tag7', 0.0, 'pose', slam_mode=slam_mode,
+              active_map=active, maps=maps, mode=mode or slam_mode)
     return node
 
 
@@ -154,8 +154,8 @@ def test_nav_busy_check_still_runs_for_same_source(maps_dir):
                     time=types.SimpleNamespace(monotonic=lambda: NOW),
                     LoadMap=None)
     for _ in range(3):
-        track(node, 'other_scan', 1.0, 'tag7', 0.0, 'pose',
-              slam_mode='localization', active_map='scanned', maps=MAPS)
+        track(node, 'other_scan', 1.0, 'tag7', 0.0, 'pose', slam_mode='localization',
+              active_map='scanned', maps=MAPS, mode='localization')
     assert node.load_requests == []
     assert 'nav goal' in node.logger.warns[0][0]
 
@@ -165,22 +165,124 @@ def _read_site(tmp_path, content):
     if content is not None:
         path.write_text(content if isinstance(content, str) else json.dumps(content))
     node = _Self(tmp_path)
-    return _method('_read_site', json=json)(node)
+    return _method('_read_site', json=json, sites=sites)(node)
 
 
 def test_read_site_returns_maps_for_v2(tmp_path):
     data = {'active_map': 'plan', 'slam_mode': 'auto', 'maps': MAPS}
-    assert _read_site(tmp_path, data) == ('plan', 'auto', MAPS)
+    assert _read_site(tmp_path, data) == ('plan', 'auto', MAPS, 'new')
 
 
 def test_read_site_v1_has_no_maps(tmp_path):
-    assert _read_site(tmp_path, {'default_map': 'office'}) == ('office', None, {})
+    assert _read_site(tmp_path, {'default_map': 'office'}) == (
+        'office', None, {}, 'new')
 
 
 @pytest.mark.parametrize('content', [None, '{not json', '[]', '"x"'])
 def test_read_site_problem_disables_transit(tmp_path, content):
-    assert _read_site(tmp_path, content) == (None, None, {})
+    assert _read_site(tmp_path, content) == (None, None, {}, None)
 
 
 def test_read_site_non_dict_maps_is_empty(tmp_path):
     assert _read_site(tmp_path, {'active_map': 'a', 'maps': ['a']})[2] == {}
+
+
+# --- the gate is the EFFECTIVE mode: `auto` on a drawing map runs amcl -------------
+
+def _site_json(active, slam_mode, **sources):
+    return {'version': 2, 'active_map': active, 'slam_mode': slam_mode,
+            'maps': {n: {'source': src} for n, src in sources.items()}}
+
+
+def _transit(tmp_path, site, home, *, grids=(), sightings=3):
+    """The real _read_site feeding the real _track_transit, against the
+    ROS-boundary fake: the composition the node runs per detection frame."""
+    for g in grids:
+        (tmp_path / (g + '.yaml')).write_text('x')
+    (tmp_path / 'site.json').write_text(json.dumps(site))
+    node = _Self(tmp_path)
+    active, slam_mode, maps, mode = _method(
+        '_read_site', json=json, sites=sites)(node)
+    fake_loadmap = types.SimpleNamespace(
+        Request=lambda: types.SimpleNamespace(map_url=None),
+        Response=types.SimpleNamespace(RESULT_SUCCESS=0))
+    track = _method('_track_transit', sites=sites, os=__import__('os'),
+                    time=types.SimpleNamespace(monotonic=lambda: NOW),
+                    LoadMap=fake_loadmap)
+    for _ in range(sightings):
+        track(node, home, 1.0, 'tag7', 0.0, 'pose', slam_mode=slam_mode,
+              active_map=active, maps=maps, mode=mode)
+    return node
+
+
+def test_read_site_reports_the_effective_mode(tmp_path):
+    (tmp_path / 'plan.yaml').write_text('x')
+    node = _Self(tmp_path)
+    (tmp_path / 'site.json').write_text(json.dumps(
+        _site_json('plan', 'auto', plan='drawing')))
+    out = _method('_read_site', json=json, sites=sites)(node)
+    assert out[1] == 'auto' and out[3] == 'localization'
+
+
+def test_auto_on_a_drawing_map_with_grids_transits_live(tmp_path):
+    site = _site_json('plan', 'auto', plan='drawing', other_plan='drawing')
+    node = _transit(tmp_path, site, 'other_plan', grids=('plan', 'other_plan'))
+    assert node.load_requests == [str(tmp_path / 'other_plan.yaml')]
+    assert node.logger.warns == []
+
+
+def test_auto_drawing_transit_is_refused_when_the_home_grid_is_missing(tmp_path):
+    site = _site_json('plan', 'auto', plan='drawing', other_plan='drawing')
+    node = _transit(tmp_path, site, 'other_plan', grids=('plan',))
+    assert node.load_requests == []
+    assert len(node.logger.warns) == 1
+    assert 'has no grid' in node.logger.warns[0][0]
+
+
+def test_auto_on_a_drawing_map_without_its_own_grid_is_not_localization(tmp_path):
+    site = _site_json('plan', 'auto', plan='drawing', other_plan='drawing')
+    node = _transit(tmp_path, site, 'other_plan', grids=('other_plan',))
+    assert node.load_requests == []
+    assert "slam_mode is 'auto'" in node.logger.warns[0][0]
+
+
+@pytest.mark.parametrize('files', [(), ('scanned.posegraph',)])
+def test_auto_on_a_scan_map_is_refused_with_the_same_message_as_before(
+        tmp_path, files):
+    for f in files:
+        (tmp_path / f).write_text('x')
+    site = _site_json('scanned', 'auto', scanned='scan', other_scan='scan')
+    node = _transit(tmp_path, site, 'other_scan', grids=('scanned', 'other_scan'))
+    assert node.load_requests == []
+    assert node.logger.warns == [(
+        "tag 'tag7' lives on map 'other_scan' but slam_mode is 'auto' — not "
+        'switching (localization mode only)', 30.0)]
+
+
+def test_pinned_localization_is_unchanged(tmp_path):
+    site = _site_json('scanned', 'localization', scanned='scan', other_scan='scan')
+    node = _transit(tmp_path, site, 'other_scan', grids=('other_scan',))
+    assert node.load_requests == [str(tmp_path / 'other_scan.yaml')]
+
+
+@pytest.mark.parametrize('slam_mode,active,home,grids', [
+    ('localization', 'scanned', 'plan', ('scanned', 'plan')),
+    ('auto', 'plan', 'scanned', ('plan', 'scanned')),
+    ('localization', 'plan', 'scanned', ('plan', 'scanned')),
+])
+def test_cross_source_is_refused_whatever_the_mode(
+        tmp_path, slam_mode, active, home, grids):
+    site = _site_json(active, slam_mode, scanned='scan', plan='drawing')
+    node = _transit(tmp_path, site, home, grids=grids)
+    assert node.load_requests == []
+    assert len(node.logger.warns) == 1
+    assert 'operator' in node.logger.warns[0][0]
+    assert node.logger.warns[0][1] == 30.0
+
+
+def test_unnormalizable_site_keeps_the_raw_mode_gate(tmp_path):
+    # dangling active_map: effective_mode falls back to the raw slam_mode, so
+    # a pinned localization site still transits as it did before
+    site = _site_json('ghost', 'localization', other_scan='scan', third='scan')
+    node = _transit(tmp_path, site, 'other_scan', grids=('other_scan',))
+    assert node.load_requests == [str(tmp_path / 'other_scan.yaml')]

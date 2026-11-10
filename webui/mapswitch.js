@@ -54,11 +54,52 @@
       && effectiveSlamMode(meta) === 'localization';
   }
 
+  // --- telling the NEW amcl's pose from the old one's latched pose ---------------
+  // nav2_amcl publishes /amcl_pose transient-local (KeepLast 1) and a stationary
+  // amcl does not republish, so a subscriber opened right after a restart can be
+  // handed the OLD amcl's last pose. header.stamp is the laser scan's stamp, so a
+  // pose from the restarted amcl never carries the old stamp. Compare stamps only
+  // against each other — never against a wall clock (the browser clock is not the
+  // robot's, and the Pi's steps at boot).
+
+  // 'sec:nanosec' of a message's header.stamp, or null when it has none.
+  function amclStamp(msg) {
+    var stamp = msg && msg.header && msg.header.stamp;
+    if (!stamp || typeof stamp.sec !== 'number' || typeof stamp.nanosec !== 'number') {
+      return null;
+    }
+    return stamp.sec + ':' + stamp.nanosec;
+  }
+
+  // baselineStamp: stamp of the pose latched BEFORE the restart (null = none, e.g.
+  // mapping -> localization). A message counts only if it exists and its stamp
+  // differs from that baseline.
+  function isFreshAmclPose(baselineStamp, msg) {
+    if (msg === null || msg === undefined) return false;
+    if (baselineStamp === null || baselineStamp === undefined) return true;
+    return amclStamp(msg) !== baselineStamp;
+  }
+
+  // feed(msg) -> true exactly once: on the first fresh message. A stale replay
+  // followed by the real pose therefore triggers the caller's reseed once, after
+  // the real one.
+  function freshPoseGate(baselineStamp) {
+    var fired = false;
+    return function (msg) {
+      if (fired || !isFreshAmclPose(baselineStamp, msg)) return false;
+      fired = true;
+      return true;
+    };
+  }
+
   var api = {
     mapSource: mapSource,
     effectiveSlamMode: effectiveSlamMode,
     activationPlan: activationPlan,
     needsReseed: needsReseed,
+    amclStamp: amclStamp,
+    isFreshAmclPose: isFreshAmclPose,
+    freshPoseGate: freshPoseGate,
   };
   root.MapSwitch = api;
   if (typeof module === 'object' && module.exports) module.exports = api;

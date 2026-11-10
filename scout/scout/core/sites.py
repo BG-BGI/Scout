@@ -125,12 +125,34 @@ def sources_differ(maps, current, target):
     return map_source(maps, current) != map_source(maps, target)
 
 
+def map_source_in_active_site(sites_root, map_name):
+    """Source of `map_name` in the active site, for a launch that names its map
+    explicitly. Scan when there is no active site, it does not load, or it has no
+    entry for the map: never raises, so an explicit launch behaves exactly as it
+    did before map sources existed unless the site clearly says otherwise."""
+    name = active_site_name(sites_root)
+    if name is None:
+        return _MAP_DEFAULTS['source']
+    try:
+        site = load_site(os.path.join(sites_root, name))
+    except (OSError, ValueError):
+        return _MAP_DEFAULTS['source']
+    return map_source(site['maps'], map_name)
+
+
 def load_site(site_dir):
     """Read site.json merged over defaults, normalizing v1 -> v2 in memory.
     Raises on unreadable/invalid JSON; a missing file raises FileNotFoundError
     (callers decide how loud to be)."""
     with open(os.path.join(site_dir, 'site.json')) as f:
         data = json.load(f)
+    return site_from_data(data)
+
+
+def site_from_data(data):
+    """load_site's normalization for an already-parsed site.json: defaults
+    merged in, v1 -> v2, validated (ValueError on a bad slam_mode or an
+    active_map that is not in maps)."""
     site = dict(_DEFAULTS)
     if isinstance(data, dict):
         for key in ('display_name', 'slam_mode'):
@@ -171,14 +193,33 @@ def _auto_mode(site, map_name, maps_dir):
     return 'new'
 
 
+def effective_mode(site, maps_dir):
+    """The mode `site['slam_mode']` actually runs as: pinned modes pass
+    through, `auto` resolves by the active map's source and files. The ONE
+    copy of the rule — resolve_slam and every gate that asks "is amcl running?"
+    (tag_relocalizer's floor transit) use it. Takes a normalized site
+    (site_from_data / load_site) and never raises."""
+    if site['slam_mode'] == 'auto':
+        return _auto_mode(site, site['active_map'], maps_dir)
+    return site['slam_mode']
+
+
+def effective_mode_from_data(data, maps_dir):
+    """effective_mode for a raw parsed site.json dict. A site that does not
+    normalize (bad slam_mode, dangling active_map) yields its raw slam_mode, so
+    a gate keeps the behaviour it had before `auto` could mean localization."""
+    try:
+        return effective_mode(site_from_data(data), maps_dir)
+    except ValueError:
+        return data.get('slam_mode')
+
+
 def resolve_slam(site, maps_dir):
     """Site policy -> (mode, map_name, start_pose) for slam.launch.py's
     existing three-way executable table (ADR-0003 untouched — this only
     computes its inputs)."""
-    mode = site['slam_mode']
+    mode = effective_mode(site, maps_dir)
     map_name = site['active_map']
-    if mode == 'auto':
-        mode = _auto_mode(site, map_name, maps_dir)
     if mode != 'new' and not map_name:
         raise ValueError(
             f"site.json slam_mode '{site['slam_mode']}' needs an active_map")

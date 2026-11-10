@@ -36,7 +36,8 @@ def _extract(name, ns):
 
 def _helpers():
     ns = {}
-    for name in ('_map_source', '_resolved_mode', '_switch_plan'):
+    for name in ('_map_source', '_resolved_mode', '_switch_plan', '_amcl_stamp',
+                 '_is_fresh_amcl_pose'):
         _extract(name, ns)
     return ns
 
@@ -142,6 +143,9 @@ def test_switch_plan_matches_webui_activation_plan():
 
 # --- _effective_mode / _reseed_when_amcl_up / switch_map with fakes --------------
 
+ORDER = []
+
+
 class FakeHttpError(Exception):
     pass
 
@@ -197,6 +201,7 @@ class _FakeClient:
 
     async def post(self, url, json=None):
         self.fleet.calls.append(('POST', url, json))
+        ORDER.append(('post', url))
         if self.fleet.post_fails:
             raise FakeHttpError('fleet_status down')
         if url.endswith('/api/sites/active'):
@@ -233,11 +238,12 @@ class FakeBridgeError(Exception):
 
 
 class FakeBridge:
-    """Stands in for RosBridge. `pose_after` = number of subscribe_once calls
-    that come back empty before /amcl_pose publishes (None = never)."""
+    """Stands in for RosBridge. `poses` is what successive /amcl_pose
+    subscribe_once calls return (a stale latched replay, then the new pose,
+    ...); once it runs out they time out (None)."""
 
     log = []
-    empties_left = 0
+    poses = []
     reseed_fails = False
     busy_first = 0
 
@@ -255,10 +261,8 @@ class FakeBridge:
 
     async def subscribe_once(self, topic, msg_type, timeout=5.0):
         FakeBridge.log.append(('subscribe_once', topic))
-        if FakeBridge.empties_left > 0:
-            FakeBridge.empties_left -= 1
-            return None
-        return {'pose': 'x'}
+        ORDER.append(('subscribe', topic))
+        return FakeBridge.poses.pop(0) if FakeBridge.poses else None
 
     async def call_service(self, name, srv_type, args=None):
         FakeBridge.log.append(('call_service', name, args))
@@ -273,16 +277,17 @@ class FakeBridge:
 @pytest.fixture
 def bridge():
     FakeBridge.log = []
-    FakeBridge.empties_left = 0
+    FakeBridge.poses = []
+    ORDER.clear()
     FakeBridge.reseed_fails = False
     FakeBridge.busy_first = 0
     return FakeBridge
 
 
 def _reseed_fn(attempts=3):
-    ns = {'asyncio': asyncio, 'RosBridge': FakeBridge,
-          'RosBridgeError': FakeBridgeError, 'AMCL_POLL_S': 0.0,
-          'AMCL_POLL_ATTEMPTS': attempts}
+    ns = dict(H, asyncio=asyncio, RosBridge=FakeBridge,
+              RosBridgeError=FakeBridgeError, AMCL_POLL_S=0.0,
+              AMCL_POLL_ATTEMPTS=attempts)
     return _extract('_reseed_when_amcl_up', ns)
 
 
@@ -290,42 +295,139 @@ def _reseeds(log):
     return [e for e in log if e[:2] == ('call_service', '/tag_relocalizer/reseed')]
 
 
+OLD = {'header': {'stamp': {'sec': 100, 'nanosec': 5}}}
+NEW = {'header': {'stamp': {'sec': 180, 'nanosec': 1}}}
+OLD_STAMP = '100:5'
+
+
 def test_reseed_waits_for_amcl_pose_then_calls_the_existing_service(bridge):
-    bridge.empties_left = 2
-    assert asyncio.run(_reseed_fn()()) is True
+    bridge.poses = [None, None, NEW]
+    assert asyncio.run(_reseed_fn()(None)) is True
     kinds = [e[0] for e in bridge.log]
     assert kinds == ['subscribe_once'] * 3 + ['call_service']
     assert len(_reseeds(bridge.log)) == 1
 
 
+def test_reseed_ignores_the_old_amcls_latched_pose_then_fires_once_on_the_new(bridge):
+    bridge.poses = [OLD, OLD, OLD, NEW]
+    assert asyncio.run(_reseed_fn(attempts=5)(OLD_STAMP)) is True
+    kinds = [e[0] for e in bridge.log]
+    assert kinds == ['subscribe_once'] * 4 + ['call_service']
+    assert len(_reseeds(bridge.log)) == 1
+
+
+def test_reseed_does_not_fire_while_only_the_stale_pose_keeps_arriving(bridge):
+    bridge.poses = [OLD] * 10
+    assert asyncio.run(_reseed_fn(attempts=3)(OLD_STAMP)) is False
+    assert _reseeds(bridge.log) == []
+    assert [e[0] for e in bridge.log] == ['subscribe_once'] * 3
+
+
+def test_reseed_with_no_baseline_takes_the_first_pose(bridge):
+    bridge.poses = [OLD]
+    assert asyncio.run(_reseed_fn()(None)) is True
+    assert len(_reseeds(bridge.log)) == 1
+
+
 def test_reseed_gives_up_when_amcl_never_publishes(bridge):
-    bridge.empties_left = 99
-    assert asyncio.run(_reseed_fn(attempts=3)()) is False
+    assert asyncio.run(_reseed_fn(attempts=3)(None)) is False
     assert _reseeds(bridge.log) == []
     assert [e[0] for e in bridge.log] == ['subscribe_once'] * 3
 
 
 def test_reseed_retries_through_rosbridge_busy(bridge):
     bridge.busy_first = 2
-    assert asyncio.run(_reseed_fn()()) is True
+    bridge.poses = [NEW]
+    assert asyncio.run(_reseed_fn()(OLD_STAMP)) is True
     assert len(_reseeds(bridge.log)) == 1
 
 
 def test_reseed_reports_false_when_the_service_call_fails(bridge):
     bridge.reseed_fails = True
-    assert asyncio.run(_reseed_fn()()) is False
+    bridge.poses = [NEW]
+    assert asyncio.run(_reseed_fn()(None)) is False
+
+
+def _baseline_fn():
+    ns = dict(H, RosBridge=FakeBridge, RosBridgeError=FakeBridgeError,
+              AMCL_BASELINE_S=0.0)
+    return _extract('_amcl_baseline', ns)
+
+
+def test_baseline_is_the_stamp_of_the_latched_pose(bridge):
+    bridge.poses = [OLD]
+    assert asyncio.run(_baseline_fn()()) == OLD_STAMP
+    assert bridge.log == [('subscribe_once', '/amcl_pose')]
+
+
+def test_baseline_is_none_when_nothing_is_latched(bridge):
+    assert asyncio.run(_baseline_fn()()) is None
+
+
+def test_baseline_is_none_when_rosbridge_is_unreachable(bridge):
+    class Down(FakeBridge):
+        async def __aenter__(self):
+            raise FakeBridgeError('down')
+
+    ns = dict(H, RosBridge=Down, RosBridgeError=FakeBridgeError, AMCL_BASELINE_S=0.0)
+    assert asyncio.run(_extract('_amcl_baseline', ns)()) is None
+
+
+@pytest.mark.parametrize('baseline,msg,want', [
+    (OLD_STAMP, OLD, False),
+    (OLD_STAMP, NEW, True),
+    (None, OLD, True),
+    (None, None, False),
+    (OLD_STAMP, None, False),
+    (OLD_STAMP, {}, True),
+    (OLD_STAMP, {'header': {'stamp': {'sec': 50, 'nanosec': 0}}}, True),
+])
+def test_is_fresh_amcl_pose(baseline, msg, want):
+    assert H['_is_fresh_amcl_pose'](baseline, msg) is want
+
+
+@pytest.mark.parametrize('msg,want', [
+    (OLD, '100:5'), (None, None), ({}, None), ({'header': {}}, None),
+    ({'header': {'stamp': None}}, None), ({'header': {'stamp': {'sec': 1}}}, None),
+    ({'header': {'stamp': {'sec': '1', 'nanosec': 2}}}, None),
+    ({'header': {'stamp': {'sec': True, 'nanosec': 2}}}, None),
+    ({'header': {'stamp': 7}}, None), ('x', None),
+])
+def test_amcl_stamp(msg, want):
+    assert H['_amcl_stamp'](msg) == want
+
+
+def test_amcl_freshness_matches_the_webui_helpers():
+    node = shutil.which('node')
+    if node is None:
+        pytest.skip('node not installed (Pi container) — CI / dev Mac run it')
+    runner = ('const MS = require(process.argv[1]);'
+              'const c = JSON.parse(process.argv[2]);'
+              'console.log(JSON.stringify(c.map(x => ['
+              'MS.amclStamp(x.msg), MS.isFreshAmclPose(x.baseline, x.msg)])));')
+    msgs = [None, {}, {'header': {}}, {'header': {'stamp': {'sec': 1}}}, OLD, NEW,
+            {'header': {'stamp': {'sec': '1', 'nanosec': 2}}},
+            {'header': {'stamp': {'sec': 50, 'nanosec': 0}}}]
+    cases = [{'msg': m, 'baseline': b} for m in msgs for b in (None, OLD_STAMP, '1:2')]
+    got = subprocess.run([node, '-e', runner, str(MAPSWITCH), json.dumps(cases)],
+                         capture_output=True, text=True, check=True).stdout
+    for case, (js_stamp, js_fresh) in zip(cases, json.loads(got), strict=True):
+        assert H['_amcl_stamp'](case['msg']) == js_stamp, case
+        assert H['_is_fresh_amcl_pose'](case['baseline'], case['msg']) is js_fresh, case
 
 
 class SwitchHarness:
     def __init__(self, tmp_path, site, fleet, grids=()):
         self.tasks = []
+        self.reseed_baseline = 'unset'
         (tmp_path / 'maps').mkdir()
         for g in grids:
             (tmp_path / 'maps' / (g + '.yaml')).write_text('x')
         self.fleet = fleet
 
-        async def fake_reseed():
+        async def fake_reseed(baseline):
             self.tasks.append('reseed')
+            self.reseed_baseline = baseline
             return True
 
         async def idle():
@@ -341,6 +443,9 @@ class SwitchHarness:
             _stamped_pose=lambda x, y, yaw: {'header': {}, 'pose': {}},
             _reseed_when_amcl_up=fake_reseed, _reseed_task=None)
         _extract('_effective_mode', ns)
+        ns.update(RosBridge=FakeBridge, RosBridgeError=FakeBridgeError,
+                  AMCL_BASELINE_S=0.0)
+        _extract('_amcl_baseline', ns)
         self.ns = ns
         self.switch = _extract('switch_map', ns)
 
@@ -501,10 +606,46 @@ def test_a_newer_switch_cancels_a_pending_rearm(tmp_path, bridge):
     assert Pending.cancelled is True
 
 
+def test_amcl_to_amcl_switch_captures_the_latched_stamp_before_any_restart(
+        tmp_path, bridge):
+    bridge.poses = [OLD]
+    h = SwitchHarness(tmp_path, _full_site('scanned', 'localization'),
+                      FakeFleet('localization', 'localization'), ALL_GRIDS)
+    h.run('plan')
+    assert h.tasks == ['reseed'] and h.reseed_baseline == OLD_STAMP
+    assert ORDER[0] == ('subscribe', '/amcl_pose')
+    first_post = next(i for i, e in enumerate(ORDER) if e[0] == 'post')
+    assert first_post > 0
+    assert h.restarts() == ['slam', 'behaviors']
+
+
+def test_mapping_to_localization_switch_has_no_baseline(tmp_path, bridge):
+    h = SwitchHarness(tmp_path, _full_site('scanned'),
+                      FakeFleet('continue', 'localization'), ALL_GRIDS)
+    h.run('plan')
+    assert h.tasks == ['reseed'] and h.reseed_baseline is None
+    assert ('subscribe', '/amcl_pose') not in ORDER
+
+
+def test_amcl_to_amcl_with_nothing_latched_has_no_baseline(tmp_path, bridge):
+    h = SwitchHarness(tmp_path, _full_site('scanned', 'localization'),
+                      FakeFleet('localization', 'localization'), ALL_GRIDS)
+    h.run('plan')
+    assert h.reseed_baseline is None
+
+
+def test_live_switch_never_looks_at_amcl_pose(tmp_path, bridge):
+    h = SwitchHarness(tmp_path, _full_site('plan'), FakeFleet('localization'),
+                      ALL_GRIDS)
+    h.run('other_plan')
+    assert ('subscribe', '/amcl_pose') not in ORDER
+
+
 def test_switch_map_source_branches_on_the_plan_not_raw_slam_mode():
     src = ast.get_source_segment(SERVER.read_text(), next(
         n for n in _TREE.body
         if isinstance(n, ast.AsyncFunctionDef) and n.name == 'switch_map'))
     assert '_switch_plan(site, name, mode)' in src
-    assert 'mode == "localization"' not in src
+    assert 'mode = await _effective_mode(site)' in src
     assert 'mode != "localization"' not in src
+    assert 'site["slam_mode"] == "localization"' not in src

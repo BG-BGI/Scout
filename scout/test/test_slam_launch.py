@@ -5,6 +5,7 @@ robot_profile.merged_params_for_source and is tested here off-ROS; the AST
 checks pin that the launch file actually routes through it."""
 
 import ast
+import json
 import pathlib
 import shutil
 import tempfile
@@ -171,3 +172,86 @@ def test_launch_reads_source_from_the_active_site():
 
 def test_launch_mapping_modes_still_use_plain_merged_params():
     assert 'merged_params' in _called_names(_function('_launch_setup'))
+
+
+# --- explicit `mode:=localization map:=X` takes X's source from the active site ----
+
+def _site_root(tmp_path, content=None, **site):
+    root = tmp_path / 'sites'
+    (root / 'office').mkdir(parents=True)
+    (root / 'active').symlink_to('office')
+    if content is not None:
+        (root / 'office' / 'site.json').write_text(content)
+    elif site:
+        (root / 'office' / 'site.json').write_text(json.dumps(site))
+    return str(root)
+
+
+def _explicit_localization_params(root, map_name, profile='default'):
+    from scout.core import sites
+    source = sites.map_source_in_active_site(root, map_name)
+    return robot_profile.merged_params_for_source('amcl.yaml', profile, source)
+
+
+def test_explicit_localization_on_a_drawing_entry_gets_the_drawing_overlay(
+        real_config, tmp_path):
+    root = _site_root(tmp_path, version=2, active_map='plan',
+                      maps={'plan': {'source': 'drawing'}, 'scanned': {}})
+    params = _amcl(_explicit_localization_params(root, 'plan'))
+    assert params['laser_model_type'] == 'likelihood_field_prob'
+
+
+def test_explicit_localization_on_a_scan_entry_is_unchanged(real_config, tmp_path):
+    root = _site_root(tmp_path, version=2, active_map='plan',
+                      maps={'plan': {'source': 'drawing'}, 'scanned': {}})
+    assert _explicit_localization_params(root, 'scanned') == str(CONFIG / 'amcl.yaml')
+
+
+def test_explicit_localization_on_an_unknown_map_is_scan(real_config, tmp_path):
+    root = _site_root(tmp_path, version=2, maps={'plan': {'source': 'drawing'}})
+    assert _explicit_localization_params(root, 'ghost') == str(CONFIG / 'amcl.yaml')
+
+
+@pytest.mark.parametrize('content', ['{not json', '[]', ''])
+def test_explicit_localization_with_an_unreadable_site_is_scan(
+        real_config, tmp_path, content):
+    root = _site_root(tmp_path, content=content)
+    assert _explicit_localization_params(root, 'plan') == str(CONFIG / 'amcl.yaml')
+
+
+def test_explicit_localization_with_no_active_site_is_scan(real_config, tmp_path):
+    assert _explicit_localization_params(str(tmp_path), 'plan') == str(
+        CONFIG / 'amcl.yaml')
+
+
+def test_explicit_localization_drawing_with_tight_tunnel_keeps_both_layers(
+        stacked_config, tmp_path):
+    root = _site_root(tmp_path, version=2, maps={'plan': {'source': 'drawing'}})
+    params = _amcl(_explicit_localization_params(root, 'plan', 'tight_tunnel'))
+    assert params['update_min_d'] == 0.02
+    assert params['laser_max_range'] == 10.0
+
+
+def _launch_setup_orelse_calls():
+    func = _function('_launch_setup')
+    for node in ast.walk(func):
+        if (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+                and getattr(node.test.left, 'id', '') == 'mode'
+                and [getattr(c, 'value', None) for c in node.test.comparators] == ['site']):
+            return _called_names(ast.Module(body=node.orelse, type_ignores=[]))
+    raise AssertionError('slam.launch.py lost its `if mode == "site"` branch')
+
+
+def test_launch_explicit_localization_branch_reads_the_source_from_the_site():
+    assert 'map_source_in_active_site' in _launch_setup_orelse_calls()
+
+
+def test_launch_site_branch_still_reads_the_active_map_source():
+    func = _function('_launch_setup')
+    site_branch = next(
+        n for n in ast.walk(func)
+        if isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+        and getattr(n.test.left, 'id', '') == 'mode'
+        and [getattr(c, 'value', None) for c in n.test.comparators] == ['site'])
+    assert 'active_map_source' in _called_names(
+        ast.Module(body=site_branch.body, type_ignores=[]))

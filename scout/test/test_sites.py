@@ -343,3 +343,136 @@ def test_sources_differ(tmp_path, current, target, expect):
 
 def test_sources_differ_tolerates_missing_maps():
     assert sites.sources_differ(None, 'a', 'b') is False
+
+
+# --- effective_mode: the one rule behind resolve_slam and the transit gate ----------
+
+def _touch(path, *names):
+    for n in names:
+        (path / n).write_bytes(b'x')
+
+
+def _norm(active, slam_mode='auto', **sources):
+    maps = {n: {'source': s} for n, s in sources.items()}
+    return sites.site_from_data(
+        {'version': 2, 'active_map': active, 'slam_mode': slam_mode, 'maps': maps})
+
+
+@pytest.mark.parametrize('mode', ['new', 'continue', 'localization'])
+def test_effective_mode_pinned_modes_pass_through(tmp_path, mode):
+    site = _norm('plan', mode, plan='drawing')
+    assert sites.effective_mode(site, str(tmp_path)) == mode
+
+
+def test_effective_mode_auto_drawing_with_grid_is_localization(tmp_path):
+    _touch(tmp_path, 'plan.yaml')
+    assert sites.effective_mode(_norm('plan', plan='drawing'), str(tmp_path)) == 'localization'
+
+
+def test_effective_mode_auto_drawing_without_grid_is_not_localization(tmp_path):
+    assert sites.effective_mode(_norm('plan', plan='drawing'), str(tmp_path)) == 'new'
+
+
+@pytest.mark.parametrize('files,want', [([], 'new'), (['m.posegraph'], 'continue'),
+                                        (['m.yaml'], 'new'),
+                                        (['m.yaml', 'm.posegraph'], 'continue')])
+def test_effective_mode_auto_scan_never_localizes(tmp_path, files, want):
+    _touch(tmp_path, *files)
+    assert sites.effective_mode(_norm('m', m='scan'), str(tmp_path)) == want
+
+
+def test_effective_mode_auto_without_active_map_is_new(tmp_path):
+    assert sites.effective_mode(_norm(None, plan='drawing'), str(tmp_path)) == 'new'
+
+
+@pytest.mark.parametrize('slam_mode', ['auto', 'new', 'continue', 'localization'])
+@pytest.mark.parametrize('source', ['scan', 'drawing'])
+@pytest.mark.parametrize('files', [[], ['m.yaml'], ['m.posegraph'],
+                                   ['m.yaml', 'm.posegraph']])
+def test_effective_mode_is_what_resolve_slam_uses(tmp_path, slam_mode, source, files):
+    d = tmp_path / ('-'.join(files) or 'none')
+    d.mkdir(exist_ok=True)
+    _touch(d, *files)
+    site = _norm('m', slam_mode, m=source)
+    assert sites.effective_mode(site, str(d)) == sites.resolve_slam(site, str(d))[0]
+
+
+def test_effective_mode_from_data_reads_raw_site_json(tmp_path):
+    _touch(tmp_path, 'plan.yaml')
+    data = {'version': 2, 'active_map': 'plan', 'slam_mode': 'auto',
+            'maps': {'plan': {'source': 'drawing'}}}
+    assert sites.effective_mode_from_data(data, str(tmp_path)) == 'localization'
+
+
+def test_effective_mode_from_data_v1_scan_site(tmp_path):
+    data = {'version': 1, 'default_map': 'office', 'slam_mode': 'auto'}
+    assert sites.effective_mode_from_data(data, str(tmp_path)) == 'new'
+
+
+@pytest.mark.parametrize('data,want', [
+    ({'slam_mode': 'bogus'}, 'bogus'),
+    ({'slam_mode': 'auto', 'active_map': 'ghost', 'maps': {'a': {}}}, 'auto'),
+    ({'slam_mode': 'localization', 'active_map': 'ghost', 'maps': {'a': {}}},
+     'localization'),
+    ({}, 'new'),
+])
+def test_effective_mode_from_data_unnormalizable_site_keeps_raw_mode(
+        tmp_path, data, want):
+    assert sites.effective_mode_from_data(data, str(tmp_path)) == want
+
+
+def test_site_from_data_matches_load_site(tmp_path):
+    data = {'version': 2, 'active_map': 'plan', 'slam_mode': 'auto',
+            'maps': {'plan': {'source': 'drawing'}, 'b': {}}}
+    assert sites.site_from_data(data) == sites.load_site(_write_site(tmp_path, **data))
+
+
+# --- map_source_in_active_site: explicit-map launches --------------------------------
+
+def _active_site_root(tmp_path, **site):
+    (tmp_path / 'office').mkdir()
+    os.symlink('office', tmp_path / 'active')
+    (tmp_path / 'office' / 'site.json').write_text(json.dumps(site))
+    return str(tmp_path)
+
+
+def test_explicit_map_source_reads_the_entry(tmp_path):
+    root = _active_site_root(
+        tmp_path, version=2, active_map='a',
+        maps={'a': {}, 'plan': {'source': 'drawing'}})
+    assert sites.map_source_in_active_site(root, 'plan') == 'drawing'
+    assert sites.map_source_in_active_site(root, 'a') == 'scan'
+
+
+def test_explicit_map_source_unknown_map_is_scan(tmp_path):
+    root = _active_site_root(tmp_path, version=2, maps={'plan': {'source': 'drawing'}})
+    assert sites.map_source_in_active_site(root, 'ghost') == 'scan'
+
+
+def test_explicit_map_source_no_active_site_is_scan(tmp_path):
+    assert sites.map_source_in_active_site(str(tmp_path), 'plan') == 'scan'
+
+
+@pytest.mark.parametrize('content', ['{not json', '[]'])
+def test_explicit_map_source_unreadable_site_is_scan(tmp_path, content):
+    (tmp_path / 'office').mkdir()
+    os.symlink('office', tmp_path / 'active')
+    (tmp_path / 'office' / 'site.json').write_text(content)
+    assert sites.map_source_in_active_site(str(tmp_path), 'plan') == 'scan'
+
+
+def test_explicit_map_source_missing_site_json_is_scan(tmp_path):
+    (tmp_path / 'office').mkdir()
+    os.symlink('office', tmp_path / 'active')
+    assert sites.map_source_in_active_site(str(tmp_path), 'plan') == 'scan'
+
+
+def test_explicit_map_source_invalid_site_is_scan(tmp_path):
+    root = _active_site_root(
+        tmp_path, version=2, slam_mode='bogus', maps={'plan': {'source': 'drawing'}})
+    assert sites.map_source_in_active_site(root, 'plan') == 'scan'
+
+
+def test_explicit_map_source_v1_site_is_scan(tmp_path):
+    root = _active_site_root(tmp_path, version=1, default_map='office')
+    assert sites.map_source_in_active_site(root, 'office') == 'scan'

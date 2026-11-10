@@ -132,6 +132,10 @@ def _launch_setup(context, *args, **kwargs):
                 f"map_start_pose must be three comma-separated numbers 'x,y,theta', "
                 f"got '{pose}'."
             )
+        if mode == 'localization':
+            # An explicit map still runs under its own source's params if the
+            # active site says it is a drawing; no site / no entry = scan.
+            source = sites.map_source_in_active_site(SITES_ROOT, map_name)
 
     if mode == 'localization':
         return _localization_nodes(map_name, start_pose, profile, source)

@@ -185,22 +185,27 @@ class TagRelocalizer(Node):
         return None
 
     def _read_site(self):
-        """(active_map, slam_mode, maps) from site.json, read fresh per frame
-        (same live-switch story as the tags.db reopen). `maps` is the raw
-        name -> entry mapping ({} for v1), used only to read each map's
-        source. Tolerates v1 (default_map) and v2 (active_map); (None, None,
-        {}) on any problem = transit disabled, seeding behaves as before."""
+        """(active_map, slam_mode, maps, mode) from site.json, read fresh per
+        frame (same live-switch story as the tags.db reopen). `slam_mode` is
+        the raw policy; `mode` is what it actually runs as (core.sites.
+        effective_mode: `auto` on a drawing map with its grid is localization,
+        so amcl is running). `maps` is the raw name -> entry mapping ({} for
+        v1), used only to read each map's source. Tolerates v1 (default_map)
+        and v2 (active_map); (None, None, {}, None) on any problem = transit
+        disabled, seeding behaves as before."""
         path = self.get_parameter('site_json').value
         try:
             with open(path) as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError):
-            return None, None, {}
+            return None, None, {}, None
         if not isinstance(data, dict):
-            return None, None, {}
+            return None, None, {}, None
         active = data.get('active_map') or data.get('default_map') or None
         maps = data.get('maps') if isinstance(data.get('maps'), dict) else {}
-        return active, data.get('slam_mode'), maps
+        mode = sites.effective_mode_from_data(
+            data, self.get_parameter('maps_dir').value)
+        return active, data.get('slam_mode'), maps, mode
 
     # --- seeding ----------------------------------------------------------------
 
@@ -225,7 +230,7 @@ class TagRelocalizer(Node):
     def _on_detections(self, msg):
         if not msg.detections:
             return
-        active_map, slam_mode, maps = self._read_site()
+        active_map, slam_mode, maps, mode = self._read_site()
         # Nearest registered tag in this frame wins, per bucket.
         best_same = None
         best_foreign = None
@@ -246,7 +251,7 @@ class TagRelocalizer(Node):
                 best_foreign = (home,) + solved
         if best_foreign is not None:
             self._track_transit(*best_foreign, slam_mode=slam_mode,
-                                active_map=active_map, maps=maps)
+                                active_map=active_map, maps=maps, mode=mode)
         elif saw_registered and self._cand['count']:
             # Same-map tags with no foreign vote decay a stale candidate.
             self._cand['count'] -= 1
@@ -303,7 +308,7 @@ class TagRelocalizer(Node):
     # --- floor transit (ADR-0029) --------------------------------------------
 
     def _track_transit(self, home, dist, name, theta, pose, *,
-                       slam_mode, active_map, maps):
+                       slam_mode, active_map, maps, mode):
         if home == self._cand['map']:
             self._cand['count'] += 1
         else:
@@ -320,7 +325,8 @@ class TagRelocalizer(Node):
             return
         # map_server only exists in localization mode (ADR-0028) — the mode
         # check and the service check are belt and braces for the same fact.
-        if slam_mode != 'localization' or not self._load_map_cli.service_is_ready():
+        # `mode` is the EFFECTIVE mode: `auto` on a drawing map runs amcl.
+        if mode != 'localization' or not self._load_map_cli.service_is_ready():
             self.get_logger().warn(
                 f"tag '{name}' lives on map '{home}' but slam_mode is "
                 f"'{slam_mode}' — not switching (localization mode only)",

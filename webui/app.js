@@ -2988,6 +2988,11 @@ async function activateMap(name) {
     : '';
   if (!confirm(`Switch to map "${name}"?${crossNote} slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
   siteResult.textContent = `switching to map "${name}"…`;
+  // The pose amcl has latched NOW (if amcl is running) — the baseline a pose
+  // after the restart must differ from, or the old amcl's replay would look like
+  // the new one coming up. Captured before any restart POST.
+  const baselineStamp = MapSwitch.effectiveSlamMode(activeSiteMeta) === 'localization'
+    ? MapSwitch.amclStamp(await nextAmclPose(AMCL_BASELINE_MS)) : null;
   try {
     await postActiveMap(name);
     await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
@@ -2999,36 +3004,55 @@ async function activateMap(name) {
   }
   setTimeout(refreshSites, 5000);
   setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
-  await reseedAfterRestart(name);
+  await reseedAfterRestart(name, baselineStamp);
 }
 
 // How long to wait for the restarted amcl to publish before telling the operator
-// to set the pose by hand.
+// to set the pose by hand, and how long to look for a latched pose to baseline on.
 const AMCL_WAIT_MS = 90000;
+const AMCL_BASELINE_MS = 2000;
 
-function waitForAmclPose(timeoutMs) {
+function amclPoseTopic() {
+  return new ROSLIB.Topic({
+    ros, name: '/amcl_pose', messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+  });
+}
+
+// First /amcl_pose message (a latched one arrives at once), or null on timeout.
+function nextAmclPose(timeoutMs) {
   return new Promise((resolve) => {
-    const topic = new ROSLIB.Topic({
-      ros, name: '/amcl_pose', messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
-      throttle_rate: 1000,
-    });
+    const topic = amclPoseTopic();
+    let timer = null;
+    const done = (msg) => { clearTimeout(timer); topic.unsubscribe(); resolve(msg); };
+    timer = setTimeout(() => done(null), timeoutMs);
+    topic.subscribe((msg) => done(msg));
+  });
+}
+
+// Resolves true on the first pose whose stamp differs from baselineStamp (see
+// mapswitch.js), false on timeout. Stale replays are ignored, not counted.
+function waitForFreshAmclPose(baselineStamp, timeoutMs) {
+  return new Promise((resolve) => {
+    const topic = amclPoseTopic();
+    const fresh = MapSwitch.freshPoseGate(baselineStamp);
     let timer = null;
     const done = (ok) => { clearTimeout(timer); topic.unsubscribe(); resolve(ok); };
     timer = setTimeout(() => done(false), timeoutMs);
-    topic.subscribe(() => done(true));
+    topic.subscribe((msg) => { if (fresh(msg)) done(true); });
   });
 }
 
 // After a slam restart that leaves amcl running (e.g. scan -> drawing): the
 // tag relocalizer lives in the robot container and did not restart, so its
-// "already seeded" flag still describes the OLD map. Once the new amcl is
-// publishing, re-arm it so the next registered-tag sighting seeds /initialpose.
+// "already seeded" flag still describes the OLD map. Once the restarted amcl
+// publishes a pose that is not the old one's latched replay (stamp baseline,
+// mapswitch.js), re-arm it so the next registered-tag sighting seeds /initialpose.
 // The restarted amcl itself starts at the map's start pose (launch initial_pose).
-async function reseedAfterRestart(name) {
+async function reseedAfterRestart(name, baselineStamp) {
   await refreshSites();
   if (!MapSwitch.needsReseed(activeSiteMeta, name)) return;
   siteResult.textContent = `map "${name}" — slam + behaviors restarting; waiting for amcl…`;
-  if (!(await waitForAmclPose(AMCL_WAIT_MS))) {
+  if (!(await waitForFreshAmclPose(baselineStamp, AMCL_WAIT_MS))) {
     siteResult.textContent = `map "${name}" — no /amcl_pose after ${AMCL_WAIT_MS / 1000} s. Set pose after restart: use Set pose, or show the robot a registered tag.`;
     return;
   }
