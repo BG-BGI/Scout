@@ -731,7 +731,9 @@ SLAM_MAPS_DIR = "/ros_ws/src/sites/active/maps"
 
 def _load_site() -> dict:
     """site.json normalized to {slam_mode, active_map, maps:{name: entry}}.
-    Tolerates v1 (default_map + top-level map_start_pose) and v2 (ADR-0029)."""
+    Tolerates v1 (default_map + top-level map_start_pose) and v2 (ADR-0029).
+    Map entries pass through raw: read the map's origin with
+    `entry.get("source", "scan")` (scan | drawing), never by indexing."""
     try:
         with open(tagdb.SITE_JSON) as f:
             data = json.load(f)

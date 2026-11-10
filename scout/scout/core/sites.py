@@ -16,8 +16,9 @@ floor of a building; `active_map` is the one slam/amcl runs on):
      "maps": {
        "floor1": {"label": "Lobby",     # human label, defaults to the name
                   "floor": 1,           # int floor number, or null
+                  "source": "scan",     # scan | drawing, defaults to scan
                   "map_start_pose": [0.0, 0.0, 0.0]},  # localization only
-       "yard":   {"label": "Yard", "floor": null,
+       "yard":   {"label": "Yard", "floor": null, "source": "drawing",
                   "map_start_pose": [0.0, 0.0, 0.0]}},
      "created": "2026-08-22T15:04:05Z"}
 
@@ -26,11 +27,18 @@ memory here; fleet-status write-upgrades them on its next write. Map files
 stay flat in the site's `maps/` as `<name>.{posegraph,data,yaml,pgm}` — the
 schema change moves nothing on disk.
 
+`source` says where the grid came from: `scan` (a SLAM session) or `drawing`
+(imported from a floorplan; grid pair only, no posegraph). An unknown value
+reads as `scan`; fleet-status rejects it on write.
+
 `slam_mode: auto` resolves to `continue` when the active map's .posegraph
-exists, else `new` — deliberately never `localization`, because in that mode
+exists, else `new` — never `localization` for a scan map, because in that mode
 slam_toolbox is not running at all (amcl + map_server localize on the saved
 grid, ADR-0028) so nothing can be saved, and a revisited site wants its graph
-extended anyway.
+extended anyway. A drawing map has no graph to extend, so `auto` resolves to
+`localization` when the active map has `source: drawing` and its grid exists.
+The key is the entry's `source`, not the missing posegraph: a scan map whose
+posegraph was quarantined must not silently flip modes.
 
 The name regex is a shared contract with fleet-status (which duplicates it —
 share the schema, not code, per ADR-0011). Map names use the same regex.
@@ -44,6 +52,7 @@ VERSION = 2
 SITE_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
 MAP_NAME_RE = SITE_NAME_RE
 SLAM_MODES = ('auto', 'new', 'localization', 'continue')
+SOURCES = ('scan', 'drawing')
 
 _DEFAULTS = {
     'version': VERSION,
@@ -56,6 +65,7 @@ _DEFAULTS = {
 _MAP_DEFAULTS = {
     'label': '',
     'floor': None,
+    'source': 'scan',
     'map_start_pose': [0.0, 0.0, 0.0],
 }
 
@@ -82,6 +92,8 @@ def _norm_map_entry(name, entry):
                 m[key] = entry[key]
     if not m['label']:
         m['label'] = name
+    if m['source'] not in SOURCES:
+        m['source'] = _MAP_DEFAULTS['source']
     return m
 
 
@@ -120,6 +132,17 @@ def load_site(site_dir):
     return site
 
 
+def _auto_mode(site, map_name, maps_dir):
+    if not map_name:
+        return 'new'
+    drawing = site['maps'][map_name].get('source') == 'drawing'
+    if drawing and os.path.exists(os.path.join(maps_dir, map_name + '.yaml')):
+        return 'localization'
+    if os.path.exists(os.path.join(maps_dir, map_name + '.posegraph')):
+        return 'continue'
+    return 'new'
+
+
 def resolve_slam(site, maps_dir):
     """Site policy -> (mode, map_name, start_pose) for slam.launch.py's
     existing three-way executable table (ADR-0003 untouched — this only
@@ -127,9 +150,7 @@ def resolve_slam(site, maps_dir):
     mode = site['slam_mode']
     map_name = site['active_map']
     if mode == 'auto':
-        has_map = bool(map_name) and os.path.exists(
-            os.path.join(maps_dir, map_name + '.posegraph'))
-        mode = 'continue' if has_map else 'new'
+        mode = _auto_mode(site, map_name, maps_dir)
     if mode != 'new' and not map_name:
         raise ValueError(
             f"site.json slam_mode '{site['slam_mode']}' needs an active_map")
