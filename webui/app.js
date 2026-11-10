@@ -3099,6 +3099,14 @@ async function reseedAfterRestart(name, baselineStamp) {
   );
 }
 
+// Import drawing wizard (importwizard.js): PDF / IFC -> an installed drawing map. Plain
+// HTTP on operator action; Activate goes through activateMap (MapSwitch.activationPlan).
+ImportWizard.init({
+  fleetApi: FLEET_API, hostname: location.hostname, fetch: window.fetch.bind(window),
+  storage: () => window.localStorage,
+  refreshSites, activateMap: (name) => activateMap(name),
+});
+
 // --- slam mode selector -------------------------------------------------------------
 // Writes site.json's slam_mode (fleet_status validates it) and restarts
 // slam + behaviors so mode:=site re-resolves it — the mode is which
