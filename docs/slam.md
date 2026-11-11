@@ -500,12 +500,11 @@ override; `require_stationary=false` is curl-only, 6.6); `503` "No lidar scan ye
   uploading the next model. Upload checks run in this order: Content-Length
   (`411`/`400`/`413`) → importer busy (`429`) → kind sniffed from the first 2 KiB
   (`415`) → that kind's size cap (`413`) → evict → memory gate → stream → parse.
-- **Upload cap 80 MiB by default** (`IMPORTER_MAX_IFC_BYTES`), sized for a 2g
-  limit; compose runs `mem_limit: 3g`, so the default has headroom (an open model ≈ 7× its file, a slice peak ≈ 15×). Over the cap
+- **Upload cap 128 MiB on the companion** (`IMPORTER_MAX_IFC_BYTES` in compose,
+  under `mem_limit: 3g`; the server's own default is 80 MiB, sized for 2g) (an open model ≈ 7× its file, a slice peak ≈ 15×). Over the cap
   is `413 {count, limit}` before the body is read; so is a model over the
   3,000,000-triangle face budget. To take bigger files **raise `mem_limit` first**
-  (≈ 128 MiB at 3g, ≈ 256 MiB at 6g), then the cap: 3g is already in place, so
-  128 MiB needs only `IMPORTER_MAX_IFC_BYTES` added to the compose service.
+  (≈ 128 MiB at 3g, ≈ 256 MiB at 6g), then the cap.
 - **Memory gate.** The gate judges the resident size **after** the eviction
   above, so replacing one IFC with another normally does not trip it. An IFC
   upload whose size would still push the resident set past 90 % of the container

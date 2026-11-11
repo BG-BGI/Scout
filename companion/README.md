@@ -71,20 +71,20 @@ docker compose logs floorplan_importer | tail
 - **Environment.** The compose file sets `IMPORTER_PORT` (default 9004),
   `FLEET_STATUS_URL=http://${PI_IP}:9003` (the Pi's fleet_status; from the same
   `PI_IP` as the zenoh bridge, never taken from a request; unset or unusable =
-  the service still starts and installs answer `503`) and `IMPORTER_CORS_ORIGIN`
-  (default `*`). The rest are read by the server but not set in compose, so add
-  them under the service's `environment:` to change them:
-  `IMPORTER_MAX_IFC_BYTES` (IFC upload cap, default 80 MiB),
+  the service still starts and installs answer `503`), `IMPORTER_CORS_ORIGIN`
+  (default `*`) and `IMPORTER_MAX_IFC_BYTES` (IFC upload cap; compose default
+  134217728 = 128 MiB, the server's own default is 80 MiB). The rest are read
+  by the server but not set in compose, so add them under the service's
+  `environment:` to change them:
   `IMPORTER_IFC_THREADS` (geometry threads per slice, default 1),
   `IMPORTER_IFC_FACE_BUDGET` (triangles per slice, default 3,000,000),
   `IMPORTER_MEMORY_LIMIT_MB` (what the IFC memory gate measures against; default
   the container's cgroup limit, unreadable = gate off). `IMPORTER_VERSION` is the
   image's build sha (written into every installed map's sidecar).
 - **Caps.** `cpus: 1.0` (one heavy operation at a time, single-threaded; the box
-  shares cores with rtabmap and the detector) and `mem_limit: 3g`. The 80 MiB IFC
-  default was sized for 2g, so it has headroom here; 128 MiB needs
-  `IMPORTER_MAX_IFC_BYTES` added to the service. **Raise `mem_limit` before
-  `IMPORTER_MAX_IFC_BYTES`** (~128 MiB at 3g, ~256 MiB at 6g). Not yet measured under these caps on the
+  shares cores with rtabmap and the detector) and `mem_limit: 3g`. The IFC cap is
+  128 MiB here (the server's 80 MiB default was sized for 2g). **Raise
+  `mem_limit` before `IMPORTER_MAX_IFC_BYTES`** (~128 MiB at 3g, ~256 MiB at 6g). Not yet measured under these caps on the
   real box.
 - **Restart behaviour.** `restart: unless-stopped`. The IFC memory gate
   deliberately exits the process (code 75, after answering `503` + `Retry-After:
