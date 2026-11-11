@@ -344,7 +344,7 @@ def test_an_oversize_ifc_is_refused_after_the_sniff_without_reading_the_rest(mak
 
 
 def test_the_default_cap_fits_the_documented_budget():
-    """The arithmetic in the comment above MAX_IFC_BYTES, with the compose limit of 2g."""
+    """The arithmetic in the comment above MAX_IFC_BYTES, with the 2g limit it was sized for."""
     assert srv.MAX_IFC_BYTES == 80 * 1024 * 1024 and srv.IFC_THREADS == 1
     assert srv.IFC_PEAK_FACTOR == 15 and srv.MEMORY_HEADROOM == 0.9
     mem, base, pdf_job, grids = 2048, 100, 192, 128

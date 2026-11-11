@@ -10,7 +10,7 @@
 # (lark, typing_extensions); its isodate / python-dateutil / pyparsing are never imported by
 # the slicing path. Memory: an open IFC model is ~7x its file and a slice peaks near 15x (see
 # server.py MAX_IFC_BYTES),
-# which is why the default IFC upload cap is 80 MiB under the compose 2g limit.
+# which is why the default IFC upload cap is 80 MiB (sized for a 2g limit; compose runs 3g).
 FROM python:3.12-slim
 
 RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin importer

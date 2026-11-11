@@ -268,13 +268,15 @@ services:
   # from the same PI_IP the zenoh bridge dials; it comes only from here, never from a request.
   # Caps: one heavy operation runs at a time and is single-threaded, and this box shares its
   # cores with rtabmap/detector, so 1 CPU keeps SLAM responsive (an import just takes a few
-  # seconds longer); 2 GB covers a 64 MB PDF plus a render and the grid (3 jobs retained max).
+  # seconds longer); 3 GB covers a 64 MB PDF plus a render and the grid (3 jobs retained max)
+  # and leaves headroom over the 80 MiB IFC default, which was sized for 2g. The IFC cap
+  # itself does not move with this: IMPORTER_MAX_IFC_BYTES is not set here.
   floorplan_importer:
     image: ghcr.io/bg-bgi/scout-floorplan-importer:${COMPANION_TAG:-latest}
     network_mode: host
     restart: unless-stopped
     cpus: 1.0
-    mem_limit: 2g
+    mem_limit: 3g
     environment:
       - IMPORTER_PORT=${IMPORTER_PORT:-9004}
       - FLEET_STATUS_URL=http://${PI_IP}:9003

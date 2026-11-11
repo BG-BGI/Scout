@@ -175,7 +175,7 @@ numeric correction does not show the pose is right. The laser mount it uses
   a `Dockerfile` (`python:3.12-slim`, non-root, health check on
   `/api/health`) and `requirements.txt`. Compose service `floorplan_importer`
   (`companion/docker-compose.yaml`: `network_mode: host`, `cpus: 1.0`,
-  `mem_limit: 2g`, `restart: unless-stopped`, no volumes — uploads live in
+  `mem_limit: 3g`, `restart: unless-stopped`, no volumes — uploads live in
   memory); CI job `importer-tests` and the multi-arch
   `floorplan-importer-image.yml` (amd64 + arm64, called from `deploy.yml`). The
   importer installs by POSTing to fleet_status at `FLEET_STATUS_URL`, which comes
@@ -218,8 +218,8 @@ numeric correction does not show the pose is right. The laser mount it uses
   can differ): an open model is ~7× its file and a slice peaks near 15× — not the
   6× in `ifcsource.py`'s docstring, which the server's numbers replace. Face
   budget 3,000,000 triangles. The library's own input cap is 256 MiB, but the
-  server's default is **80 MiB** (`IMPORTER_MAX_IFC_BYTES`) under the compose
-  `mem_limit: 2g` (raise the limit first: ~128 MiB at 3g, ~256 MiB at 6g).
+  server's default is **80 MiB** (`IMPORTER_MAX_IFC_BYTES`), sized for a 2g limit;
+  compose runs `mem_limit: 3g` (raise the limit first: ~128 MiB at 3g, ~256 MiB at 6g).
   ifcopenshell hands back only part of a freed model's memory, so the server also
   runs a **memory gate**: an IFC that would not fit on top of the resident size
   (judged after the open model is evicted, so replacing one IFC with another
@@ -340,7 +340,7 @@ surveyed on every map it appears on.
   on macOS, **Linux is unverified**. The memory gate is the backstop, not a fix.
 - **Not yet verified on hardware** (all of it is built and unit-tested): the
   importer image build on amd64 and arm64; the compose caps (`cpus: 1.0`,
-  `mem_limit: 2g`) under a real import; the scan-over-drawing overlay on the
+  `mem_limit: 3g`) under a real import; the scan-over-drawing overlay on the
   robot (including its laser-mount constant); the `wall_spans` stationarity
   threshold; the real companion → Pi install path (the box reaching
   `http://<PI_IP>:9003`; the zenoh bridge only proves `:7447`); and the web UI's

@@ -81,9 +81,10 @@ docker compose logs floorplan_importer | tail
   the container's cgroup limit, unreadable = gate off). `IMPORTER_VERSION` is the
   image's build sha (written into every installed map's sidecar).
 - **Caps.** `cpus: 1.0` (one heavy operation at a time, single-threaded; the box
-  shares cores with rtabmap and the detector) and `mem_limit: 2g`. The 80 MiB IFC
-  default is sized for 2g: **raise `mem_limit` before `IMPORTER_MAX_IFC_BYTES`**
-  (~128 MiB at 3g, ~256 MiB at 6g). Not yet measured under these caps on the
+  shares cores with rtabmap and the detector) and `mem_limit: 3g`. The 80 MiB IFC
+  default was sized for 2g, so it has headroom here; 128 MiB needs
+  `IMPORTER_MAX_IFC_BYTES` added to the service. **Raise `mem_limit` before
+  `IMPORTER_MAX_IFC_BYTES`** (~128 MiB at 3g, ~256 MiB at 6g). Not yet measured under these caps on the
   real box.
 - **Restart behaviour.** `restart: unless-stopped`. The IFC memory gate
   deliberately exits the process (code 75, after answering `503` + `Retry-After:

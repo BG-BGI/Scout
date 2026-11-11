@@ -286,7 +286,7 @@ SIDECAR_CLASSES = 12
 SIDECAR_LAYERS = 30
 HEADER_SNIFF = 2048
 IFC_MAGIC = b"ISO-10303-21"
-# IFC budgets, sized for the compose cap mem_limit 2g (2048 MiB). Measured here on an
+# IFC budgets, sized for a mem_limit of 2g (2048 MiB; compose now runs 3g). Measured here on an
 # entity-dense synthetic model (20 MB, 6000 rooms) through this server with one iterator
 # thread, so real exports can differ either way: python + numpy + PyMuPDF + ifcopenshell +
 # shapely ~ 90-100 MiB resident. The upload is streamed to a temp file and opened by path:
