@@ -26,3 +26,24 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
         working-directory: scout
+
+  # The importer's tests need PyMuPDF, ifcopenshell and shapely, which requirements-dev.txt
+  # deliberately lacks (the `test` job runs on 3.10 without them and skips those tests). This
+  # job installs them the way the image does (--no-deps: pymupdf 2.x declares onnxruntime etc.
+  # that nothing here imports; requirements.txt lists what is imported) on the image's Python,
+  # and runs the importer's test files, IFC included.
+  importer-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            docker/floorplan-importer/requirements.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pip install --no-deps -r docker/floorplan-importer/requirements.txt
+      - run: python -m pytest -q -rs test/test_calib.py test/test_planraster.py test/test_pdfsource.py test/test_ifcsource.py test/test_floorplan_importer.py test/test_ifc_importer.py
+        working-directory: scout

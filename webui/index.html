@@ -124,6 +124,13 @@
         <button id="gd-cancel">Cancel</button>
         <div id="gd-result" class="dim"></div>
       </div>
+      <!-- Scan-over-drawing hint (R10): shown by scanlayer.js only while a drawing map
+           runs under localization. Advice, not a gate: goals are never blocked. -->
+      <div id="scan-banner" class="scan-banner" hidden>
+        <span class="scan-banner-text">Confirm the scan sits on the walls before sending a goal</span>
+        <span class="scan-banner-fit">fit <b id="scan-fit">–</b> <i>alignment hint, not localization proof</i></span>
+        <button id="scan-banner-dismiss" type="button">Dismiss</button>
+      </div>
       <div id="map-frame">
         <canvas id="map-canvas" width="300" height="300"></canvas>
 
@@ -136,6 +143,7 @@
             <span id="active-site-name"></span>
             <span id="active-map-name"></span>
             <span id="active-map-floor" style="display:none"></span>
+            <span id="active-map-source" style="display:none"></span>
           </div>
           <span id="active-mode-line"></span>
         </div>
@@ -339,6 +347,7 @@
               <span><b>Extendable</b> mapping can add to it</span>
 
             </div>
+            <div><button id="import-open" type="button">Import drawing&hellip;</button></div>
             <details>
               <summary class="mini-summary">+ Save the current map as a new floor</summary>
               <div class="dim" style="margin-top:var(--s2)">Available while <b style="color:var(--text)">Mapping</b> — switch intent on the map first.</div>
@@ -351,6 +360,116 @@
               </div>
             </details>
           </details>
+
+          <!-- IMPORT DRAWING (importwizard.js): PDF / IFC -> an installed drawing map.
+               Plain HTTP to the floorplan importer on user action; never auto-activates. -->
+          <section class="panel" id="import-panel" hidden>
+            <h2>Import drawing <button id="import-close" type="button" class="imp-x">Close</button></h2>
+            <div class="grid" id="imp-base-row">
+              <input id="imp-base" type="text" placeholder="importer address, e.g. http://box:9004" autocomplete="off" spellcheck="false">
+              <button id="imp-retry" type="button">Retry</button>
+            </div>
+            <div id="imp-health" class="dim"></div>
+            <div id="imp-busy" class="dim" hidden></div>
+            <div id="imp-error" class="imp-error" hidden></div>
+            <div id="imp-message" class="dim" hidden></div>
+
+            <div class="imp-step">1. Upload a PDF or IFC</div>
+            <div class="grid">
+              <input id="imp-file" type="file" accept=".pdf,.ifc,application/pdf">
+              <button id="imp-upload" type="button">Upload</button>
+            </div>
+            <div id="imp-job" class="dim"></div>
+
+            <div id="imp-pdf" hidden>
+              <div class="imp-step">2. Page</div>
+              <div class="grid"><select id="imp-page"></select></div>
+              <div id="imp-page-info" class="dim"></div>
+
+              <div class="imp-step">3. Scale</div>
+              <div id="imp-required" class="imp-note" hidden>This page has no usable scale. Calibrate with one of the methods below.</div>
+              <div id="imp-scale-report" class="dim"></div>
+              <button id="imp-accept" type="button">Accept proposed scale</button>
+              <div class="imp-sub">Two taps and a distance</div>
+              <div class="grid">
+                <button id="imp-two-start" type="button">Tap two points</button>
+                <input id="imp-two-metres" type="number" step="any" min="0" placeholder="metres between them">
+                <button id="imp-two-apply" type="button">Use this scale</button>
+              </div>
+              <div id="imp-two-status" class="dim"></div>
+              <div class="imp-sub">Typed scale</div>
+              <div class="grid">
+                <input id="imp-typed-scale" type="text" placeholder="1/4&quot; = 1'-0&quot; or 1:100" autocomplete="off">
+                <input id="imp-typed-ratio" type="number" step="any" min="0" placeholder="or ratio, e.g. 100">
+                <input id="imp-paper-w" type="number" step="any" min="0" placeholder="full-size sheet width, in">
+                <input id="imp-paper-h" type="number" step="any" min="0" placeholder="height, in">
+                <button id="imp-typed-apply" type="button">Use typed scale</button>
+              </div>
+              <div class="imp-sub">Robot-measured</div>
+              <div class="dim">Park the robot with two walls in view first. This only reads the lidar; nothing moves.</div>
+              <div class="grid">
+                <button id="imp-robot-fetch" type="button">Read wall spans</button>
+                <button id="imp-robot-apply" type="button">Use robot scale</button>
+              </div>
+              <div id="imp-robot-list"></div>
+
+              <div class="imp-step">4. Rotation and origin</div>
+              <div class="grid">
+                <input id="imp-rotation" type="number" step="any" value="0" title="degrees, map +X counter-clockwise from the page's right">
+                <button id="imp-origin-tap" type="button">Tap map origin</button>
+                <label class="dim"><input id="imp-force-raster" type="checkbox"> read as image</label>
+                <input id="imp-close-m" type="number" step="any" min="0" max="5" placeholder="door gap to close, m (1.2)" title="Door gap to close (m): blank = 1.2, up to 5">
+              </div>
+              <div id="imp-close-msg" class="imp-error" hidden></div>
+              <div id="imp-origin-text" class="dim"></div>
+              <div id="imp-tap-banner" class="imp-banner" hidden>
+                <span id="imp-tap-text"></span>
+                <button id="imp-tap-cancel" type="button">Cancel</button>
+              </div>
+
+              <div class="imp-canvas-wrap">
+                <canvas id="imp-canvas" width="300" height="300"></canvas>
+                <div class="imp-zoom">
+                  <button id="imp-zoom-in" type="button">+</button>
+                  <button id="imp-zoom-out" type="button">&minus;</button>
+                  <button id="imp-zoom-fit" type="button">Fit</button>
+                </div>
+              </div>
+              <div id="imp-preview-info" class="dim"></div>
+              <div id="imp-warnings" class="imp-note" hidden></div>
+
+              <div class="imp-step">5. Install</div>
+              <div class="grid">
+                <input id="imp-name" type="text" placeholder="map name (e.g. floor1_plan)" autocomplete="off" spellcheck="false">
+                <input id="imp-label" type="text" placeholder="label (optional)" autocomplete="off">
+                <input id="imp-floor" type="number" step="1" placeholder="floor #">
+                <button id="imp-install" type="button">Install</button>
+              </div>
+              <div id="imp-name-msg" class="dim"></div>
+              <div id="imp-result" class="dim"></div>
+              <button id="imp-activate" type="button" hidden>Activate</button>
+            </div>
+
+            <div id="imp-ifc" hidden>
+              <div class="imp-step">2. Storeys</div>
+              <div class="dim">The model is already in metres: there is no scale to set.</div>
+              <div class="grid">
+                <input id="imp-ifc-height" type="number" step="any" min="0" placeholder="slice height, m (0.241)">
+                <input id="imp-ifc-rotation" type="number" step="any" value="0" title="degrees">
+                <input id="imp-ifc-close-m" type="number" step="any" min="0" max="5" placeholder="door gap to close, m (1.2)" title="Door gap to close (m): blank = 1.2, up to 5">
+                <button id="imp-ifc-slice" type="button">Slice ticked storeys</button>
+              </div>
+              <div id="imp-ifc-close-msg" class="imp-error" hidden></div>
+              <div id="imp-storeys"></div>
+              <div class="imp-step">3. Origin and preview</div>
+              <div class="grid"><button id="imp-ifc-origin" type="button">Tap map origin</button></div>
+              <div class="imp-canvas-wrap"><canvas id="imp-ifc-canvas" width="300" height="300"></canvas></div>
+              <div id="imp-ifc-info" class="dim"></div>
+              <div class="imp-step">4. Install</div>
+              <button id="imp-ifc-install" type="button">Install ticked storeys</button>
+              <div id="imp-ifc-activate"></div>
+            </div>
+          </section>
 
           <!-- ADVANCED: full slam mode (map toggle covers Navigate/Map; this is New/Continue) -->
           <details class="panel">
@@ -455,6 +574,12 @@
 </script>
 <script src="vendor/roslib.min.js"></script>
 <script src="mapview.js"></script>
+<script src="mapswitch.js"></script>
+<script src="scanoverlay.js"></script>
+<script src="scanlayer.js"></script>
+<script src="importmath.js"></script>
+<script src="importflow.js"></script>
+<script src="importwizard.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

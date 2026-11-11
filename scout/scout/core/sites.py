@@ -16,8 +16,9 @@ floor of a building; `active_map` is the one slam/amcl runs on):
      "maps": {
        "floor1": {"label": "Lobby",     # human label, defaults to the name
                   "floor": 1,           # int floor number, or null
+                  "source": "scan",     # scan | drawing, defaults to scan
                   "map_start_pose": [0.0, 0.0, 0.0]},  # localization only
-       "yard":   {"label": "Yard", "floor": null,
+       "yard":   {"label": "Yard", "floor": null, "source": "drawing",
                   "map_start_pose": [0.0, 0.0, 0.0]}},
      "created": "2026-08-22T15:04:05Z"}
 
@@ -26,11 +27,18 @@ memory here; fleet-status write-upgrades them on its next write. Map files
 stay flat in the site's `maps/` as `<name>.{posegraph,data,yaml,pgm}` — the
 schema change moves nothing on disk.
 
+`source` says where the grid came from: `scan` (a SLAM session) or `drawing`
+(imported from a floorplan; grid pair only, no posegraph). An unknown value
+reads as `scan`; fleet-status rejects it on write.
+
 `slam_mode: auto` resolves to `continue` when the active map's .posegraph
-exists, else `new` — deliberately never `localization`, because in that mode
+exists, else `new` — never `localization` for a scan map, because in that mode
 slam_toolbox is not running at all (amcl + map_server localize on the saved
 grid, ADR-0028) so nothing can be saved, and a revisited site wants its graph
-extended anyway.
+extended anyway. A drawing map has no graph to extend, so `auto` resolves to
+`localization` when the active map has `source: drawing` and its grid exists.
+The key is the entry's `source`, not the missing posegraph: a scan map whose
+posegraph was quarantined must not silently flip modes.
 
 The name regex is a shared contract with fleet-status (which duplicates it —
 share the schema, not code, per ADR-0011). Map names use the same regex.
@@ -44,6 +52,14 @@ VERSION = 2
 SITE_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
 MAP_NAME_RE = SITE_NAME_RE
 SLAM_MODES = ('auto', 'new', 'localization', 'continue')
+SOURCES = ('scan', 'drawing')
+
+# What a parsed-but-hostile site.json can make site_from_data / effective_mode
+# raise: ValueError (our validation), TypeError (unhashable active_map, non-str
+# names or maps_dir reaching os.path), KeyError / AttributeError (belt and braces
+# for entries that are not mappings), OSError (map_source_in_active_site's read).
+# Enumerated on purpose, not `Exception`.
+_SITE_FAILURES = (ValueError, TypeError, KeyError, AttributeError, OSError)
 
 _DEFAULTS = {
     'version': VERSION,
@@ -56,6 +72,7 @@ _DEFAULTS = {
 _MAP_DEFAULTS = {
     'label': '',
     'floor': None,
+    'source': 'scan',
     'map_start_pose': [0.0, 0.0, 0.0],
 }
 
@@ -82,7 +99,55 @@ def _norm_map_entry(name, entry):
                 m[key] = entry[key]
     if not m['label']:
         m['label'] = name
+    if m['source'] not in SOURCES:
+        m['source'] = _MAP_DEFAULTS['source']
     return m
+
+
+def entry_source(entry):
+    """'scan' | 'drawing' for one map entry, raw or normalized. Anything else —
+    missing key, unknown value, non-dict entry — reads as scan (same rule as
+    _norm_map_entry)."""
+    if isinstance(entry, dict) and entry.get('source') in SOURCES:
+        return entry['source']
+    return _MAP_DEFAULTS['source']
+
+
+def map_source(maps, name):
+    """Source of the named map in a `maps` mapping; scan when absent, and for
+    anything that is not a (mapping, str name) pair — `name` comes from parsed
+    JSON in some callers, and an unhashable one must not raise."""
+    if not isinstance(maps, dict) or not isinstance(name, str):
+        return _MAP_DEFAULTS['source']
+    return entry_source(maps.get(name))
+
+
+def active_map_source(site):
+    """Source of a loaded site's active map: 'drawing' or 'scan'. Scan for v1
+    sites (their one map normalizes to scan) and when no map is active."""
+    return map_source(site.get('maps'), site.get('active_map'))
+
+
+def sources_differ(maps, current, target):
+    """True when switching `current` -> `target` crosses a map source (scan <->
+    drawing). That needs a slam restart: amcl's parameters are fixed at launch,
+    so a live LoadMap would leave a drawing map under scan params or vice versa."""
+    return map_source(maps, current) != map_source(maps, target)
+
+
+def map_source_in_active_site(sites_root, map_name):
+    """Source of `map_name` in the active site, for a launch that names its map
+    explicitly. Scan when there is no active site, it does not load, or it has no
+    entry for the map: never raises, so an explicit launch behaves exactly as it
+    did before map sources existed unless the site clearly says otherwise."""
+    name = active_site_name(sites_root)
+    if name is None:
+        return _MAP_DEFAULTS['source']
+    try:
+        site = load_site(os.path.join(sites_root, name))
+    except _SITE_FAILURES:
+        return _MAP_DEFAULTS['source']
+    return map_source(site['maps'], map_name)
 
 
 def load_site(site_dir):
@@ -91,6 +156,13 @@ def load_site(site_dir):
     (callers decide how loud to be)."""
     with open(os.path.join(site_dir, 'site.json')) as f:
         data = json.load(f)
+    return site_from_data(data)
+
+
+def site_from_data(data):
+    """load_site's normalization for an already-parsed site.json: defaults
+    merged in, v1 -> v2, validated (ValueError on a bad slam_mode or an
+    active_map that is not in maps)."""
     site = dict(_DEFAULTS)
     if isinstance(data, dict):
         for key in ('display_name', 'slam_mode'):
@@ -120,16 +192,51 @@ def load_site(site_dir):
     return site
 
 
+def _auto_mode(site, map_name, maps_dir):
+    if not map_name:
+        return 'new'
+    drawing = site['maps'][map_name].get('source') == 'drawing'
+    if drawing and os.path.exists(os.path.join(maps_dir, map_name + '.yaml')):
+        return 'localization'
+    if os.path.exists(os.path.join(maps_dir, map_name + '.posegraph')):
+        return 'continue'
+    return 'new'
+
+
+def effective_mode(site, maps_dir):
+    """The mode `site['slam_mode']` actually runs as: pinned modes pass
+    through, `auto` resolves by the active map's source and files. The ONE
+    copy of the rule — resolve_slam and every gate that asks "is amcl running?"
+    (tag_relocalizer's floor transit) use it. Takes a normalized site
+    (site_from_data / load_site) and never raises."""
+    if site['slam_mode'] == 'auto':
+        return _auto_mode(site, site['active_map'], maps_dir)
+    return site['slam_mode']
+
+
+def effective_mode_from_data(data, maps_dir):
+    """effective_mode for a raw parsed site.json. Never raises, whatever JSON
+    shape or maps_dir it is handed (it runs in a node's per-frame callback,
+    where an escaping exception kills the node): data that is not a dict gives
+    None; a site that does not normalize or resolve (bad slam_mode, dangling or
+    unhashable active_map, non-str map names, a maps_dir that is not a path)
+    yields its raw slam_mode when that is a str, else None — so a gate keeps the
+    behaviour it had before `auto` could mean localization."""
+    if not isinstance(data, dict):
+        return None
+    try:
+        return effective_mode(site_from_data(data), maps_dir)
+    except _SITE_FAILURES:
+        raw = data.get('slam_mode')
+        return raw if isinstance(raw, str) else None
+
+
 def resolve_slam(site, maps_dir):
     """Site policy -> (mode, map_name, start_pose) for slam.launch.py's
     existing three-way executable table (ADR-0003 untouched — this only
     computes its inputs)."""
-    mode = site['slam_mode']
+    mode = effective_mode(site, maps_dir)
     map_name = site['active_map']
-    if mode == 'auto':
-        has_map = bool(map_name) and os.path.exists(
-            os.path.join(maps_dir, map_name + '.posegraph'))
-        mode = 'continue' if has_map else 'new'
     if mode != 'new' and not map_name:
         raise ValueError(
             f"site.json slam_mode '{site['slam_mode']}' needs an active_map")

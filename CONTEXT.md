@@ -57,6 +57,17 @@ This file names the concepts and maps the running system.
   (fiducial, `tags.db`, `*_apriltag` tools), **RFID/NFC/UHF** (read logs,
   `list_{rfid,nfc,uhf}_tags`), **POI** (operator-marked map point, no physical
   marker, `pois.db`, `*_poi` tools).
+- **tag survey (per map) / `tag_poses`** — an AprilTag's identity is per physical
+  tag (`tags`: name, role, size) but its surveyed pose is per **(family, tag_id,
+  map)** in `tag_poses`, because a floor can hold a scan map and a drawing map in
+  different frames. Writes (sighting, webui Set tag position, `clear_pose`) go to
+  the **active** map only; reads give the active map's pose (null when unsurveyed
+  there, never another map's) plus a `poses` object. **LEGACY pose** = a pre-U11
+  row with no recorded map (`map_name ''`): it means "the active map" only while
+  the tag has no named pose anywhere. A sighting first-surveys only a tag with no
+  pose on any map; a second map is surveyed explicitly (`resurvey_apriltag` arms
+  it, or Set tag position). Floor transit picks the one other map with the same
+  source. See ADR-0040 §7 (amends ADR-0029).
 - **RFID (LF, Flipper)** — the 125 kHz pipeline (ADR-0025): flipper_node's
   pose-stamped card reads (`/rfid/reads`, latched depth-50) → companion
   sqlite → `/rfid/registry`. Gated by `/flipper/rfid_enable`. **Being
@@ -69,6 +80,51 @@ This file names the concepts and maps the running system.
   crosses back. Human-gated by `/uhf/enable`. See ADR-0032.
 - **profile (default / tight_tunnel)** — a named set of nav2/slam/realsense
   parameter deltas for a scenario. See ADR-0010.
+- **map source (`source`) / drawing map** — each `site.json` map entry is
+  `scan` (SLAM-built) or `drawing` (a floorplan rasterized to a grid pair, no
+  posegraph); default `scan`, unknown reads as `scan`. A drawing map is a normal
+  amcl map: no new runtime. See ADR-0040.
+- **effective mode vs `slam_mode`** — `slam_mode` is the site's policy
+  (`auto|new|localization|continue`); the effective mode is what it runs as
+  (`sites.effective_mode`, fleet_status `resolved_mode`). `auto` →
+  `localization` only for a `drawing` active map whose `.yaml` exists, otherwise
+  `continue`/`new`; pinned modes pass through. Anything asking "is amcl
+  running?" uses the effective mode.
+- **source overlay** — amcl parameter deltas applied by the active map's
+  `source`, in `scout/config/source_overlays/<source>/` (never `overlays/`,
+  which lists operator profiles). Order: base ← `SCOUT_PROFILE` ← source
+  (`merged_params_chain`). Only `drawing/amcl.yaml` exists. A cross-source map
+  switch restarts slam (amcl params are fixed at launch).
+- **drawing sidecar (`<name>.drawing.json`)** — provenance of a drawing map
+  (written at install). Its presence on disk marks the map as a drawing map that
+  may be replaced in place; a scan map can never be replaced through the install
+  API.
+- **wall_spans** — scout-skills' read-only lidar measurement of straight walls
+  and wall-to-wall spans in `base_link`, needing no map or localization: MCP tool
+  and plain `GET :9001/api/wall_spans`. The robot-measured scale reference for a
+  drawing; CORS on that one route only, never `/mcp`.
+- **floorplan importer** — off-Pi service (`docker/floorplan-importer/`,
+  compose service `floorplan_importer` on the companion, `:9004`, HTTP only, no
+  auth, CORS `*`) that turns a PDF or IFC into the grid pair and installs it by
+  POSTing to the Pi's fleet_status `POST /api/maps/install`
+  (`FLEET_STATUS_URL`). Optional: the Pi never depends on it. Operating recipe
+  `docs/slam.md` §6.7; service env `companion/README.md`.
+- **import job** — one uploaded PDF or IFC held in the importer's memory (≤ 3
+  jobs, dropped after 2 h idle or on importer restart; one open IFC model at a
+  time). Calibrated (PDF) or sliced per storey (IFC), previewed, then installed.
+  Install never activates a map.
+- **storey slice** — one IFC storey cut at a plane (storey elevation + slice
+  height, default 0.241 m = the lidar height) and rasterized with scale 1. The
+  plane cuts every element crossing it, whichever storey owns it; each storey's
+  default origin is the lower-left of its own slice bounds.
+- **import wizard** — the web UI panel (`webui/importwizard.js`,
+  `importflow.js`, `importmath.js`; SITE tab → Import drawing…) that drives an
+  import job over plain HTTP on operator clicks, including the robot-measured
+  scale via `wall_spans`.
+- **scan-over-drawing overlay** — the web UI's live `/scan` drawn over a drawing
+  map under localization, with a banner and a `fit N%` alignment hint
+  (`webui/scanlayer.js`, `scanoverlay.js`). Not localization proof; never blocks a
+  goal. Distinct from a *source overlay* (amcl parameters).
 - **robot profile (robot_profile.yaml)** — the cross-surface SSOT for velocity
   caps, floors, rates, topic names, LED modes, status names, thresholds. Read by
   the ROS nodes, scout-skills (ro mount) and the webui (compose bind-mounts the
@@ -149,14 +205,24 @@ All per-location state lives in `sites/<name>/` behind the `sites/active`
 symlink (ADR-0023); switch sites from the webui Site panel. Per site:
 
 - `sites/<name>/site.json` — v2 (ADR-0029): display name, slam_mode policy,
-  `maps` dict of labeled maps (label/floor/map_start_pose) + `active_map`.
-  v1 (`default_map`) is normalized on read, upgraded on the next write.
+  `maps` dict of labeled maps (label/floor/`source`/map_start_pose) +
+  `active_map`. v1 (`default_map`) is normalized on read, upgraded on the next
+  write. `source` is `scan` or `drawing` (ADR-0040).
 - `sites/<name>/maps/waypoints.json` — named waypoints + routes (ADR-0011);
   waypoints carry the map they were saved on (ADR-0029).
-- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite); surveys are
-  stamped with their home map — the floor-transit anchor (ADR-0029).
+- `sites/<name>/maps/tags.db` — AprilTag registry (sqlite): `tags` = identity,
+  `tag_poses` = one surveyed pose per tag **per map** (schema version 3, the
+  floor-transit anchor; the legacy pose columns on `tags` are frozen, ADR-0040).
 - `sites/<name>/maps/pois.db` — POI registry (sqlite; map-stamped, ADR-0038).
 - `sites/<name>/maps/*.posegraph`,`*.data` — slam_toolbox serialized maps.
+- `sites/<name>/maps/<name>.yaml`,`.pgm` — the occupancy-grid pair amcl +
+  map_server load (ADR-0028). A scan map's is written by Save Map beside its
+  posegraph; a **drawing map has only this pair** (+ sidecar), installed via
+  `POST /api/maps/install` (ADR-0040).
+- `sites/<name>/maps/<name>.drawing.json` — drawing-map provenance sidecar
+  (marks it replaceable in place).
+- `sites/<name>/maps/<name>.grid.json` — the building's *structural column
+  grid* (webui Grid tool, `gridstore.py`) — unrelated to the occupancy grid.
 - `sites/<name>/maps/zones.json` — keepout/speed zone polygons (ADR-0019;
   currently no manager node regenerates the derived masks).
 - `sites/<name>/rfid.db`, `nfc.db` — LF/NFC read logs (companion, ADR-0025/0026).

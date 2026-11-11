@@ -554,6 +554,16 @@ function onPose(msg) {
     throttle_rate: 500,
   }).subscribe(onPose);
 });
+// Scan-over-drawing overlay (R10): all of its logic lives in scanlayer.js. It only
+// subscribes to /scan while a drawing map runs under localization, reads the /map
+// grid held in liveMsg, and never blocks or sends a goal.
+ScanLayer.init({
+  ros, ROSLIB, getGrid: () => liveMsg, occThreshold: () => OCC_THRESHOLD,
+  getPose: () => robotPose, redraw: drawMap,
+  banner: document.getElementById('scan-banner'),
+  fitEl: document.getElementById('scan-fit'),
+  dismissBtn: document.getElementById('scan-banner-dismiss'),
+});
 
 const planTopic = new ROSLIB.Topic({
   ros, name: '/plan', messageType: 'nav_msgs/msg/Path', throttle_rate: 1000,
@@ -727,6 +737,7 @@ function drawMap() {
   mapCtx.restore();
 
   drawStructGrid();
+  ScanLayer.draw(mapCtx, worldToCanvas);
 
   if (plan && plan.length > 1) {
     mapCtx.strokeStyle = '#F2B200';
@@ -1034,17 +1045,29 @@ function drawTagPreview() {
   }
   mapCtx.restore();
 }
+// A tag is surveyed per map: say which OTHER maps already hold a survey, and when
+// the active map has none. Plain text for textContent (names come from the DB).
+function tagOptionLabel(t, active) {
+  const others = Object.keys(t.poses || {}).filter((m) => m !== active);
+  if (!others.length) return t.name;
+  return t.map_x === null || t.map_x === undefined
+    ? `${t.name} - not surveyed here; surveyed on: ${others.join(', ')}`
+    : `${t.name} - also surveyed on: ${others.join(', ')}`;
+}
 async function tagSetStart() {
   tagResult.textContent = '';
   try {
     const res = await fetch(FLEET_API + '/apriltags');
     const body = await res.json();
-    const names = (body.tags || []).map((t) => t.name);
+    const tags = body.tags || [];
+    const names = tags.map((t) => t.name);
     if (!names.length) { navState.textContent = 'no registered tags'; return; }
+    const activeMap = activeSiteMeta && activeSiteMeta.active_map;
     tagNameSel.innerHTML = '';
-    for (const n of names) {
+    for (const t of tags) {
       const o = document.createElement('option');
-      o.value = o.textContent = n;
+      o.value = t.name;
+      o.textContent = tagOptionLabel(t, activeMap);
       tagNameSel.appendChild(o);
     }
     if (names.includes('doghouse')) tagNameSel.value = 'doghouse';
@@ -1717,7 +1740,7 @@ setPoseBtn.addEventListener('click', () => {
   // /initialpose is consumed only by amcl (localization mode, ADR-0028). In
   // continue/new mode slam_toolbox runs instead and has no such subscriber, so
   // the pose would be published to nobody — say so instead of "succeeding".
-  const slamMode = activeSiteMeta && activeSiteMeta.slam_mode;
+  const slamMode = activeSiteMeta && MapSwitch.uiSlamMode(activeSiteMeta);
   if (!poseMode && (slamMode === 'continue' || slamMode === 'new')) {
     navState.textContent = 'Set pose needs localization mode (amcl) — current mode: '
       + slamMode + ' (slam_toolbox self-localizes and ignores /initialpose). '
@@ -2758,7 +2781,7 @@ function renderActiveCard(activeName) {
   if (!activeSiteMeta || !activeName) { card.hidden = true; return; }
   const map = activeSiteMeta.active_map;
   const entry = (map && (activeSiteMeta.maps || {})[map]) || {};
-  const mode = activeSiteMeta.slam_mode || 'auto';
+  const mode = MapSwitch.uiSlamMode(activeSiteMeta);
   document.getElementById('active-site-name').textContent =
     (activeSiteMeta.display_name || activeName) + ' /';
   document.getElementById('active-map-name').textContent =
@@ -2770,6 +2793,9 @@ function renderActiveCard(activeName) {
   } else {
     floorEl.style.display = 'none';
   }
+  const sourceEl = document.getElementById('active-map-source');
+  sourceEl.textContent = 'drawing';
+  sourceEl.style.display = MapSwitch.mapSource(entry) === 'drawing' ? '' : 'none';
   let line = MODE_PHRASE[mode] || mode;
   document.getElementById('active-mode-line').innerHTML = line;
   card.hidden = false;
@@ -2783,7 +2809,7 @@ function renderIntent() {
   const wrap = document.getElementById('mo-intent');
   if (!activeSiteMeta || !activeSiteMeta.active_map) { wrap.hidden = true; return; }
   wrap.hidden = false;
-  const mode = activeSiteMeta.slam_mode || 'auto';
+  const mode = MapSwitch.uiSlamMode(activeSiteMeta);
   const navBtn = wrap.querySelector('[data-intent="nav"]');
   const mapBtn = wrap.querySelector('[data-intent="map"]');
   navBtn.classList.toggle('on', mode === 'localization');
@@ -2819,6 +2845,10 @@ function renderFloorStack() {
     const btn = document.createElement('button');
     btn.textContent = (m.floor != null) ? String(m.floor) : name.slice(0, 3);
     btn.title = m.label || name;
+    if (MapSwitch.mapSource(m) === 'drawing') {
+      btn.classList.add('drawing');
+      btn.title += ' (drawing)';
+    }
     if (name === active) btn.classList.add('on');
     btn.addEventListener('click', () => activateMap(name));
     wrap.appendChild(btn);
@@ -2839,6 +2869,7 @@ function renderSites(data) {
     ? `${mapCount} map${mapCount === 1 ? '' : 's'}`
     : 'no active site';
   renderActiveCard(data.active);
+  ScanLayer.sync(activeSiteMeta);
   renderSlamMode();
   siteList.innerHTML = '';
   for (const s of data.sites || []) {
@@ -2887,6 +2918,7 @@ function renderSiteMaps() {
     chips.push(m.grid
       ? '<span class="cap on">Localize-ready</span>'
       : '<span class="cap off">Not localizable</span>');
+    if (MapSwitch.mapSource(m) === 'drawing') chips.push('<span class="cap drawing">drawing</span>');
     if (m.posegraph) chips.push('<span class="cap on">Extendable</span>');
     if (m.unregistered) chips.push('<span class="cap warn">unregistered</span>');
     const nameHtml = m.label && m.label !== name
@@ -2942,12 +2974,15 @@ async function activateMap(name) {
   if (siteNavBusy) { alert('Navigation goal active — cancel it before switching maps.'); return; }
   if (recState.classList.contains('rec-live')) { alert('Recording active — stop it before switching maps.'); return; }
   const entry = (activeSiteMeta.maps || {})[name] || {};
-  const mode = activeSiteMeta.slam_mode || 'auto';
-  if (mode === 'localization') {
-    if (!entry.grid) {
-      alert(`"${name}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session first.`);
-      return;
-    }
+  // Branch on what slam is actually running as (resolved_mode: `auto` resolves to
+  // localization for a drawing map), and never live-swap across map sources —
+  // amcl's params are fixed at launch (mapswitch.js).
+  const plan = MapSwitch.activationPlan(activeSiteMeta, name);
+  if (plan.needsGrid && !entry.grid) {
+    alert(`"${name}" has no grid map (.yaml/.pgm), which amcl needs — re-save it from a mapping session (or re-import the drawing) first.`);
+    return;
+  }
+  if (plan.live) {
     if (!confirm(`Switch to map "${name}" live? The grid swaps in ~1 s and the pose is seeded at the map's start pose — show the robot a registered tag to refine.`)) return;
     siteResult.textContent = `loading map "${name}"…`;
     loadMapSrv.callService(
@@ -2980,8 +3015,16 @@ async function activateMap(name) {
     );
     return;
   }
-  if (!confirm(`Switch to map "${name}"? slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
+  const crossNote = plan.crossSource
+    ? ` "${name}" is a ${plan.targetSource} map and the live map is ${plan.currentSource}, so amcl is reconfigured.`
+    : '';
+  if (!confirm(`Switch to map "${name}"?${crossNote} slam + behaviors restart (~20 s); driving and camera stay up.`)) return;
   siteResult.textContent = `switching to map "${name}"…`;
+  // The pose amcl has latched NOW (if amcl is running) — the baseline a pose
+  // after the restart must differ from, or the old amcl's replay would look like
+  // the new one coming up. Captured before any restart POST.
+  const baselineStamp = MapSwitch.effectiveSlamMode(activeSiteMeta) === 'localization'
+    ? MapSwitch.amclStamp(await nextAmclPose(AMCL_BASELINE_MS)) : null;
   try {
     await postActiveMap(name);
     await fetch(`${FLEET_API}/containers/slam/restart`, { method: 'POST' });
@@ -2993,7 +3036,76 @@ async function activateMap(name) {
   }
   setTimeout(refreshSites, 5000);
   setTimeout(() => { refreshSites(); refreshSystem(); }, 25000);
+  await reseedAfterRestart(name, baselineStamp);
 }
+
+// How long to wait for the restarted amcl to publish before telling the operator
+// to set the pose by hand, and how long to look for a latched pose to baseline on.
+const AMCL_WAIT_MS = 90000;
+const AMCL_BASELINE_MS = 2000;
+
+function amclPoseTopic() {
+  return new ROSLIB.Topic({
+    ros, name: '/amcl_pose', messageType: 'geometry_msgs/msg/PoseWithCovarianceStamped',
+  });
+}
+
+// First /amcl_pose message (a latched one arrives at once), or null on timeout.
+function nextAmclPose(timeoutMs) {
+  return new Promise((resolve) => {
+    const topic = amclPoseTopic();
+    let timer = null;
+    const done = (msg) => { clearTimeout(timer); topic.unsubscribe(); resolve(msg); };
+    timer = setTimeout(() => done(null), timeoutMs);
+    topic.subscribe((msg) => done(msg));
+  });
+}
+
+// Resolves true on the first pose whose stamp differs from baselineStamp (see
+// mapswitch.js), false on timeout. Stale replays are ignored, not counted.
+function waitForFreshAmclPose(baselineStamp, timeoutMs) {
+  return new Promise((resolve) => {
+    const topic = amclPoseTopic();
+    const fresh = MapSwitch.freshPoseGate(baselineStamp);
+    let timer = null;
+    const done = (ok) => { clearTimeout(timer); topic.unsubscribe(); resolve(ok); };
+    timer = setTimeout(() => done(false), timeoutMs);
+    topic.subscribe((msg) => { if (fresh(msg)) done(true); });
+  });
+}
+
+// After a slam restart that leaves amcl running (e.g. scan -> drawing): the
+// tag relocalizer lives in the robot container and did not restart, so its
+// "already seeded" flag still describes the OLD map. Once the restarted amcl
+// publishes a pose that is not the old one's latched replay (stamp baseline,
+// mapswitch.js), re-arm it so the next registered-tag sighting seeds /initialpose.
+// The restarted amcl itself starts at the map's start pose (launch initial_pose).
+async function reseedAfterRestart(name, baselineStamp) {
+  await refreshSites();
+  if (!MapSwitch.needsReseed(activeSiteMeta, name)) return;
+  siteResult.textContent = `map "${name}" — slam + behaviors restarting; waiting for amcl…`;
+  if (!(await waitForFreshAmclPose(baselineStamp, AMCL_WAIT_MS))) {
+    siteResult.textContent = `map "${name}" — no /amcl_pose after ${AMCL_WAIT_MS / 1000} s. Set pose after restart: use Set pose, or show the robot a registered tag.`;
+    return;
+  }
+  reseedSrv.callService(
+    new ROSLIB.ServiceRequest({}),
+    () => {
+      siteResult.textContent = `now on map "${name}" — amcl is up at its start pose and the tag relocalizer is re-armed. Set pose, or show a registered tag, to refine.`;
+    },
+    (err) => {
+      siteResult.textContent = `now on map "${name}" — amcl is up but the tag relocalizer re-arm failed (${err}). Set pose after restart.`;
+    },
+  );
+}
+
+// Import drawing wizard (importwizard.js): PDF / IFC -> an installed drawing map. Plain
+// HTTP on operator action; Activate goes through activateMap (MapSwitch.activationPlan).
+ImportWizard.init({
+  fleetApi: FLEET_API, hostname: location.hostname, fetch: window.fetch.bind(window),
+  storage: () => window.localStorage,
+  refreshSites, activateMap: (name) => activateMap(name),
+});
 
 // --- slam mode selector -------------------------------------------------------------
 // Writes site.json's slam_mode (fleet_status validates it) and restarts
@@ -3022,6 +3134,11 @@ function renderSlamMode() {
     siteModeEl.appendChild(btn);
   }
   siteModeDesc.textContent = `${current}: ${SLAM_MODES.find(([m]) => m === current)[1]}`;
+  const activeEntry = (activeSiteMeta.maps || {})[activeSiteMeta.active_map];
+  if (MapSwitch.mapSource(activeEntry) === 'drawing') {
+    siteModeDesc.textContent += ' — The active map is a drawing: under auto it always runs '
+      + 'localization (amcl on the drawing). It has no saved graph to continue or extend.';
+  }
   renderIntent();   // keep the map's Navigate|Map toggle in sync
 }
 
@@ -3131,8 +3248,12 @@ const saveGridSrv = new ROSLIB.Service({
   serviceType: 'slam_toolbox/srv/SaveMap',
 });
 document.getElementById('site-save-map').addEventListener('click', () => {
-  if (activeSiteMeta && activeSiteMeta.slam_mode === 'localization') {
-    alert('This site is pinned to localization mode: slam_toolbox is not running (amcl localizes instead), so there is nothing to save. Set slam_mode to auto/continue first.');
+  if (activeSiteMeta && MapSwitch.uiSlamMode(activeSiteMeta) === 'localization') {
+    if (activeSiteMeta.slam_mode === 'localization') {
+      alert('This site is pinned to localization mode: slam_toolbox is not running (amcl localizes instead), so there is nothing to save. Set slam_mode to auto/continue first.');
+    } else {
+      alert('The active map is a drawing: under auto slam_toolbox is not running (amcl localizes on it), so there is nothing to save. A drawing map comes from a floorplan, not a scan. Switch to a scan map to save one.');
+    }
     return;
   }
   const name = siteMapName.value.trim()

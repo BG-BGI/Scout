@@ -1,0 +1,16 @@
+# floorplan-importer runtime. Versions are the ones the tests ran against.
+# PyMuPDF is AGPL-3.0 (internal service; see the plan's licence note).
+# Installed with `pip install --no-deps -r requirements.txt`, so every package the code really
+# imports must be listed here. Checked by importing ifcopenshell, ifcopenshell.geom, shapely,
+# ifcsource and slicing the test model, then listing what landed in sys.modules: the IFC path
+# needs numpy, shapely, ifcopenshell and, from ifcopenshell, lark and typing_extensions.
+# ifcopenshell also declares isodate, python-dateutil and pyparsing, but nothing imports them
+# on this path. pymupdf 2.x declares networkx, onnxruntime, pyyaml, psutil, tabulate,
+# pymupdf-layout and pymupdf4llm, but `import pymupdf` plus drawings/text/render needs none of
+# them; --no-deps keeps onnxruntime (large) out of the image.
+numpy>=2.0,<3
+pymupdf>=2.1,<3
+ifcopenshell==0.9.0.post1
+shapely==2.2.0
+lark>=1.3,<2
+typing_extensions>=4.12,<5
