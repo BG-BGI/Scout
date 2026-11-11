@@ -219,8 +219,7 @@ numeric correction does not show the pose is right. The laser mount it uses
   6× in `ifcsource.py`'s docstring, which the server's numbers replace. Face
   budget 3,000,000 triangles. The library's own input cap is 256 MiB, but the
   server's default is **80 MiB** (`IMPORTER_MAX_IFC_BYTES`), sized for a 2g limit;
-  compose runs `mem_limit: 3g` with the cap set to **128 MiB** (raise the limit
-  first: ~128 MiB at 3g, ~256 MiB at 6g).
+  compose runs `mem_limit: 3g` (raise the limit first: ~128 MiB at 3g, ~256 MiB at 6g).
   ifcopenshell hands back only part of a freed model's memory, so the server also
   runs a **memory gate**: an IFC that would not fit on top of the resident size
   (judged after the open model is evicted, so replacing one IFC with another

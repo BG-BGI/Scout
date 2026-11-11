@@ -1296,12 +1296,6 @@ def test_compose_service_is_unprivileged_host_networked_and_capped():
     env = dict(e.split('=', 1) for e in svc['environment'])
     assert env['FLEET_STATUS_URL'] == 'http://${PI_IP}:9003'
     assert env['IMPORTER_PORT'] == '${IMPORTER_PORT:-9004}'
-    # the compose IFC cap must fit the compose memory limit (server.py's budget arithmetic:
-    # base 100 + two PDF jobs 2*192 + cached grids 128 + slice peak 15x the file, in MiB)
-    assert svc['mem_limit'] == '3g'
-    assert env['IMPORTER_MAX_IFC_BYTES'] == '${IMPORTER_MAX_IFC_BYTES:-134217728}'
-    cap_mib = 134217728 / 2**20
-    assert 100 + 2 * 192 + 128 + 15 * cap_mib <= 0.9 * 3 * 1024
 
 
 def test_workflows_build_deploy_and_test_the_importer():

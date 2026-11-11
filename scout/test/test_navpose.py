@@ -91,13 +91,6 @@ def pub(topic, msg):
     return {'op': 'publish', 'topic': topic, 'msg': msg}
 
 
-# rosbridge.py runs on the scout-skills image (py3.12) and uses asyncio.timeout (3.11+).
-# The Humble-parity CI job is py3.10, so these run in ci.yml's `skills-tests` job instead.
-needs_asyncio_timeout = pytest.mark.skipif(
-    not hasattr(asyncio, 'timeout'), reason='asyncio.timeout needs Python 3.11+')
-
-
-@needs_asyncio_timeout
 def test_collect_multi_routes_by_topic_and_unsubscribes(rosbridge):
     ws = QueueWs([pub('/a', 1), pub('/b', 2), pub('/a', 3), pub('/ignored', 9)])
     rb = rosbridge.RosBridge()
@@ -108,7 +101,6 @@ def test_collect_multi_routes_by_topic_and_unsubscribes(rosbridge):
     assert ops.count('subscribe') == 3 and ops.count('unsubscribe') == 3
 
 
-@needs_asyncio_timeout
 def test_collect_multi_uses_one_shared_window(rosbridge):
     import time
     ws = QueueWs([])

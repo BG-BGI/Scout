@@ -1,8 +1,6 @@
 # Off-ROS gate: ruff + bare pytest, no ROS install (ADR-0012/0013).
-# Python 3.10 = Humble parity; docker/scout-skills (py3.12) sources are mostly
+# Python 3.10 = Humble parity; docker/scout-skills (py3.12) sources are only
 # ast.parse'd by the conventions tests, and PEP 604 syntax parses fine on 3.10.
-# Tests that execute scout-skills code needing 3.11+ skip on 3.10 and run in
-# `skills-tests` on the image's Python.
 name: ci
 on: [push, pull_request]
 
@@ -27,21 +25,6 @@ jobs:
           cache-dependency-path: requirements-dev.txt
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
-        working-directory: scout
-
-  # scout-skills runtime code (py3.12 image) exercised for real: rosbridge.py uses
-  # asyncio.timeout (3.11+), so its tests skip in `test` above and run here.
-  skills-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
-      - run: pip install -r requirements-dev.txt
-      - run: python -m pytest -q -rs test/test_navpose.py
         working-directory: scout
 
   # The importer's tests need PyMuPDF, ifcopenshell and shapely, which requirements-dev.txt
