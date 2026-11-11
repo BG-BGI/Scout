@@ -1,10 +1,5 @@
 # ADR-0028: amcl + map_server replace slam_toolbox's localization mode
 
-> **Amended by [ADR-0040](0040-floorplan-sourced-maps.md):** the last Decision bullet
-> ("Site `auto` policy still never resolves to localization …") no longer holds for
-> drawing-sourced maps — `auto` now resolves to `localization` when the active map's
-> `source` is `drawing` and its grid exists. Scan maps are unchanged.
-
 Status: accepted · Date: 2026-08-27
 
 ## Context

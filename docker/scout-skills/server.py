@@ -728,22 +728,10 @@ async def go_to_waypoint(name: str) -> dict:
 # path must be its, not ours (same hardcode as the webui Save Map button).
 SLAM_MAPS_DIR = "/ros_ws/src/sites/active/maps"
 
-# After a slam restart that leaves amcl running, wait up to attempts x (poll
-# window + pause) ~ 90 s for a FRESH /amcl_pose before giving up on the automatic
-# tag-relocalizer re-arm. AMCL_BASELINE_S: how long to look for the pose latched
-# before the restart.
-AMCL_POLL_S = 3.0
-AMCL_POLL_ATTEMPTS = 15
-AMCL_BASELINE_S = 2.0
-# One re-arm at a time; a newer switch replaces a pending one.
-_reseed_task: "asyncio.Task | None" = None
-
 
 def _load_site() -> dict:
     """site.json normalized to {slam_mode, active_map, maps:{name: entry}}.
-    Tolerates v1 (default_map + top-level map_start_pose) and v2 (ADR-0029).
-    Map entries pass through raw: read the map's origin with
-    `entry.get("source", "scan")` (scan | drawing), never by indexing."""
+    Tolerates v1 (default_map + top-level map_start_pose) and v2 (ADR-0029)."""
     try:
         with open(tagdb.SITE_JSON) as f:
             data = json.load(f)
@@ -762,144 +750,13 @@ def _load_site() -> dict:
     return site
 
 
-def _map_source(entry) -> str:
-    """'scan' | 'drawing' for one raw site.json map entry. Unknown, missing or
-    non-dict reads as scan (same rule as scout.core.sites.entry_source)."""
-    src = entry.get("source") if isinstance(entry, dict) else None
-    return src if src in ("scan", "drawing") else "scan"
-
-
-def _resolved_mode(payload, raw_mode: str) -> str:
-    """The active site's resolved_mode from a fleet_status /api/sites payload:
-    what `auto` actually runs as (a drawing map resolves to localization).
-    Falls back to the raw slam_mode when the payload is unusable or predates
-    the field."""
-    if isinstance(payload, dict):
-        for s in payload.get("sites") or []:
-            if isinstance(s, dict) and s.get("name") == payload.get("active"):
-                return s.get("resolved_mode") or raw_mode
-    return raw_mode
-
-
-def _switch_plan(site: dict, name: str, mode: str) -> dict:
-    """Live LoadMap or slam restart for switching to `name`. `mode` is the
-    EFFECTIVE slam mode. Live only when amcl is running and the map source is
-    unchanged: amcl's params are fixed at launch, so a cross-source switch
-    restarts slam and the launch composes the matching source overlay. Mirrors
-    webui/mapswitch.js activationPlan (a parity test pins them together)."""
-    maps = site["maps"]
-    current = _map_source(maps.get(site["active_map"]))
-    target = _map_source(maps.get(name))
-    raw = site["slam_mode"]
-    live = mode == "localization" and current == target
-    return {
-        "live": live,
-        "cross_source": current != target,
-        "current_source": current,
-        "target_source": target,
-        "needs_grid": live or raw == "localization"
-        or (raw == "auto" and target == "drawing"),
-    }
-
-
-async def _effective_mode(site: dict) -> str:
-    """What slam is running (or will run) as, per fleet_status; the raw
-    slam_mode when fleet_status is unreachable or older than resolved_mode."""
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as http:
-            resp = await http.get(f"{FLEET_STATUS_URL}/api/sites")
-            resp.raise_for_status()
-            return _resolved_mode(resp.json(), site["slam_mode"])
-    except (httpx.HTTPError, ValueError):
-        return site["slam_mode"]
-
-
-def _amcl_stamp(msg) -> "str | None":
-    """'sec:nanosec' of a /amcl_pose message's header.stamp, or None when it
-    has no usable stamp. Mirrors webui/mapswitch.js amclStamp (parity-tested)."""
-    stamp = ((msg.get("header") or {}).get("stamp")
-             if isinstance(msg, dict) else None)
-    if not isinstance(stamp, dict):
-        return None
-    sec, nanosec = stamp.get("sec"), stamp.get("nanosec")
-    for part in (sec, nanosec):
-        if isinstance(part, bool) or not isinstance(part, (int, float)):
-            return None
-    return f"{sec}:{nanosec}"
-
-
-def _is_fresh_amcl_pose(baseline, msg) -> bool:
-    """Is `msg` a pose from the RESTARTED amcl? nav2_amcl latches /amcl_pose
-    (transient-local, KeepLast 1) and a stationary amcl does not republish, so a
-    subscriber can be handed the old amcl's last pose. header.stamp is the laser
-    scan's stamp, so only a stamp that differs from `baseline` (the stamp latched
-    BEFORE the restart; None = none) counts. Never compare to a wall clock: the
-    robot's steps at boot. Mirrors webui/mapswitch.js isFreshAmclPose."""
-    if msg is None:
-        return False
-    if baseline is None:
-        return True
-    return _amcl_stamp(msg) != baseline
-
-
-async def _amcl_baseline() -> "str | None":
-    """Stamp of the /amcl_pose latched right now (None if none arrives): taken
-    BEFORE the restart requests so the stale replay can be told from the new
-    amcl's first pose."""
-    try:
-        async with RosBridge() as rb:
-            msg = await rb.subscribe_once(
-                "/amcl_pose",
-                "geometry_msgs/msg/PoseWithCovarianceStamped",
-                timeout=AMCL_BASELINE_S,
-            )
-    except RosBridgeError:
-        return None
-    return _amcl_stamp(msg)
-
-
-async def _reseed_when_amcl_up(baseline) -> bool:
-    """Re-arm the tag relocalizer once the restarted amcl publishes a FRESH
-    /amcl_pose (stamp differs from `baseline`, see _is_fresh_amcl_pose). It
-    lives in the robot container, which a slam restart leaves running, so its
-    'already seeded' flag still describes the OLD map. True when re-armed;
-    False when amcl never came up or the call failed (the switch_map result
-    already tells the operator to set the pose by hand)."""
-    for _ in range(AMCL_POLL_ATTEMPTS):
-        try:
-            async with RosBridge(background=True) as rb:
-                msg = await rb.subscribe_once(
-                    "/amcl_pose",
-                    "geometry_msgs/msg/PoseWithCovarianceStamped",
-                    timeout=AMCL_POLL_S,
-                )
-        except RosBridgeError:
-            msg = None
-        if _is_fresh_amcl_pose(baseline, msg):
-            break
-        await asyncio.sleep(AMCL_POLL_S)
-    else:
-        return False
-    try:
-        async with RosBridge() as rb:
-            await rb.call_service(
-                "/tag_relocalizer/reseed", "std_srvs/srv/Trigger")
-    except RosBridgeError:
-        return False
-    return True
-
-
 @mcp.tool
 async def switch_map(name: str) -> dict:
-    """Switch the active site's map (e.g. to another floor). While amcl is
-    running (localization, including `auto` on a drawing map) and the target
-    has the same source (scan | drawing) as the live map, the grid swaps live
-    (~1 s) and the pose is re-seeded at the map's start pose — reseed via a
-    registered AprilTag (or the webui) if the robot isn't there. Otherwise —
-    mapping modes, or a switch across map sources — this RESTARTS the slam
-    container (~20 s of no /map and no map->odom); when amcl comes back the
-    tag relocalizer is re-armed automatically. Refused mid-drive."""
-    global _reseed_task
+    """Switch the active site's map (e.g. to another floor). In localization
+    mode the grid swaps live (~1 s) and the pose is re-seeded at the map's
+    start pose — reseed via a registered AprilTag (or the webui) if the robot
+    isn't there. In mapping modes this RESTARTS the slam container (~20 s of
+    no /map and no map->odom). Refused mid-drive."""
     site = _load_site()
     if name not in site["maps"]:
         raise ToolError(
@@ -910,19 +767,18 @@ async def switch_map(name: str) -> dict:
         return {"active_map": name, "note": "already active"}
     await _require_motion_idle()
 
-    mode = await _effective_mode(site)
-    plan = _switch_plan(site, name, mode)
+    mode = site["slam_mode"]
     out: dict = {"active_map": name, "previous": site["active_map"],
-                 "slam_mode": site["slam_mode"], "effective_mode": mode}
-    # Our view of the grid file; LoadMap gets the slam container's path.
-    local = os.path.join(os.path.dirname(tagdb.SITE_JSON), "maps",
-                         f"{name}.yaml")
-    if plan["needs_grid"] and not os.path.exists(local):
-        raise ToolError(
-            f"map {name!r} has no grid (.yaml/.pgm) — re-save it from a "
-            "mapping session (webui Save Map) before localizing on it"
-        )
-    if plan["live"]:
+                 "slam_mode": mode}
+    if mode == "localization":
+        # Our view of the grid file; LoadMap gets the slam container's path.
+        local = os.path.join(os.path.dirname(tagdb.SITE_JSON), "maps",
+                             f"{name}.yaml")
+        if not os.path.exists(local):
+            raise ToolError(
+                f"map {name!r} has no grid (.yaml/.pgm) — re-save it from a "
+                "mapping session (webui Save Map) before localizing on it"
+            )
         async with RosBridge() as rb:
             values = await rb.call_service(
                 "/map_server/load_map",
@@ -957,16 +813,6 @@ async def switch_map(name: str) -> dict:
                        "a registered tag (or set /initialpose) to refine")
     else:
         out["switched"] = "slam restart pending (~20 s)"
-        if plan["cross_source"]:
-            out["note"] = (
-                f"map source changes ({plan['current_source']} -> "
-                f"{plan['target_source']}): amcl's params are fixed at launch, "
-                "so slam restarts instead of a live swap")
-
-    # The pose amcl has latched NOW, before any restart request: the baseline a
-    # pose after the restart must differ from (see _is_fresh_amcl_pose).
-    baseline = (await _amcl_baseline()
-                if not plan["live"] and mode == "localization" else None)
 
     # Persist active_map — fleet_status owns site.json writes.
     try:
@@ -976,7 +822,7 @@ async def switch_map(name: str) -> dict:
                 json={"active_map": name},
             )
             resp.raise_for_status()
-            if not plan["live"]:
+            if mode != "localization":
                 for svc in ("slam", "behaviors"):
                     await http.post(
                         f"{FLEET_STATUS_URL}/api/containers/{svc}/restart")
@@ -985,16 +831,6 @@ async def switch_map(name: str) -> dict:
             f"map loaded but active_map not persisted ({e!r}) — the next slam "
             "restart will revert; retry switch_map or set it in the webui"
         ) from e
-    if not plan["live"] and await _effective_mode(site) == "localization":
-        if _reseed_task is not None:
-            _reseed_task.cancel()
-        _reseed_task = asyncio.create_task(_reseed_when_amcl_up(baseline))
-        out["reseed"] = (
-            "amcl restarts at the map's start pose; the tag relocalizer is "
-            "re-armed automatically once the restarted amcl publishes a fresh "
-            "/amcl_pose (up to ~90 s). "
-            "If it does not, set pose after restart (webui Set pose, or show "
-            "the robot a registered tag)")
     return out
 
 
@@ -1598,210 +1434,6 @@ def _poi_hint(name: str) -> tuple[float, float]:
     return (poi["map_x"], poi["map_y"])
 
 
-# --- wall_spans: lidar wall-to-wall spans in base_link (floorplan scale) ------
-#
-# Read-only and map-free: calibrating a drawing's scale happens before any map
-# exists, so nothing here needs map->odom or localization. Subscribe-only
-# (/scan, /tf_static, /odom through collect_multi): no cmd_vel, no nav tool, no
-# action goal. The MCP tool and the browser's plain GET share _wall_spans.
-# CORS is `*` on the REST route's own responses ONLY — never app-wide
-# middleware, and never on /mcp, which exposes motion tools (a CORS /mcp would
-# let any web page in the operator's browser drive the robot).
-
-from starlette.requests import Request  # noqa: E402
-from starlette.responses import JSONResponse, Response  # noqa: E402
-from websockets.exceptions import WebSocketException  # noqa: E402
-
-WALL_SPANS_PATH = "/api/wall_spans"
-WALL_SPANS_METHODS = ["GET", "OPTIONS"]
-WALL_SPANS_QUERY = (
-    "scans", "max_range_m", "min_length_m", "require_stationary", "include_points",
-)
-WALL_SPANS_CORS = {"Access-Control-Allow-Origin": "*"}
-WALL_SPANS_PREFLIGHT = WALL_SPANS_CORS | {
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Max-Age": "600",
-}
-WALL_SPANS_MAX_SCANS = 10
-WALL_SPANS_RANGE_LIMITS_M = (0.5, 30.0)
-WALL_SPANS_LENGTH_LIMITS_M = (0.1, 20.0)
-_QUERY_TRUE = {"1", "true", "yes", "on"}
-_QUERY_FALSE = {"0", "false", "no", "off"}
-
-
-class _WallSpansError(Exception):
-    """wall_spans failure carrying the HTTP status the REST route answers with;
-    the MCP tool re-raises it as ToolError."""
-
-    def __init__(self, status: int, message: str):
-        super().__init__(message)
-        self.status = status
-
-
-def _check_wall_spans_args(scans: int, max_range_m: float, min_length_m: float) -> None:
-    if isinstance(scans, bool) or not 1 <= scans <= WALL_SPANS_MAX_SCANS:
-        raise _WallSpansError(400, f"scans must be 1-{WALL_SPANS_MAX_SCANS}")
-    lo, hi = WALL_SPANS_RANGE_LIMITS_M
-    if not (math.isfinite(max_range_m) and lo <= max_range_m <= hi):
-        raise _WallSpansError(400, f"max_range_m must be {lo:g}-{hi:g}")
-    lo, hi = WALL_SPANS_LENGTH_LIMITS_M
-    if not (math.isfinite(min_length_m) and lo <= min_length_m <= hi):
-        raise _WallSpansError(400, f"min_length_m must be {lo:g}-{hi:g}")
-
-
-def _spans_stationary(odom: list[dict], scan_msgs: list[dict]) -> tuple[bool, str, list[str]]:
-    """(stationary, why-not, flags): /odom twist plus first-vs-last scan
-    agreement. No TF-drift check — there is no map frame to drift in."""
-    twists = [o["twist"]["twist"] for o in odom]
-    v = max(
-        (max(abs(t["linear"]["x"]), abs(t["linear"].get("y", 0.0)), abs(t["angular"]["z"]))
-         for t in twists),
-        default=None,
-    )
-    agree = sm.scan_agreement(scan_msgs)
-    flags = []
-    if v is None:
-        flags.append("no /odom traffic: stationary judged from scan agreement only")
-    if agree is None:
-        flags.append("scan agreement unavailable (one scan, or no overlapping beams)")
-    if v is None and agree is None:
-        return False, "stationarity unverifiable (no /odom traffic, no scan pair)", flags
-    moving = (v is not None and v > sm.STATIONARY_V) or (
-        agree is not None and agree > sm.STATIONARY_AGREE_M
-    )
-    why = (
-        f"robot moving (scan-to-scan {'n/a' if agree is None else f'{agree * 100:.1f} cm'}, "
-        f"max twist {'n/a' if v is None else f'{v:.3f}'})"
-    )
-    return not moving, why, flags
-
-
-async def _wall_spans(
-    scans: int = 3,
-    max_range_m: float = 10.0,
-    min_length_m: float = sm.WALL_MIN_LENGTH_M,
-    require_stationary: bool = True,
-    include_points: bool = False,
-) -> dict:
-    _check_wall_spans_args(scans, max_range_m, min_length_m)
-    window = 1.0 + scans / 8.0
-    try:
-        async with RosBridge(heavy=True) as rb:
-            got = await rb.collect_multi(
-                {SCAN_TOPIC: SCAN_TYPE, "/tf_static": TF_TYPE, ODOM_TOPIC: ODOM_TYPE},
-                duration=window,
-            )
-    except (RosBridgeError, WebSocketException, OSError) as e:
-        raise _WallSpansError(503, f"rosbridge unavailable: {e}") from e
-    scan_msgs = got[SCAN_TOPIC][-scans:]
-    if not scan_msgs:
-        raise _WallSpansError(503, f"no {SCAN_TOPIC} traffic in {window:.1f} s — lidar down?")
-
-    laser, fallback = sm.base_laser(
-        sm.index_tf(got["/tf_static"]), scan_msgs[-1]["header"].get("frame_id", "laser")
-    )
-    stationary, why, flags = _spans_stationary(got[ODOM_TOPIC], scan_msgs)
-    if not stationary:
-        if require_stationary:
-            raise _WallSpansError(409, why + " — park it and retry, or require_stationary=False")
-        flags.append(why)
-    if fallback:
-        flags.append("base_link->laser from URDF constants (/tf_static not replayed)")
-    if len(scan_msgs) < scans:
-        flags.append(f"only {len(scan_msgs)}/{scans} scans arrived in {window:.1f} s")
-
-    points = [sm.scan_points(m, laser, max_range_m) for m in scan_msgs]
-    found = sm.wall_spans(points, laser[:2], min_length_m)
-    out = {
-        "ok": True,
-        "frame": "base_link",
-        "stamp": round(sm.stamp_s(scan_msgs[-1]["header"]), 3),
-        "scans_used": len(scan_msgs),
-        "stationary": stationary,
-        "walls": found["walls"],
-        "pairs": found["pairs"],
-        "flags": flags + found["flags"],
-    }
-    if include_points:
-        out["points_xy"] = sm.points_xy(points[-1])
-    return out
-
-
-@mcp.tool(annotations={"readOnlyHint": True})
-async def wall_spans(
-    scans: int = 3,
-    max_range_m: float = 10.0,
-    min_length_m: float = sm.WALL_MIN_LENGTH_M,
-    require_stationary: bool = True,
-    include_points: bool = False,
-) -> dict:
-    """Measure straight walls and wall-to-wall spans from the live lidar, in
-    base_link, with NO map or localization (floorplan scale calibration:
-    compare these spans with the same walls marked on a drawing). Robot must be
-    parked; nothing is ever commanded. Fits straight segments to `scans` /scan
-    messages (clutter rejected: min_length_m, point count, residual), fuses
-    them (mean + spread per wall), then pairs near-parallel walls with the
-    laser between them: span_m is the perpendicular distance along the mean
-    normal. A lone wall of an axis is flagged, never paired; flags also say
-    when no two pairs are roughly orthogonal (calibration wants two
-    non-parallel spans). include_points adds the decimated base_link scan
-    points. The same JSON is served at GET http://<pi>:9001/api/wall_spans."""
-    try:
-        return await _wall_spans(
-            scans, max_range_m, min_length_m, require_stationary, include_points
-        )
-    except _WallSpansError as e:
-        raise ToolError(str(e)) from e
-
-
-def _query_flag(raw: str, name: str) -> bool:
-    word = raw.strip().lower()
-    if word in _QUERY_TRUE:
-        return True
-    if word in _QUERY_FALSE:
-        return False
-    raise _WallSpansError(400, f"{name} must be 1/0 or true/false, got {raw!r}")
-
-
-def _wall_spans_args(query: dict[str, str]) -> dict:
-    unknown = sorted(set(query) - set(WALL_SPANS_QUERY))
-    if unknown:
-        raise _WallSpansError(
-            400, f"unknown parameter(s) {unknown} — have: {list(WALL_SPANS_QUERY)}"
-        )
-    args: dict = {}
-    for name, cast, kind in (
-        ("scans", int, "an integer"),
-        ("max_range_m", float, "a number"),
-        ("min_length_m", float, "a number"),
-    ):
-        if name in query:
-            try:
-                args[name] = cast(query[name])
-            except ValueError as e:
-                raise _WallSpansError(400, f"{name} must be {kind}, got {query[name]!r}") from e
-    for name in ("require_stationary", "include_points"):
-        if name in query:
-            args[name] = _query_flag(query[name], name)
-    return args
-
-
-@mcp.custom_route(WALL_SPANS_PATH, methods=WALL_SPANS_METHODS)
-async def wall_spans_rest(request: Request) -> Response:
-    """GET /api/wall_spans?scans=&max_range_m=&min_length_m=&require_stationary=
-    &include_points= -> the wall_spans dict. Errors are {"error": "..."}: 400 bad
-    params, 409 robot moving, 503 no /scan or rosbridge down. CORS `*` on this
-    route's responses only."""
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=WALL_SPANS_PREFLIGHT)
-    try:
-        body = await _wall_spans(**_wall_spans_args(dict(request.query_params)))
-    except _WallSpansError as e:
-        return JSONResponse({"error": str(e)}, status_code=e.status, headers=WALL_SPANS_CORS)
-    return JSONResponse(body, headers=WALL_SPANS_CORS)
-
-
 # --- RFID (Flipper Zero, ADR-0025) --------------------------------------------
 #
 # flipper_node (robot service) owns the Flipper's USB CLI and loops
@@ -2098,22 +1730,6 @@ async def list_uhf_tags() -> dict:
 
 _tag_watch_enabled = True
 _tag_watch_last: dict = {"at": None, "seen": []}
-# (tag name, map) pairs the operator armed with resurvey_apriltag: the next
-# sighting of that tag ON that map may take a pose even though the tag is
-# surveyed on another map. In-memory on purpose — a server restart disarms.
-_survey_armed: set = set()
-
-
-def _may_first_survey(entry: dict, active, armed: set) -> bool:
-    """May a sighting survey this tag on the ACTIVE map? Only on a known map
-    where it has no pose yet, and either it has no pose on ANY map (the original
-    first-sighting rule) or the operator armed it. A tag surveyed elsewhere and
-    seen here unarmed is a floor-transit candidate for tag_relocalizer; surveying
-    it from the live robot pose (wrong if the robot is really on the other floor)
-    would both pollute this map and kill the transit."""
-    if active is None or entry.get("map_x") is not None:
-        return False
-    return not entry.get("poses") or (entry["name"], active) in armed
 
 
 DETECTIONS_TOPIC = "/detections"
@@ -2197,25 +1813,14 @@ async def _scan_tags(update_waypoints: bool = True, background: bool = False):
             # (corrupted doghouse 2026-11-05). So a surveyed tag keeps its
             # pose; only a never-surveyed tag takes its first pose from a
             # sighting. Re-survey a moved tag explicitly with register_apriltag.
-            # Poses are per MAP (a floor can hold a scan and a drawing map):
-            # `surveyed` means surveyed on the ACTIVE map, and a first pose is
-            # taken only where _may_first_survey allows.
             surveyed = entry.get("map_x") is not None
-            wrote = tagdb.record_sighting(
+            tagdb.record_sighting(
                 family, tag_id,
                 tuple(out["position_map"]) + (pose["yaw"],)
-                if pose and "position_map" in out
-                and _may_first_survey(entry, active, _survey_armed)
+                if pose and "position_map" in out and not surveyed
                 else None,
                 map_name=active,
             )
-            if wrote:
-                _survey_armed.discard((entry["name"], active))
-            if not surveyed and not wrote:
-                # Not surveyed on THIS map: live geometry is shown in the result
-                # but never becomes a waypoint (it could be map B's frame with
-                # the robot actually elsewhere).
-                pose = None
             if surveyed:
                 # Standoff comes from the surveyed pose, not the live geometry.
                 yaw = entry["map_yaw"]
@@ -2238,12 +1843,6 @@ async def _scan_tags(update_waypoints: bool = True, background: bool = False):
                     and prev.get("map") == (active or None)
                 )
                 if not unchanged:
-                    if prev is not None and prev.get("map") != (active or None):
-                        # waypoints.json holds ONE waypoint per tag name, scoped
-                        # to one map; say which map's waypoint this replaces.
-                        out["waypoint_replaced"] = {
-                            k: prev.get(k)
-                            for k in ("map", "x", "y", "yaw", "source")}
                     store["waypoints"][entry["name"]] = pose | {
                         "saved": datetime.now(timezone.utc).strftime(
                             "%Y-%m-%d %H:%M UTC"
@@ -2330,9 +1929,9 @@ async def register_apriltag(
     family/size configured in companion/config/apriltag.yaml (companion
     apriltag service restart to change, ADR-0034) — registering here names
     tags that node can already see.
-    A tag's surveyed pose is stored PER MAP: the same physical tag can be
-    surveyed on a floor's scan map and on its drawing map, and each map
-    relocalizes from its own pose. Surveying on one map never touches another's."""
+    A tag's surveyed pose is stamped with the map it was seen on
+    (ADR-0029) — one surveyed pose per tag ID, so use a DISTINCT physical tag
+    per floor/map."""
     if not (0.01 <= size_m <= 2.0):
         raise ToolError("size_m implausible — meters, black square edge only")
     return {"registered": tagdb.upsert(name, tag_id, family, role, size_m)}
@@ -2340,34 +1939,21 @@ async def register_apriltag(
 
 @mcp.tool
 async def resurvey_apriltag(name: str) -> dict:
-    """Forget a tag's surveyed pose ON THE ACTIVE MAP (other maps' surveys are
-    untouched) and arm the next sighting to survey it afresh there. This is also
-    how to survey a tag that is already surveyed on ANOTHER map (e.g. the scan
-    map of the same floor): a sighting alone never takes a second map's pose.
+    """Forget a tag's surveyed map pose; the next sighting surveys it afresh.
     Surveyed poses never change from sightings (the registry is the truth the
     robot's localization is corrected against), so use this ONLY after the tag
-    was physically moved or to survey a new map, and only while the robot is
-    verifiably well localized on the ACTIVE map (scan overlays it) with the tag
-    in view. Arming is in memory: a server restart disarms."""
-    active = tagdb.active_map_name()
-    if active is None:
-        raise ToolError(
-            "no active map — cannot tell which map to survey the tag on")
-    removed = tagdb.clear_pose(name)
-    if removed is None:
+    was physically moved, and only while the robot is verifiably well
+    localized (scan overlays the map) with the tag in view."""
+    if not tagdb.clear_pose(name):
         raise ToolError(f"no AprilTag named {name!r}")
-    _survey_armed.add((name, active))
-    return {"resurveyed": name, "map": active, "cleared_poses": removed,
-            "next": f"pose is surveyed on map {active!r} at the next sighting"}
+    return {"resurveyed": name, "next": "pose is re-surveyed on the next sighting"}
 
 
 @mcp.tool(annotations={"readOnlyHint": True})
 async def list_apriltags() -> dict:
-    """Registered AprilTags with last-seen info. map_x/map_y/map_yaw/map_name
-    are the pose for the ACTIVE map (null when unsurveyed there); `poses` lists
-    every named map the tag is surveyed on ({map: {x, y, yaw, surveyed_at}}).
-    Plus the passive watcher state (scans every 2 s and refreshes tag waypoints
-    when the camera is up)."""
+    """Registered AprilTags with last-seen info (incl. map_name — the map each
+    tag's pose was surveyed on), plus the passive watcher state (scans every
+    2 s and refreshes tag waypoints when the camera is up)."""
     return {
         "tags": tagdb.all_tags(),
         "watcher": {"enabled": _tag_watch_enabled, "last_scan": _tag_watch_last},
@@ -2376,11 +1962,10 @@ async def list_apriltags() -> dict:
 
 @mcp.tool
 async def delete_apriltag(name: str) -> dict:
-    """Remove a tag from the registry with ALL its per-map poses (its waypoint,
-    if any, stays until delete_waypoint)."""
+    """Remove a tag from the registry (its waypoint, if any, stays until
+    delete_waypoint)."""
     if not tagdb.delete(name):
         raise ToolError(f"no AprilTag named {name!r}")
-    _survey_armed.difference_update({k for k in _survey_armed if k[0] == name})
     return {"deleted": name}
 
 

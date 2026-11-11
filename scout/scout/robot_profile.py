@@ -62,33 +62,15 @@ def known_profiles() -> list:
                           if os.path.isdir(os.path.join(root, d))]
 
 
-def profile_overlay_dir(profile: str):
-    """Directory holding `profile`'s overlay files, or None for 'default'.
-    Raises on an unknown profile."""
+def profile_overlay(profile: str, basename: str):
+    """Absolute path of `basename`'s overlay under `profile`, or None if the
+    profile has no overlay for that file. Raises on an unknown profile."""
     if profile == 'default':
         return None
     known = known_profiles()
     if profile not in known:
         raise RuntimeError('unknown profile %r (known: %s)' % (profile, known))
-    return os.path.join(resolve_config_dir(), 'overlays', profile)
-
-
-def source_overlay_dir(source: str) -> str:
-    """Directory holding the map-source overlay files for `source` (e.g.
-    'drawing'). Kept OUT of config/overlays/ so known_profiles() never offers a
-    source as an operator profile. Resolves bind-mount-first exactly like the
-    profile overlays; a source with no directory (scan) simply has no files, so
-    the chain treats it as a no-op."""
-    return os.path.join(resolve_config_dir(), 'source_overlays', source)
-
-
-def profile_overlay(profile: str, basename: str):
-    """Absolute path of `basename`'s overlay under `profile`, or None if the
-    profile has no overlay for that file. Raises on an unknown profile."""
-    overlay_dir = profile_overlay_dir(profile)
-    if overlay_dir is None:
-        return None
-    path = os.path.join(overlay_dir, basename)
+    path = os.path.join(resolve_config_dir(), 'overlays', profile, basename)
     return path if os.path.isfile(path) else None
 
 
@@ -116,57 +98,14 @@ def merged_params(basename: str, profile: str) -> str:
     overlay_path = profile_overlay(profile, basename)
     if overlay_path is None:
         return base
-    return _write_merged(base, [overlay_path], profile, basename)
-
-
-def merged_params_chain(basename: str, overlays: list) -> str:
-    """Effective params-file path for `basename` with an ordered chain of
-    overlay DIRECTORIES applied over the base file; later dirs win. None entries
-    and dirs that lack `basename` are no-ops for that layer, and when no layer
-    contributes the base path is returned UNCHANGED (no temp file). Typical
-    chain: [profile_overlay_dir(profile), source_overlay_dir(source)] — operator
-    profile first, map-source overlay on top. Output goes to
-    /tmp/scout_profile/<chain tag>-<basename>; the tag names every contributing
-    layer in order, so different chains never share a file."""
-    base = resolve_config(basename)
-    layers = [os.path.normpath(d) for d in overlays if d is not None
-              and os.path.isfile(os.path.join(d, basename))]
-    if not layers:
-        return base
-    tag = '+'.join('%s.%s' % (os.path.basename(os.path.dirname(d)),
-                              os.path.basename(d)) for d in layers)
-    return _write_merged(
-        base, [os.path.join(d, basename) for d in layers], tag, basename)
-
-
-def merged_params_for_source(basename: str, profile: str, source: str) -> str:
-    """Params-file path for `basename` under operator `profile` AND the active
-    map's `source` ('scan' | 'drawing'): base <- profile overlay <- source
-    overlay, source winning on shared keys. A source with no overlay for this
-    file (scan, today) takes the plain merged_params() path, so scan maps
-    resolve to exactly the file the launch produced before sources existed.
-    Raises on a source outside sites.SOURCES — a typo must fail loudly, not
-    silently behave as scan — and on an unknown profile."""
-    from scout.core import sites
-    if source not in sites.SOURCES:
-        raise RuntimeError('unknown map source %r (known: %s)'
-                           % (source, ', '.join(sites.SOURCES)))
-    source_dir = source_overlay_dir(source)
-    if not os.path.isfile(os.path.join(source_dir, basename)):
-        return merged_params(basename, profile)
-    return merged_params_chain(
-        basename, [profile_overlay_dir(profile), source_dir])
-
-
-def _write_merged(base: str, overlay_paths: list, tag: str, basename: str) -> str:
     with open(base) as f:
-        merged = yaml.safe_load(f) or {}
-    for overlay_path in overlay_paths:
-        with open(overlay_path) as f:
-            merged = deep_merge(merged, yaml.safe_load(f) or {})
+        base_data = yaml.safe_load(f) or {}
+    with open(overlay_path) as f:
+        overlay_data = yaml.safe_load(f) or {}
+    merged = deep_merge(base_data, overlay_data)
     out_dir = os.path.join(tempfile.gettempdir(), 'scout_profile')
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, '%s-%s' % (tag, basename))
+    out_path = os.path.join(out_dir, '%s-%s' % (profile, basename))
     with open(out_path, 'w') as f:
         yaml.safe_dump(merged, f)
     return out_path

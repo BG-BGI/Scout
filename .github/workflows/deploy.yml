@@ -119,14 +119,6 @@ jobs:
     with:
       ref: ${{ needs.resolve.outputs.companion_sha }}
       branch: ${{ needs.resolve.outputs.companion_branch }}
-  floorplan-importer-companion:
-    needs: resolve
-    if: ${{ needs.resolve.outputs.deploy_companion == 'true' }}
-    uses: ./.github/workflows/floorplan-importer-image.yml
-    secrets: inherit
-    with:
-      ref: ${{ needs.resolve.outputs.companion_sha }}
-      branch: ${{ needs.resolve.outputs.companion_branch }}
 
   deploy-pi:
     needs: [resolve, pi-images, fleet-status-pi]
@@ -156,7 +148,7 @@ jobs:
           exec ./scripts/deploy-pi.sh "$BRANCH" "$SHA"
 
   deploy-companion:
-    needs: [resolve, companion-images, fleet-status-companion, floorplan-importer-companion]
+    needs: [resolve, companion-images, fleet-status-companion]
     runs-on: [self-hosted, companion]
     timeout-minutes: 30
     steps:

@@ -16,10 +16,6 @@ setup(
         # glob('config/*.yaml') does not recurse — install the profile overlays too.
         ('share/' + package_name + '/config/overlays/tight_tunnel',
          glob('config/overlays/tight_tunnel/*.yaml')),
-        # Map-source overlays live beside, not under, overlays/ so they never
-        # show up as operator profiles in known_profiles().
-        ('share/' + package_name + '/config/source_overlays/drawing',
-         glob('config/source_overlays/drawing/*.yaml')),
         ('share/' + package_name + '/launch', glob('launch/*.py')),
         ('share/' + package_name + '/behavior_trees',
          glob('behavior_trees/*.xml')),

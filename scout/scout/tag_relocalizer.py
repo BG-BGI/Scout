@@ -5,19 +5,15 @@ The site policy loads a saved map in localization mode, which has to guess a
 start pose (map origin unless told otherwise) — and a robot powered on
 anywhere else is silently mislocalized, planning through walls. This node
 closes that gap: on the first sighting of a *registered* tag (scout-skills'
-registry at tags.db, which stores each tag's surveyed pose PER MAP), it
+registry at tags.db, which stores each tag's last surveyed map pose), it
 solves the robot's map pose from the live TF of the detection and publishes
 /initialpose, which amcl (localization mode's map->odom owner, ADR-0028)
 consumes natively to re-centre its particle cloud. The filter polishes from
 there.
 
-Floor transit (ADR-0029): a site holds multiple maps and a tag is surveyed per
-map (a floor can hold a scan map and a drawing map). A tag with a pose on the
-active map relocalizes there and is never a transit candidate. Seeing a tag
-with NO pose on the active map but poses elsewhere means the robot may have
-changed floors — core.tag_homes picks the home: the one other map with the
-SAME source as the active map, else no transit (zero or several candidates
-log a throttled warning naming them) — the
+Floor transit (ADR-0029): a site holds multiple maps and each surveyed tag is
+stamped with the map it lives on (tags.db map_name). Seeing a tag whose home
+map differs from site.json's active_map means the robot changed floors — the
 lidar can't tell, the tag can. After `min_transit_sightings` consistent
 sightings (and only in localization mode, with no nav goal in flight, outside
 the cooldown), this node live-swaps the grid via /map_server/load_map, seeds
@@ -27,9 +23,6 @@ fleet_status (the only site.json writer) so the switch survives restarts.
 LoadMap republishes the latched /map before responding; amcl and the global
 costmap's static layer both re-consume it, and a short delay orders amcl's
 map callback ahead of the /initialpose.
-A transit between maps of different source (scan <-> drawing) is never done
-live — amcl's parameters are fixed at launch — it logs one throttled line and
-leaves the restart to the operator.
 
 After the first seed the node keeps correcting (core.landmark_correction):
 a median window of close, stationary tag solves that disagrees with the
@@ -73,15 +66,11 @@ from std_msgs.msg import Float32MultiArray, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
-from scout.core import sites, tag_homes
 from scout.core.geometry import yaw_to_quat_zw
 from scout.core.landmark_correction import LandmarkCorrector
 from scout.core.status import NAV_BUSY_STATES, parse_nav_state
 from scout.node_util import lookup_matrix, run_node
 from scout.qos import LATCHED_QOS
-
-# A per-frame read must not stall the detection callback on a locked tags.db.
-REGISTRY_BUSY_S = 0.5
 
 # Same bind mount the maps come through; scout-skills writes it as /maps.
 DEFAULT_TAGS_DB = '/ros_ws/src/sites/active/maps/tags.db'
@@ -170,58 +159,42 @@ class TagRelocalizer(Node):
     # --- registry -------------------------------------------------------------
 
     def _registered(self, family, tag_id):
-        """{'name', 'poses': {map: {'x','y','yaw'}}} for a registered tag with
-        at least one usable survey, or None. A tag is surveyed per MAP (tags.db
-        tag_poses; a file not yet migrated falls back to its legacy columns).
-        Read fresh each sighting — the portable base is re-surveyed whenever
-        detect_apriltags or apriltag_watch sees it, and this must pick up the
-        newest pose. Runs in the per-frame callback: a corrupt, locked or
-        half-migrated file means "not registered", never an exception."""
+        """Registry row with a surveyed map pose, or None. Read fresh each
+        sighting — the portable base is re-surveyed whenever detect_apriltags or
+        apriltag_watch sees it, and this must pick up the newest pose."""
         path = self.get_parameter('tags_db').value
+        if not os.path.exists(path):
+            return None
         try:
-            if not os.path.exists(path):
-                return None
-            db = sqlite3.connect(
-                f'file:{path}?mode=ro', uri=True, timeout=REGISTRY_BUSY_S)
-            try:
-                nf = _norm_family(family)
-                for tag in db.execute(
-                        'SELECT family, tag_id, name FROM tags').fetchall():
-                    if tag[1] == tag_id and _norm_family(tag[0]) == nf:
-                        poses = tag_homes.registry_poses(db, tag[0], tag[1])
-                        if not poses or not isinstance(tag[2], str):
-                            return None
-                        return {'name': tag[2], 'poses': poses}
-            finally:
-                db.close()
-        except (sqlite3.Error, ValueError, TypeError, AttributeError,
-                OverflowError) as e:
-            self.get_logger().warn(
-                f'tags.db read failed: {e}', throttle_duration_sec=30.0)
+            db = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                'SELECT * FROM tags WHERE map_x IS NOT NULL').fetchall()
+            db.close()
+        except sqlite3.Error as e:
+            self.get_logger().warn(f'tags.db read failed: {e}')
+            return None
+        nf = _norm_family(family)
+        for r in rows:
+            if r['tag_id'] == tag_id and _norm_family(r['family']) == nf:
+                return dict(r)
         return None
 
     def _read_site(self):
-        """(active_map, slam_mode, maps, mode) from site.json, read fresh per
-        frame (same live-switch story as the tags.db reopen). `slam_mode` is
-        the raw policy; `mode` is what it actually runs as (core.sites.
-        effective_mode: `auto` on a drawing map with its grid is localization,
-        so amcl is running). `maps` is the raw name -> entry mapping ({} for
-        v1), used only to read each map's source. Tolerates v1 (default_map)
-        and v2 (active_map); (None, None, {}, None) on any problem = transit
-        disabled, seeding behaves as before."""
+        """(active_map, slam_mode) from site.json, read fresh per frame (same
+        live-switch story as the tags.db reopen). Tolerates v1 (default_map)
+        and v2 (active_map); (None, None) on any problem = transit disabled,
+        seeding behaves as before."""
         path = self.get_parameter('site_json').value
         try:
             with open(path) as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError):
-            return None, None, {}, None
+            return None, None
         if not isinstance(data, dict):
-            return None, None, {}, None
+            return None, None
         active = data.get('active_map') or data.get('default_map') or None
-        maps = data.get('maps') if isinstance(data.get('maps'), dict) else {}
-        mode = sites.effective_mode_from_data(
-            data, self.get_parameter('maps_dir').value)
-        return active, data.get('slam_mode'), maps, mode
+        return active, data.get('slam_mode')
 
     # --- seeding ----------------------------------------------------------------
 
@@ -246,7 +219,7 @@ class TagRelocalizer(Node):
     def _on_detections(self, msg):
         if not msg.detections:
             return
-        active_map, slam_mode, maps, mode = self._read_site()
+        active_map, slam_mode = self._read_site()
         # Nearest registered tag in this frame wins, per bucket.
         best_same = None
         best_foreign = None
@@ -255,33 +228,19 @@ class TagRelocalizer(Node):
             entry = self._registered(det.family, det.id)
             if entry is None:
                 continue
-            kind, home, pose, cands = tag_homes.choose_home(
-                entry['poses'], active_map, maps)
-            if kind == 'refused':
-                self.get_logger().warn(
-                    f"tag '{entry['name']}' has no survey on the active "
-                    f"{sites.map_source(maps, active_map)} map "
-                    f"'{active_map}' but is surveyed on {', '.join(cands)} — "
-                    "transit needs exactly one map of the active map's "
-                    'source to go to; not switching',
-                    throttle_duration_sec=30.0)
-                continue
-            if kind == 'none':
-                continue
             saw_registered = True
-            solved = self._solve(det, {
-                'name': entry['name'], 'map_x': pose['x'],
-                'map_y': pose['y'], 'map_yaw': pose['yaw']})
+            solved = self._solve(det, entry)
             if not solved:
                 continue
-            if kind == 'active':
+            home = entry.get('map_name') or active_map
+            if active_map is None or home == active_map:
                 if best_same is None or solved[0] < best_same[0]:
                     best_same = solved
-            elif best_foreign is None or solved[0] < best_foreign[1]:
+            elif best_foreign is None or solved[0] < best_foreign[0]:
                 best_foreign = (home,) + solved
         if best_foreign is not None:
             self._track_transit(*best_foreign, slam_mode=slam_mode,
-                                active_map=active_map, maps=maps, mode=mode)
+                                active_map=active_map)
         elif saw_registered and self._cand['count']:
             # Same-map tags with no foreign vote decay a stale candidate.
             self._cand['count'] -= 1
@@ -338,7 +297,7 @@ class TagRelocalizer(Node):
     # --- floor transit (ADR-0029) --------------------------------------------
 
     def _track_transit(self, home, dist, name, theta, pose, *,
-                       slam_mode, active_map, maps, mode):
+                       slam_mode, active_map):
         if home == self._cand['map']:
             self._cand['count'] += 1
         else:
@@ -355,22 +314,11 @@ class TagRelocalizer(Node):
             return
         # map_server only exists in localization mode (ADR-0028) — the mode
         # check and the service check are belt and braces for the same fact.
-        # `mode` is the EFFECTIVE mode: `auto` on a drawing map runs amcl.
-        if mode != 'localization' or not self._load_map_cli.service_is_ready():
+        if slam_mode != 'localization' or not self._load_map_cli.service_is_ready():
             self.get_logger().warn(
                 f"tag '{name}' lives on map '{home}' but slam_mode is "
                 f"'{slam_mode}' — not switching (localization mode only)",
                 throttle_duration_sec=30.0)
-            return
-        if sites.sources_differ(maps, active_map, home):
-            # amcl's params are fixed at launch, so a scan <-> drawing transit
-            # cannot be a live LoadMap; restarting slam is an operator action.
-            self.get_logger().warn(
-                f"tag '{name}' lives on {sites.map_source(maps, home)} map "
-                f"'{home}' but the active map '{active_map}' is a "
-                f'{sites.map_source(maps, active_map)} map — not switching '
-                'live: a cross-source switch needs a slam restart (operator '
-                'action)', throttle_duration_sec=30.0)
             return
         if self._nav_busy:
             self.get_logger().warn(

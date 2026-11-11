@@ -339,8 +339,10 @@ def read_map_yaml(path):
             "free_thresh": float(kv.get("free_thresh", 0.25))}
 
 
-def parse_pgm_header(raw, where="pgm"):
-    """Binary PGM (P5, maxval <= 255) bytes -> (width, height, maxval, data offset)."""
+def read_pgm(path):
+    """Binary PGM (P5, maxval <= 255) -> (width, height, bytes) top row first."""
+    with open(path, "rb") as f:
+        raw = f.read()
     toks, pos = [], 0
     while len(toks) < 4:
         while pos < len(raw) and raw[pos:pos + 1].isspace():
@@ -353,25 +355,14 @@ def parse_pgm_header(raw, where="pgm"):
         while pos < len(raw) and not raw[pos:pos + 1].isspace():
             pos += 1
         if st == pos:
-            raise GridError(f"{where}: truncated pgm header")
+            raise GridError(f"{path}: truncated pgm header")
         toks.append(raw[st:pos])
     if toks[0] != b"P5":
-        raise GridError(f"{where}: not a binary PGM (P5)")
-    try:
-        w, h, mx = (int(t) for t in toks[1:])
-    except ValueError as e:
-        raise GridError(f"{where}: non-numeric pgm header") from e
+        raise GridError(f"{path}: not a binary PGM (P5)")
+    w, h, mx = (int(t) for t in toks[1:])
     if mx > 255 or w <= 0 or h <= 0 or w * h > 64_000_000:
-        raise GridError(f"{where}: unsupported pgm size/maxval")
-    return w, h, mx, pos + 1
-
-
-def read_pgm(path):
-    """Binary PGM (P5, maxval <= 255) -> (width, height, bytes) top row first."""
-    with open(path, "rb") as f:
-        raw = f.read()
-    w, h, _, off = parse_pgm_header(raw, path)
-    body = raw[off:off + w * h]
+        raise GridError(f"{path}: unsupported pgm size/maxval")
+    body = raw[pos + 1:pos + 1 + w * h]
     if len(body) != w * h:
         raise GridError(f"{path}: pgm pixel data truncated")
     return w, h, body
